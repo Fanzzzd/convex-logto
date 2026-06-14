@@ -1,0 +1,21 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "convex-logto",
+  "description": "Use Logto (self-hosted or cloud) as the auth provider for Convex React apps: an ID-token OIDC bridge plus a signed webhook user-sync.",
+  "folders": ["docs/content/docs", "packages/convex-logto"],
+  "excludeFolders": [
+    "node_modules",
+    "docs/.vercel",
+    "docs/.output",
+    "docs/.nitro",
+    "packages/convex-logto/dist"
+  ],
+  "excludeFiles": ["CHANGELOG.md"],
+  "rules": [
+    "convex-logto bridges Logto's OIDC ID token into Convex auth. It deliberately uses the ID token, not Logto access tokens (which are typed `at+jwt` and rejected by Convex).",
+    "Import server helpers (logtoAuthConfig, logtoConfigQuery, logtoSync, registerLogtoWebhook, verifyLogtoSignature) from `convex-logto`. Import React helpers (ConvexLogtoProvider, useLogtoAuth) from `convex-logto/react`, which is ESM-only.",
+    "Configure Logto via Convex deployment env vars: LOGTO_ENDPOINT, LOGTO_APP_ID (and LOGTO_WEBHOOK_SIGNING_KEY for webhook sync). The frontend needs no Logto config of its own when it pulls config from the backend via logtoConfigQuery + the ConvexLogtoProvider `configQuery` prop.",
+    "There is no JWT template, algorithm, or JWKS URL to configure — Convex auto-discovers them over OIDC (Logto signs ID tokens with ES384).",
+    "Peer dependencies: convex (required), plus react and @logto/react on the frontend. Install with `npm i convex-logto @logto/react`."
+  ]
+}

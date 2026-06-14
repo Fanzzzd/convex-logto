@@ -32,17 +32,18 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm lint
+      # Verify the published library before releasing (scoped — docs deploys via Vercel).
+      - run: pnpm --filter convex-logto lint
 
-      - run: pnpm format:check
+      - run: pnpm --filter convex-logto format:check
 
-      - run: pnpm check-types
+      - run: pnpm --filter convex-logto check-types
 
-      - run: pnpm test
+      - run: pnpm --filter convex-logto test
 
-      - run: pnpm build
+      - run: pnpm --filter convex-logto build
 
-      - run: pnpm lint:package
+      - run: pnpm --filter convex-logto lint:package
 
       - name: Create "Version Packages" PR or publish to npm
         uses: changesets/action@v1

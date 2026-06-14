@@ -1,0 +1,91 @@
+---
+title: Webhook sync
+description: Mirror Logto users into a queryable Convex table, with verified webhooks and RBAC.
+---
+
+If you want a queryable `users` table (to list users, store roles, or join app
+data), add a webhook sync. It mirrors `@convex-dev/workos-authkit`'s ergonomics.
+
+## 1. Schema
+
+```ts title="convex/schema.ts"
+users: defineTable({
+  authId: v.string(),            // Logto user id (== identity.subject)
+  email: v.string(),
+  name: v.string(),
+  role: v.string(),              // for RBAC, if you want it
+}).index("authId", ["authId"]),
+```
+
+## 2. Map events to your table
+
+```ts title="convex/logto.ts"
+// alongside `config` from the quick start
+import { logtoSync } from "convex-logto";
+import type { DataModel } from "./_generated/dataModel";
+
+const upsert = async (ctx, u) => {
+  const existing = await ctx.db
+    .query("users")
+    .withIndex("authId", (q) => q.eq("authId", u.id))
+    .unique();
+  const fields = { email: u.primaryEmail ?? "", name: u.name ?? "" };
+  if (existing) await ctx.db.patch(existing._id, fields);
+  else await ctx.db.insert("users", { authId: u.id, role: "user", ...fields });
+};
+
+export const { sync } = logtoSync<DataModel>({
+  "User.Created": upsert,
+  "User.Data.Updated": upsert,
+  "User.Deleted": async (ctx, u) => {
+    const row = await ctx.db
+      .query("users")
+      .withIndex("authId", (q) => q.eq("authId", u.id))
+      .unique();
+    if (row) await ctx.db.delete(row._id);
+  },
+});
+```
+
+## 3. Register the route
+
+```ts title="convex/http.ts"
+import { httpRouter } from "convex/server";
+import { registerLogtoWebhook } from "convex-logto";
+import { internal } from "./_generated/api";
+
+const http = httpRouter();
+registerLogtoWebhook(http, internal.logto.sync); // serves POST /logto/webhook
+export default http;
+```
+
+## 4. Create the webhook in Logto
+
+Logto Console → **Webhooks** → new webhook pointed at
+`<your-convex-site-url>/logto/webhook` (your Convex **HTTP Actions** URL, e.g.
+`https://happy-otter-123.convex.site/logto/webhook`). Subscribe to
+`User.Created`, `User.Data.Updated`, `User.Deleted`, and copy the **Signing
+key** — the one Logto value that *is* a secret:
+
+```bash
+npx convex env set LOGTO_WEBHOOK_SIGNING_KEY <signing-key>
+```
+
+The signature is verified with Web Crypto (HMAC-SHA256) inside the Convex
+runtime; bad signatures get a 401.
+
+## RBAC
+
+Store a `role` on the synced user (above), then gate in Convex by loading the
+row via `identity.subject`:
+
+```ts
+const user = await ctx.db
+  .query("users")
+  .withIndex("authId", (q) => q.eq("authId", identity.subject))
+  .unique();
+if (user?.role !== "admin") throw new Error("forbidden");
+```
+
+Keep the ability map in your app — the package stays out of your authorization
+policy.

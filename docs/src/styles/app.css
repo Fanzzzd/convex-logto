@@ -1,0 +1,6 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+/* Make Tailwind aware of Fumadocs UI class names. */
+@source "../../node_modules/fumadocs-ui/dist/**/*.js";

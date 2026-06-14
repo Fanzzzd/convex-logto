@@ -1,0 +1,31 @@
+---
+title: How it works
+description: Why the ID token, OIDC auto-discovery, refresh tokens, and a couple of platform notes.
+---
+
+## Why the ID token (and why there's no JWT config)
+
+Convex validates an OIDC **ID token**. Logto's access tokens are typed
+`at+jwt`, which Convex does not accept
+([convex#75](https://github.com/get-convex/convex-backend/issues/75)), so this
+package returns the ID token.
+
+Because it goes through Convex's **OIDC** provider (not Custom JWT), Convex reads
+the issuer's discovery document and JWKS itself — including the signing
+algorithm (Logto uses **ES384**). That is why you never set an algorithm or a
+JWKS URL.
+
+## Refresh via offline_access
+
+Sessions refresh via Logto's refresh token, which is why `ConvexLogtoProvider`
+requests the `offline_access` scope by default.
+
+## ESM-only `convex-logto/react`
+
+The `convex-logto/react` entry is ESM-only. `ConvexLogtoProvider` and
+`useLogtoAuth` are client-only (they use React hooks and `window`).
+
+## Next.js note
+
+In the Next.js App Router, render `ConvexLogtoProvider` and `useLogtoAuth`
+inside a `"use client"` component, since they rely on React hooks and `window`.

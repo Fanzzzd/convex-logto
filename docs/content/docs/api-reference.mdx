@@ -1,0 +1,79 @@
+---
+title: API reference
+description: Every export from convex-logto and convex-logto/react, with signatures.
+---
+
+## Exports
+
+| Export | From | Purpose |
+| --- | --- | --- |
+| `logtoAuthConfig(opts?)` | `convex-logto` | Provider entry for `auth.config.ts`. Reads `LOGTO_ENDPOINT` / `LOGTO_APP_ID`. |
+| `logtoConfigQuery()` | `convex-logto` | Public query serving `{ endpoint, appId }` to the frontend. |
+| `logtoSync<DataModel>(handlers)` | `convex-logto` | Returns `{ sync }`, an internal mutation mapping user events to your tables. |
+| `registerLogtoWebhook(http, sync, opts?)` | `convex-logto` | Registers the verified webhook route. Reads `LOGTO_WEBHOOK_SIGNING_KEY`. |
+| `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
+| `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto callback in one provider. Takes `configQuery` or `endpoint`+`appId`. |
+| `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
+
+## Backend
+
+### `logtoAuthConfig(opts?)`
+
+Provider entry for `convex/auth.config.ts`. Reads `LOGTO_ENDPOINT` and
+`LOGTO_APP_ID` from the deployment env.
+
+```ts title="convex/auth.config.ts"
+import { logtoAuthConfig } from "convex-logto";
+export default { providers: [logtoAuthConfig()] };
+```
+
+### `logtoConfigQuery()`
+
+A public Convex query that serves `{ endpoint, appId }` to the frontend, so the
+client carries no Logto config.
+
+```ts title="convex/logto.ts"
+import { logtoConfigQuery } from "convex-logto";
+export const config = logtoConfigQuery();
+```
+
+### `logtoSync<DataModel>(handlers)`
+
+Returns `{ sync }`, an internal mutation that maps Logto user events
+(`User.Created`, `User.Data.Updated`, `User.Deleted`) to your tables. See
+[Webhook sync](/docs/webhook-sync).
+
+### `registerLogtoWebhook(http, sync, opts?)`
+
+Registers the verified webhook route (serves `POST /logto/webhook`). Reads
+`LOGTO_WEBHOOK_SIGNING_KEY`.
+
+```ts title="convex/http.ts"
+registerLogtoWebhook(http, internal.logto.sync);
+```
+
+### `verifyLogtoSignature(key, body, sig)`
+
+Low-level signature check (HMAC-SHA256 via Web Crypto), for when you route the
+webhook yourself instead of using `registerLogtoWebhook`.
+
+## Frontend (`convex-logto/react`)
+
+### `ConvexLogtoProvider`
+
+Logto + Convex + the auto callback in one provider. Takes either a `configQuery`
+(pulls config from the backend) or literal `endpoint` + `appId`.
+
+```tsx
+<ConvexLogtoProvider client={convex} configQuery={api.logto.config}>
+  <App />
+</ConvexLogtoProvider>
+```
+
+### `useLogtoAuth()`
+
+Returns `{ isAuthenticated, isLoading, user, signIn, signOut }`.
+
+```tsx
+const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
+```

@@ -23,17 +23,18 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Scoped to the published library; the docs site is built/deployed by Vercel.
       - name: Lint (oxlint)
-        run: pnpm lint
+        run: pnpm --filter convex-logto lint
 
       - name: Format check (oxfmt)
-        run: pnpm format:check
+        run: pnpm --filter convex-logto format:check
 
-      - run: pnpm check-types
+      - run: pnpm --filter convex-logto check-types
 
-      - run: pnpm test
+      - run: pnpm --filter convex-logto test
 
-      - run: pnpm build
+      - run: pnpm --filter convex-logto build
 
       - name: Validate published package (publint + are-the-types-wrong)
-        run: pnpm lint:package
+        run: pnpm --filter convex-logto lint:package

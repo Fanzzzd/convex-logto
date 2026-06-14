@@ -1,0 +1,104 @@
+---
+title: Quick start
+description: Wire Logto auth into your Convex React app end to end, in six steps.
+---
+
+This is the whole auth setup. Many apps need nothing more.
+
+## Install
+
+```bash
+pnpm add convex-logto @logto/react
+```
+
+`convex` and `react` are peers you already have.
+
+## 1. Create a Logto app
+
+In Logto Console → **Applications** → create a **Single Page App**. Note the
+**endpoint** (e.g. `https://auth.example.com`) and the **App ID**. Under
+**Redirect URIs** add `http://localhost:5173/callback` (and your prod URL);
+under **Post sign-out redirect URIs** add your origin.
+
+## 2. Set the config on your Convex deployment (only place needed)
+
+```bash
+npx convex env set LOGTO_ENDPOINT https://auth.example.com
+npx convex env set LOGTO_APP_ID   your-app-id
+```
+
+These are public OAuth values, but keeping them as deployment env vars means
+each environment (dev / staging / prod) carries its own — see
+[Multiple environments](/docs/multiple-environments).
+
+## 3. Wire Convex
+
+```ts title="convex/auth.config.ts"
+import { logtoAuthConfig } from "convex-logto";
+export default { providers: [logtoAuthConfig()] };
+```
+
+```ts title="convex/logto.ts"
+// serves the public { endpoint, appId } to the frontend
+import { logtoConfigQuery } from "convex-logto";
+export const config = logtoConfigQuery();
+```
+
+## 4. Wrap your app
+
+The frontend carries **no Logto config** — it asks the backend:
+
+```tsx title="src/main.tsx"
+import { ConvexReactClient } from "convex/react";
+import { ConvexLogtoProvider } from "convex-logto/react";
+import { api } from "../convex/_generated/api";
+
+const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
+
+root.render(
+  <ConvexLogtoProvider client={convex} configQuery={api.logto.config}>
+    <App />
+  </ConvexLogtoProvider>,
+);
+```
+
+## 5. Add a callback route
+
+The provider finishes the OIDC code exchange automatically — the route just
+needs to render. With TanStack Router:
+
+```tsx title="src/routes/callback.tsx"
+import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/callback")({ component: () => null });
+```
+
+## 6. Sign in, and read the user
+
+```tsx
+import { useLogtoAuth } from "convex-logto/react";
+
+function Header() {
+  const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
+  if (isLoading) return null;
+  return isAuthenticated ? (
+    <button onClick={() => signOut()}>Sign out ({user?.email})</button>
+  ) : (
+    <button onClick={() => signIn()}>Sign in</button>
+  );
+}
+```
+
+In any Convex function, the Logto identity is already there:
+
+```ts
+export const me = query({
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return null;
+    // identity.subject = Logto user id, plus email/name/etc. from the ID token
+    return { id: identity.subject, email: identity.email, name: identity.name };
+  },
+});
+```
+
+That is the whole auth setup. Many apps need nothing more.
