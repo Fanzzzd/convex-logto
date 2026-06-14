@@ -1,0 +1,92 @@
+{
+  "name": "convex-logto",
+  "version": "0.1.1",
+  "description": "Use Logto (self-hosted or cloud) as the auth provider for Convex React apps: an ID-token OIDC bridge plus a signed webhook user-sync, modeled on convex/react-clerk and @convex-dev/workos-authkit.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Fanzzzd (https://github.com/Fanzzzd)",
+  "keywords": [
+    "convex",
+    "logto",
+    "auth",
+    "authentication",
+    "oidc",
+    "react",
+    "webhook"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fanzzzd/convex-logto.git",
+    "directory": "packages/convex-logto"
+  },
+  "homepage": "https://github.com/Fanzzzd/convex-logto#readme",
+  "bugs": "https://github.com/Fanzzzd/convex-logto/issues",
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "oxlint",
+    "format": "oxfmt src",
+    "format:check": "oxfmt --check src",
+    "lint:package": "publint --strict && attw --pack --profile node16 --ignore-rules cjs-resolves-to-esm",
+    "prepublishOnly": "pnpm run build"
+  },
+  "peerDependencies": {
+    "@logto/react": ">=3.0.0",
+    "convex": ">=1.21.0",
+    "react": ">=18.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@logto/react": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.3",
+    "@logto/react": "^4.0.14",
+    "@types/react": "^19.1.10",
+    "convex": "^1.38.0",
+    "oxfmt": "^0.54.0",
+    "oxlint": "^1.69.0",
+    "publint": "^0.3.21",
+    "react": "^19.1.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
