@@ -1,0 +1,80 @@
+{
+  "name": "convex-logto",
+  "version": "0.1.0",
+  "description": "Use Logto (self-hosted or cloud) as the auth provider for Convex React apps: an ID-token OIDC bridge plus a signed webhook user-sync, modeled on convex/react-clerk and @convex-dev/workos-authkit.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Klaus Fan",
+  "keywords": [
+    "convex",
+    "logto",
+    "auth",
+    "authentication",
+    "oidc",
+    "react",
+    "webhook"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bielcrystal/convex-logto.git"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./react": {
+      "import": {
+        "types": "./dist/react.d.ts",
+        "default": "./dist/react.js"
+      },
+      "require": {
+        "types": "./dist/react.d.cts",
+        "default": "./dist/react.cjs"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "pnpm run build"
+  },
+  "peerDependencies": {
+    "@logto/react": ">=3.0.0",
+    "convex": ">=1.21.0",
+    "react": ">=18.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@logto/react": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@logto/react": "^4.0.14",
+    "@types/react": "^19.1.10",
+    "convex": "^1.38.0",
+    "react": "^19.1.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
