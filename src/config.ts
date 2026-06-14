@@ -17,8 +17,13 @@ function readEndpointAndAppId(options: LogtoAuthConfigOptions = {}): {
   endpoint: string;
   appId: string;
 } {
-  const endpoint = options.endpoint ?? process.env.LOGTO_ENDPOINT;
-  const appId = options.appId ?? process.env.LOGTO_APP_ID;
+  // Trim stray whitespace and drop trailing slashes so the endpoint normalizes
+  // to a single canonical form (e.g. `https://auth.example.com`), regardless of
+  // how the env var was pasted.
+  const endpoint = (options.endpoint ?? process.env.LOGTO_ENDPOINT)
+    ?.trim()
+    .replace(/\/+$/, "");
+  const appId = (options.appId ?? process.env.LOGTO_APP_ID)?.trim();
   if (!endpoint || !appId) {
     const missing = [!endpoint && "LOGTO_ENDPOINT", !appId && "LOGTO_APP_ID"]
       .filter(Boolean)
@@ -47,8 +52,9 @@ export function logtoAuthConfig(
   options: LogtoAuthConfigOptions = {},
 ): LogtoOidcProvider {
   const { endpoint, appId } = readEndpointAndAppId(options);
+  // `endpoint` is already trimmed and trailing-slash-stripped by readEndpointAndAppId.
   return {
-    domain: `${endpoint.replace(/\/+$/, "")}/oidc`,
+    domain: `${endpoint}/oidc`,
     applicationID: appId,
   };
 }

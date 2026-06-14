@@ -49,14 +49,8 @@
       }
     },
     "./react": {
-      "import": {
-        "types": "./dist/react.d.ts",
-        "default": "./dist/react.js"
-      },
-      "require": {
-        "types": "./dist/react.d.cts",
-        "default": "./dist/react.cjs"
-      }
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js"
     }
   },
   "scripts": {
@@ -66,7 +60,7 @@
     "lint": "oxlint",
     "format": "oxfmt src",
     "format:check": "oxfmt --check src",
-    "lint:package": "publint --strict && attw --pack --profile node16",
+    "lint:package": "publint --strict && attw --pack --profile node16 --ignore-rules cjs-resolves-to-esm",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "changeset publish",

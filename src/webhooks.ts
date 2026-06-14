@@ -31,10 +31,18 @@ export type LogtoUserEvent =
   | "User.Deleted"
   | "User.SuspensionStatus.Updated";
 
+/** The known User.* events, for membership-testing an incoming payload. */
+const LOGTO_USER_EVENTS: ReadonlySet<LogtoUserEvent> = new Set([
+  "User.Created",
+  "User.Data.Updated",
+  "User.Deleted",
+  "User.SuspensionStatus.Updated",
+]);
+
 /** Shape of a Logto data-mutation webhook delivery (User family). */
 export type LogtoWebhookPayload = {
   hookId: string;
-  event: string;
+  event: LogtoUserEvent;
   createdAt: string;
   userAgent?: string;
   ip?: string;
@@ -63,15 +71,19 @@ function timingSafeEqual(a: string, b: string): boolean {
 
 /**
  * Verify a Logto `logto-signature-sha-256` header (hex HMAC-SHA256). Prefer the
- * raw request bytes (`ArrayBuffer`), since Logto signs the bytes it sent, not a
+ * raw request bytes (`BufferSource`), since Logto signs the bytes it sent, not a
  * re-encoded string. Uses Web Crypto so it runs in the Convex (V8) runtime.
  */
 export async function verifyLogtoSignature(
   signingKey: string,
-  rawBody: string | ArrayBuffer,
+  rawBody: string | BufferSource,
   expectedSignature: string,
 ): Promise<boolean> {
   if (!signingKey || !expectedSignature) return false;
+  // Reject anything that isn't a 64-char lowercase-hex SHA-256 digest before the
+  // compare, so a malformed header can never be (length-)matched by accident.
+  const expected = expectedSignature.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(expected)) return false;
   const body = typeof rawBody === "string" ? encoder.encode(rawBody) : rawBody;
   const key = await crypto.subtle.importKey(
     "raw",
@@ -81,16 +93,20 @@ export async function verifyLogtoSignature(
     ["sign"],
   );
   const signature = await crypto.subtle.sign("HMAC", key, body);
-  return timingSafeEqual(
-    toHex(signature),
-    expectedSignature.trim().toLowerCase(),
-  );
+  return timingSafeEqual(toHex(signature), expected);
 }
 
 function isLogtoWebhookPayload(value: unknown): value is LogtoWebhookPayload {
   if (typeof value !== "object" || value === null) return false;
   const { event, data } = value as Record<string, unknown>;
-  if (typeof event !== "string") return false;
+  // Only accept the known User.* events; an unknown event would otherwise 200
+  // silently with no handler, hiding a misconfigured hook.
+  if (
+    typeof event !== "string" ||
+    !LOGTO_USER_EVENTS.has(event as LogtoUserEvent)
+  ) {
+    return false;
+  }
   // Every User.* data-mutation event carries an entity with a string id;
   // requiring it keeps a malformed body from reaching handlers as `id: undefined`.
   return (

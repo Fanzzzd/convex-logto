@@ -41,10 +41,12 @@ function useAuthFromLogto() {
       if (forceRefreshToken) {
         // Force a refresh-token exchange: dropping the cached access token makes
         // getAccessToken() hit the token endpoint, which also rotates the cached
-        // ID token. If the refresh fails, getIdToken() returns the expired token
-        // and Convex rejects it, triggering re-authentication.
+        // ID token. If the refresh fails, getAccessToken() resolves undefined, so
+        // bail out rather than return the now-stale ID token; Convex then drives
+        // re-authentication.
         await clearAccessToken();
-        await getAccessToken();
+        const refreshed = await getAccessToken();
+        if (!refreshed) return null;
       }
       return (await getIdToken()) ?? null;
     },
@@ -57,7 +59,11 @@ function useAuthFromLogto() {
   );
 }
 
-/** Rendered only on the callback URL; finishes the OIDC code exchange. */
+/**
+ * Drives Logto's `useHandleSignInCallback`, which only acts when the current URL
+ * matches a stored sign-in session (so it's a no-op off the redirect), then
+ * navigates to `afterSignIn` once the OIDC exchange completes.
+ */
 function LogtoCallback({
   afterSignIn,
   navigate,
@@ -96,6 +102,11 @@ function InnerProvider({
   navigate,
   children,
 }: InnerProviderProps) {
+  // Inline `scopes`/`resources` arrays get a fresh identity each render, which
+  // would rebuild `logtoConfig` (and the underlying LogtoClient) every time.
+  // Key on the content instead, and reconstruct the arrays inside the memo.
+  const scopesKey = scopes?.join(" ") ?? "";
+  const resourcesKey = resources?.join(" ") ?? "";
   const logtoConfig = useMemo<LogtoConfig>(
     () => ({
       endpoint,
@@ -104,24 +115,24 @@ function InnerProvider({
         UserScope.Email,
         UserScope.Profile,
         ReservedScope.OfflineAccess,
-        ...(scopes ?? []),
+        ...(scopesKey ? scopesKey.split(" ") : []),
       ],
-      ...(resources ? { resources } : {}),
+      ...(resourcesKey ? { resources: resourcesKey.split(" ") } : {}),
     }),
-    [endpoint, appId, scopes, resources],
+    [endpoint, appId, scopesKey, resourcesKey],
   );
-
-  const isCallback =
-    typeof window !== "undefined" &&
-    window.location.pathname === callbackPath &&
-    new URLSearchParams(window.location.search).has("code");
 
   return (
     <LogtoProvider config={logtoConfig}>
       <CallbackPathContext.Provider value={callbackPath}>
-        {isCallback ? (
-          <LogtoCallback afterSignIn={afterSignIn} navigate={navigate} />
-        ) : null}
+        {/*
+         * Mount the callback handler unconditionally: `useHandleSignInCallback`
+         * is a no-op unless Logto's stored sign-in session matches the current
+         * URL (it checks `isSignInRedirected`), so it correctly finishes `?code=`
+         * exchanges *and* `?error=`/custom-redirect landings, and does nothing
+         * on ordinary navigation.
+         */}
+        <LogtoCallback afterSignIn={afterSignIn} navigate={navigate} />
         <ConvexProviderWithAuth client={client} useAuth={useAuthFromLogto}>
           {children}
         </ConvexProviderWithAuth>
@@ -193,7 +204,8 @@ type CommonProps = {
   resources?: string[];
   /**
    * Path that receives the OIDC redirect. Default `/callback`. The provider
-   * auto-handles the code exchange when the browser lands here with `?code=`.
+   * auto-finishes the sign-in redirect (both `?code=` success and `?error=`
+   * cases) once Logto recognizes the landing URL as its callback.
    */
   callbackPath?: string;
   /** Where to go once sign-in completes. Default `/`. */
@@ -283,9 +295,9 @@ export type LogtoAuth = {
   /** Decoded ID token claims (sub, email, name, ...), once authenticated. */
   user: IdTokenClaims | undefined;
   /** Start sign-in. Defaults the redirect to `${origin}${callbackPath}`. */
-  signIn: (redirectUri?: string) => void;
+  signIn: (redirectUri?: string) => Promise<void>;
   /** Sign out. Defaults the post-logout redirect to the current origin. */
-  signOut: (postLogoutRedirectUri?: string) => void;
+  signOut: (postLogoutRedirectUri?: string) => Promise<void>;
 };
 
 /**

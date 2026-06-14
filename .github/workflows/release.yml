@@ -26,12 +26,23 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       # Trusted publishing (OIDC) requires npm >= 11.5.1; the runner ships older.
+      # Pin the major to avoid a future npm release silently changing publish behavior.
       - name: Update npm for trusted publishing
-        run: npm install -g npm@latest
+        run: npm install -g npm@^11.5.1
 
       - run: pnpm install --frozen-lockfile
 
+      - run: pnpm lint
+
+      - run: pnpm format:check
+
+      - run: pnpm check-types
+
+      - run: pnpm test
+
       - run: pnpm build
+
+      - run: pnpm lint:package
 
       - name: Create "Version Packages" PR or publish to npm
         uses: changesets/action@v1
