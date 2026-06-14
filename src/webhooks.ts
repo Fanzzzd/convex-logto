@@ -46,7 +46,8 @@ const encoder = /* @__PURE__ */ new TextEncoder();
 
 function toHex(buffer: ArrayBuffer): string {
   let hex = "";
-  for (const b of new Uint8Array(buffer)) hex += b.toString(16).padStart(2, "0");
+  for (const b of new Uint8Array(buffer))
+    hex += b.toString(16).padStart(2, "0");
   return hex;
 }
 
@@ -80,7 +81,10 @@ export async function verifyLogtoSignature(
     ["sign"],
   );
   const signature = await crypto.subtle.sign("HMAC", key, body);
-  return timingSafeEqual(toHex(signature), expectedSignature.trim().toLowerCase());
+  return timingSafeEqual(
+    toHex(signature),
+    expectedSignature.trim().toLowerCase(),
+  );
 }
 
 function isLogtoWebhookPayload(value: unknown): value is LogtoWebhookPayload {
@@ -131,9 +135,9 @@ export type LogtoSyncReference = FunctionReference<
  *     ctx.db.insert("users", { authId: u.id, email: u.primaryEmail ?? "" }),
  * });
  */
-export function logtoSync<DataModel extends GenericDataModel = GenericDataModel>(
-  handlers: LogtoSyncHandlers<DataModel>,
-) {
+export function logtoSync<
+  DataModel extends GenericDataModel = GenericDataModel,
+>(handlers: LogtoSyncHandlers<DataModel>) {
   return {
     sync: internalMutationGeneric({
       args: { event: v.string(), payload: v.any() },
@@ -189,7 +193,8 @@ export function registerLogtoWebhook(
     path: options.path ?? "/logto/webhook",
     method: "POST",
     handler: httpActionGeneric(async (ctx, request) => {
-      const signingKey = options.signingKey ?? process.env.LOGTO_WEBHOOK_SIGNING_KEY;
+      const signingKey =
+        options.signingKey ?? process.env.LOGTO_WEBHOOK_SIGNING_KEY;
       if (!signingKey) {
         return new Response(
           "convex-logto: LOGTO_WEBHOOK_SIGNING_KEY is not set",
@@ -209,7 +214,9 @@ export function registerLogtoWebhook(
         return new Response("Malformed JSON payload", { status: 400 });
       }
       if (!isLogtoWebhookPayload(parsed)) {
-        return new Response("Unexpected webhook payload shape", { status: 400 });
+        return new Response("Unexpected webhook payload shape", {
+          status: 400,
+        });
       }
 
       await ctx.runMutation(sync, { event: parsed.event, payload: parsed });

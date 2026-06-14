@@ -1,0 +1,6 @@
+# Formatting is scoped to src/ via `pnpm format`. These are machine-managed
+# (pnpm / Changesets / build) and must not be reformatted by oxfmt.
+dist
+pnpm-lock.yaml
+package.json
+CHANGELOG.md

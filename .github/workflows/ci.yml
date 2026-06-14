@@ -23,6 +23,12 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Lint (oxlint)
+        run: pnpm lint
+
+      - name: Format check (oxfmt)
+        run: pnpm format:check
+
       - run: pnpm check-types
 
       - run: pnpm test

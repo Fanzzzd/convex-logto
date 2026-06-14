@@ -37,6 +37,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./package.json": "./package.json",
     ".": {
       "import": {
         "types": "./dist/index.d.ts",
@@ -62,6 +63,9 @@
     "build": "tsup",
     "check-types": "tsc --noEmit",
     "test": "vitest run",
+    "lint": "oxlint",
+    "format": "oxfmt src",
+    "format:check": "oxfmt --check src",
     "lint:package": "publint --strict && attw --pack --profile node16",
     "changeset": "changeset",
     "version-packages": "changeset version",
@@ -88,6 +92,8 @@
     "@logto/react": "^4.0.14",
     "@types/react": "^19.1.10",
     "convex": "^1.38.0",
+    "oxfmt": "^0.54.0",
+    "oxlint": "^1.69.0",
     "publint": "^0.3.21",
     "react": "^19.1.0",
     "tsup": "^8.5.1",

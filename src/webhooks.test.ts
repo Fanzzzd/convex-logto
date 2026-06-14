@@ -15,34 +15,53 @@ const sign = (key: string, payload: Buffer | string) =>
 
 describe("verifyLogtoSignature", () => {
   it("accepts a correct signature", async () => {
-    expect(await verifyLogtoSignature(signingKey, body, sign(signingKey, body))).toBe(true);
+    expect(
+      await verifyLogtoSignature(signingKey, body, sign(signingKey, body)),
+    ).toBe(true);
   });
 
   it("accepts uppercase hex (Web Crypto emits lowercase)", async () => {
     expect(
-      await verifyLogtoSignature(signingKey, body, sign(signingKey, body).toUpperCase()),
+      await verifyLogtoSignature(
+        signingKey,
+        body,
+        sign(signingKey, body).toUpperCase(),
+      ),
     ).toBe(true);
   });
 
   it("verifies non-ASCII bodies over the exact bytes", async () => {
     // The webhook route hands raw bytes (request.arrayBuffer()); Logto signs
     // those bytes, so re-encoding a decoded string must not change the result.
-    const unicode = JSON.stringify({ event: "User.Created", data: { id: "u1", name: "测试🚀" } });
+    const unicode = JSON.stringify({
+      event: "User.Created",
+      data: { id: "u1", name: "测试🚀" },
+    });
     const bytes = Buffer.from(unicode, "utf8");
     const arrayBuffer = new Uint8Array(bytes).buffer; // exact bytes, as request.arrayBuffer() yields
     expect(
-      await verifyLogtoSignature(signingKey, arrayBuffer, sign(signingKey, bytes)),
+      await verifyLogtoSignature(
+        signingKey,
+        arrayBuffer,
+        sign(signingKey, bytes),
+      ),
     ).toBe(true);
   });
 
   it("rejects a tampered body", async () => {
-    expect(await verifyLogtoSignature(signingKey, body + " ", sign(signingKey, body))).toBe(
-      false,
-    );
+    expect(
+      await verifyLogtoSignature(
+        signingKey,
+        body + " ",
+        sign(signingKey, body),
+      ),
+    ).toBe(false);
   });
 
   it("rejects a wrong signing key", async () => {
-    expect(await verifyLogtoSignature(signingKey, body, sign("other_key", body))).toBe(false);
+    expect(
+      await verifyLogtoSignature(signingKey, body, sign("other_key", body)),
+    ).toBe(false);
   });
 
   it("rejects an empty signature", async () => {

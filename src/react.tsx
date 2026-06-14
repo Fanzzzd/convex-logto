@@ -28,8 +28,13 @@ const CallbackPathContext = createContext("/callback");
  * rather than throwing, so no try/catch is needed here.
  */
 function useAuthFromLogto() {
-  const { isAuthenticated, isLoading, getIdToken, getAccessToken, clearAccessToken } =
-    useLogto();
+  const {
+    isAuthenticated,
+    isLoading,
+    getIdToken,
+    getAccessToken,
+    clearAccessToken,
+  } = useLogto();
 
   const fetchAccessToken = useCallback(
     async ({ forceRefreshToken }: { forceRefreshToken: boolean }) => {
@@ -244,7 +249,14 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
     children,
   } = props;
 
-  const shared = { client, scopes, resources, callbackPath, afterSignIn, navigate };
+  const shared = {
+    client,
+    scopes,
+    resources,
+    callbackPath,
+    afterSignIn,
+    navigate,
+  };
 
   if (props.configQuery) {
     return (
