@@ -1,6 +1,6 @@
 {
   "name": "convex-logto",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Use Logto (self-hosted or cloud) as the auth provider for Convex React apps: an ID-token OIDC bridge plus a signed webhook user-sync, modeled on convex/react-clerk and @convex-dev/workos-authkit.",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
