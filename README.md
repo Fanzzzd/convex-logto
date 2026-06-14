@@ -1,5 +1,9 @@
 # convex-logto
 
+[![npm](https://img.shields.io/npm/v/convex-logto.svg)](https://www.npmjs.com/package/convex-logto)
+[![CI](https://github.com/Fanzzzd/convex-logto/actions/workflows/ci.yml/badge.svg)](https://github.com/Fanzzzd/convex-logto/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/convex-logto.svg)](./LICENSE)
+
 Use [Logto](https://logto.io) (self-hosted or cloud) as the auth provider for a [Convex](https://convex.dev) React app — with the least setup possible.
 
 - **One provider on the frontend.** `<ConvexLogtoProvider>` wires Logto + Convex + the sign-in callback. No hand-rolled `useAuth` bridge.
