@@ -193,10 +193,16 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
 | `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Pulls Logto config from the backend via `configQuery`. |
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
+| `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `configQuery` model; no callback route. |
+| `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signIn()` defaults to the provider's `redirectUri`. |
 
 ### Next.js note
 
 `ConvexLogtoProvider` and `useLogtoAuth` use React hooks (and `window` for sign-in / sign-out), so in the Next.js App Router render them from a `"use client"` component — the provider is SSR-safe within that boundary.
+
+### React Native / Expo
+
+For Expo, import from **`convex-logto/native`** (built on [`@logto/rn`](https://github.com/logto-io/react-native)) instead of `convex-logto/react`. The backend (`logtoAuthConfig` / `logtoConfigQuery`) is identical. There's no callback route on native — `signIn` opens the system browser and resolves on the deep-link return. See the [React Native guide](https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/react-native.mdx) and the runnable [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo) app.
 
 ## License
 
