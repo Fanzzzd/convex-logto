@@ -19,8 +19,8 @@ npm i convex-logto @logto/react
 This is a pnpm + Turborepo monorepo.
 
 - **[`packages/convex-logto`](packages/convex-logto)** — the published library. See its [README](packages/convex-logto/README.md) for full docs and quick start.
-
-A documentation site (Fumadocs) is coming.
+- **[`examples/`](examples)** — runnable examples across Vite, TanStack Router/Start, and Next.js (one with role-based access).
+- **[`docs/`](docs)** — the documentation site source (Fumadocs).
 
 ## Links
 

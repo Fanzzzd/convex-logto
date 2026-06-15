@@ -3,7 +3,7 @@ title: Quick start
 description: Wire Logto auth into your Convex React app end to end, in six steps.
 ---
 
-This is the whole auth setup. Many apps need nothing more.
+Everything below is copy-pasteable; work top to bottom and your Convex functions will see a signed-in user.
 
 ## Install
 
@@ -15,10 +15,30 @@ pnpm add convex-logto @logto/react
 
 ## 1. Create a Logto app
 
-In Logto Console → **Applications** → create a **Single Page App**. Note the
-**endpoint** (e.g. `https://auth.example.com`) and the **App ID**. Under
-**Redirect URIs** add `http://localhost:5173/callback` (and your prod URL);
-under **Post sign-out redirect URIs** add your origin.
+In Logto Console → **Applications** → **Create application** → under
+**Single page app** pick your framework (e.g. **React**) — **not** a
+**Third-party app**. A third-party app is for letting *other people's* apps sign
+in through your Logto; it withholds the `profile` / `email` scopes this package
+requests, so sign-in fails with `invalid_scope`. The app type can't be changed
+after creation, so if you picked third-party, create a new Single page app.
+
+Note the **endpoint** (e.g. `https://auth.example.com`) and the **App ID**, and
+add two URLs on the app (for each environment):
+
+- **Redirect URIs** → `http://localhost:5173/callback` (and your prod callback)
+- **Post sign-out redirect URIs** → `http://localhost:5173` (your app's origin,
+  and your prod origin)
+
+`signIn()` returns to the redirect URI and `signOut()` to the post-sign-out URI,
+so remember to add both.
+
+**Required — use an RSA signing key.** Convex only accepts ID tokens signed with
+**RS256** (or EdDSA). Logto signs with **ES384** by default, which Convex
+silently rejects: sign-in looks like it works, but `ctx.auth.getUserIdentity()`
+returns `null`. Rotate the key once per tenant — Logto Console → **Tenant
+settings → OIDC configs** → **OIDC private keys** → **Rotate private key** →
+choose **RSA** → rotate. Logto keeps the old key during a transition, so existing
+sessions stay signed in.
 
 ## 2. Set the config on your Convex deployment (only place needed)
 
@@ -81,12 +101,16 @@ function Header() {
   const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
   if (isLoading) return null;
   return isAuthenticated ? (
-    <button onClick={() => signOut()}>Sign out ({user?.email})</button>
+    <button onClick={() => void signOut()}>Sign out ({user?.email ?? user?.sub})</button>
   ) : (
-    <button onClick={() => signIn()}>Sign in</button>
+    <button onClick={() => void signIn()}>Sign in</button>
   );
 }
 ```
+
+`signOut()` ends the Logto session and returns the user to your app's origin (the
+**Post sign-out redirect URI** from step 1). Pass `signOut("https://app.com/bye")`
+to land somewhere else — just register that URI too.
 
 In any Convex function, the Logto identity is already there:
 

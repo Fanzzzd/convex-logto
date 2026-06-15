@@ -80,11 +80,13 @@
     "@arethetypeswrong/cli": "^0.18.3",
     "@logto/react": "^4.0.14",
     "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.2.3",
     "convex": "^1.38.0",
     "oxfmt": "^0.54.0",
     "oxlint": "^1.69.0",
     "publint": "^0.3.21",
     "react": "^19.1.0",
+    "react-dom": "^19.2.7",
     "tsup": "^8.5.1",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"

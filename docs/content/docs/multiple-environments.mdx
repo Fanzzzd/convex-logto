@@ -14,25 +14,14 @@ tokens can't cross environments), then set each deployment's env once:
 
 ```bash
 # dev deployment
-npx convex env set LOGTO_APP_ID <dev-app-id>
+npx convex env set LOGTO_ENDPOINT https://your-logto.example.com
+npx convex env set LOGTO_APP_ID   <dev-app-id>
 # production deployment
-npx convex env set --prod LOGTO_APP_ID <prod-app-id>
+npx convex env set --prod LOGTO_ENDPOINT https://your-logto.example.com
+npx convex env set --prod LOGTO_APP_ID   <prod-app-id>
 # staging: target that deployment the same way
 ```
 
-Same code everywhere. Switching environments = pointing `VITE_CONVEX_URL` at a
-different deployment. Nothing to recompile, nothing to copy twice.
-
-## Prefer literal values instead?
-
-If you'd rather not add the config query, pass the values directly (e.g. from
-`import.meta.env`). Then the frontend needs its own `VITE_LOGTO_*` vars per
-environment:
-
-```tsx
-<ConvexLogtoProvider
-  client={convex}
-  endpoint={import.meta.env.VITE_LOGTO_ENDPOINT}
-  appId={import.meta.env.VITE_LOGTO_APP_ID}
->
-```
+Same code everywhere. The only thing that changes per environment is which Convex
+deployment `VITE_CONVEX_URL` points at — there's no Logto config to duplicate or
+keep in sync.

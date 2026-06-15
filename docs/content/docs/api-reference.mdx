@@ -12,7 +12,7 @@ description: Every export from convex-logto and convex-logto/react, with signatu
 | `logtoSync<DataModel>(handlers)` | `convex-logto` | Returns `{ sync }`, an internal mutation mapping user events to your tables. |
 | `registerLogtoWebhook(http, sync, opts?)` | `convex-logto` | Registers the verified webhook route. Reads `LOGTO_WEBHOOK_SIGNING_KEY`. |
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
-| `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto callback in one provider. Takes `configQuery` or `endpoint`+`appId`. |
+| `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Pulls Logto config from the backend via `configQuery`. |
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
 
 ## Backend
@@ -40,8 +40,8 @@ export const config = logtoConfigQuery();
 ### `logtoSync<DataModel>(handlers)`
 
 Returns `{ sync }`, an internal mutation that maps Logto user events
-(`User.Created`, `User.Data.Updated`, `User.Deleted`) to your tables. See
-[Webhook sync](/docs/webhook-sync).
+(`User.Created`, `User.Data.Updated`, `User.SuspensionStatus.Updated`,
+`User.Deleted`) to your tables. See [Webhook sync](/docs/webhook-sync).
 
 ### `registerLogtoWebhook(http, sync, opts?)`
 
@@ -61,14 +61,30 @@ webhook yourself instead of using `registerLogtoWebhook`.
 
 ### `ConvexLogtoProvider`
 
-Logto + Convex + the auto callback in one provider. Takes either a `configQuery`
-(pulls config from the backend) or literal `endpoint` + `appId`.
+Logto + Convex + the auto sign-in callback in one provider. Pulls your Logto
+config from the backend via `configQuery`, so the frontend carries none.
 
 ```tsx
 <ConvexLogtoProvider client={convex} configQuery={api.logto.config}>
   <App />
 </ConvexLogtoProvider>
 ```
+
+| Prop | Required | Purpose |
+| --- | --- | --- |
+| `client` | yes | Your `ConvexReactClient`. |
+| `configQuery` | yes | Ref to the `logtoConfigQuery()` export, e.g. `api.logto.config`. |
+| `afterSignIn` | — | Where to go once sign-in completes. Default `/`. |
+| `navigate` | — | Soft navigation (your router's `navigate`). Falls back to a hard redirect. |
+| `scopes` / `resources` | — | Extra OIDC scopes / API resources. `openid`, `profile`, `offline_access`, and `email` are always included. |
+
+Safe to render on the server: while config loads, children render under Convex's
+`<AuthLoading>` and nothing touches `window` — no stub or mount-gate. (In the
+Next.js App Router, mark the component that imports it `"use client"`, as with any
+hook.)
+
+The sign-in redirect lands on `/callback` — add a route there that just renders.
+Use a different path by passing ``signIn(`${origin}/your-path`)``.
 
 ### `useLogtoAuth()`
 

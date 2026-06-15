@@ -34,6 +34,16 @@ function readEndpointAndAppId(options: LogtoAuthConfigOptions = {}): {
         `or pass it to this function.`,
     );
   }
+  // The package appends `/oidc` itself, so the endpoint must be the base URL.
+  // Setting it to the issuer URL is a common paste error that would otherwise
+  // produce `.../oidc/oidc` and a confusing JWKS-discovery failure.
+  if (endpoint.endsWith("/oidc")) {
+    throw new Error(
+      `convex-logto: LOGTO_ENDPOINT should be your Logto base URL ` +
+        `(e.g. https://auth.example.com), not the /oidc issuer URL — ` +
+        `drop the trailing "/oidc".`,
+    );
+  }
   return { endpoint, appId };
 }
 
