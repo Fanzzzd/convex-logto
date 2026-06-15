@@ -45,10 +45,10 @@ Changesets + npm **OIDC trusted publishing** (provenance, no tokens):
 2. Merge to `main` → a **"Version Packages" PR** opens automatically (bumps version + updates `CHANGELOG.md`).
 3. Merge that PR → CI publishes to npm with provenance.
 
-Never run `npm publish` by hand, and never hand-edit the version or `CHANGELOG.md` — Changesets owns them.
+Never version or publish locally — no `changeset version`, `pnpm version-packages`, or `npm publish`, and never hand-edit the version or `CHANGELOG.md`. The Release workflow owns both; your only local step is `pnpm changeset` + committing the `.changeset/*.md`.
 
 ## Don't
 
 - Don't add Node-only APIs to the library (it runs in Convex's V8 runtime).
 - Don't reformat `package.json`, `CHANGELOG.md`, or lockfiles.
-- Don't hand-edit versions or `CHANGELOG.md`.
+- Don't version or publish locally (`changeset version` / `pnpm version-packages` / `npm publish`) or hand-edit versions / `CHANGELOG.md`.
