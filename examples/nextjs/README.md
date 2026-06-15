@@ -15,7 +15,7 @@ Convex backend via `api.logto.config`.
    - **Redirect URI** → `http://localhost:3000/callback`
    - **Post sign-out redirect URI** → `http://localhost:3000`
 
-   Also rotate the tenant's OIDC signing key to **RSA** (Tenant settings → OIDC configs → rotate private key → RSA). Convex rejects Logto's default ES384, so this is required; otherwise `getUserIdentity()` returns `null`. Note its **endpoint** and **App ID** for the next step.
+   Also rotate the tenant's OIDC signing key to **RSA** (Tenant settings → OIDC configs → **Rotate private keys** → choose RSA). Convex rejects Logto's default ES384, so this is required; otherwise `getUserIdentity()` returns `null`. Note its **endpoint** and **App ID** for the next step.
 4. Point that deployment at your Logto app:
    ```bash
    npx convex env set LOGTO_ENDPOINT https://auth.example.com
@@ -38,3 +38,6 @@ Convex backend via `api.logto.config`.
   `next/navigation`.
 - **The callback route** (`app/callback/page.tsx`) is a plain Server Component (no
   `"use client"` needed) that just renders; the provider finishes the OIDC exchange.
+
+> **Want webhook user-sync?** It's framework-agnostic — the `convex/` backend code is
+> identical across examples. See the [`tanstack-router-spa`](../tanstack-router-spa) example.

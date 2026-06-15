@@ -17,10 +17,10 @@ a JWKS URL.
 There is one catch. Convex's OIDC verifier accepts only **RS256** and **EdDSA**
 signatures, but Logto signs with **ES384** by default — and a mismatched
 signature is rejected silently: sign-in completes, yet `getUserIdentity()`
-returns `null`. The fix is a one-time, tenant-level key rotation: Logto Console →
-**Tenant settings → OIDC configs** → **OIDC private keys** → **Rotate private
-key** → choose **RSA**. Logto keeps the old key during a transition, so existing
-sessions stay signed in. After rotating, the discovery document advertises
+returns `null`. The fix is a one-time, tenant-level key rotation: in the Logto Console, open
+**Tenant settings → OIDC configs**, click **Rotate private keys**, and choose
+**RSA** as the signing algorithm. Logto keeps the old key during a transition, so
+existing sessions stay signed in. After rotating, the discovery document advertises
 `RS256` and Convex accepts the token.
 
 ## Refresh via offline_access
@@ -40,4 +40,7 @@ sign-in / sign-out actions use `window`), but that's the only boundary.
 
 ## ESM-only `convex-logto/react`
 
-The `convex-logto/react` entry is ESM-only (so is its `@logto/react` peer).
+The `convex-logto/react` entry is ESM-only (so is its `@logto/react` peer). This
+is a non-issue for Vite, Next.js, and TanStack (all ESM); it would only bite a
+CommonJS (`require`) consumer. The root `convex-logto` (server) entry stays dual
+ESM + CJS.

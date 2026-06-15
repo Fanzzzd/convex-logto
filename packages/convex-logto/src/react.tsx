@@ -181,7 +181,11 @@ export type ConvexLogtoProviderProps = {
   resources?: string[];
   /** Where to go once sign-in completes. Default `/`. */
   afterSignIn?: string;
-  /** Soft navigation (e.g. your router's navigate). Falls back to a hard redirect. */
+  /**
+   * Soft navigation (e.g. your router's navigate). Optional for plain Vite;
+   * recommended for any router (TanStack/Next) so post-sign-in is a soft nav,
+   * not a full reload that drops router state. Falls back to a hard redirect.
+   */
   navigate?: (to: string) => void;
   children: ReactNode;
 };

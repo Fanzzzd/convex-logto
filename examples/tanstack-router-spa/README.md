@@ -13,7 +13,7 @@ All three ways to use auth: declarative `<Authenticated>` gating, the `useLogtoA
    - **Redirect URI** → `http://localhost:5173/callback`
    - **Post sign-out redirect URI** → `http://localhost:5173`
 
-   Also rotate the tenant's OIDC signing key to **RSA** (Tenant settings → OIDC configs → rotate private key → RSA). Convex rejects Logto's default ES384, so this is required; otherwise `getUserIdentity()` returns `null`. Note its **endpoint** and **App ID** for the next step.
+   Also rotate the tenant's OIDC signing key to **RSA** (Tenant settings → OIDC configs → **Rotate private keys** → choose RSA). Convex rejects Logto's default ES384, so this is required; otherwise `getUserIdentity()` returns `null`. Note its **endpoint** and **App ID** for the next step.
 4. Point that deployment at your Logto app — the one place config lives:
    ```bash
    npx convex env set LOGTO_ENDPOINT https://your-logto.example.com

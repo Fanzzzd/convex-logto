@@ -22,6 +22,11 @@ pnpm add convex-logto @logto/react
 
 ## Quick start
 
+The snippets below use **Vite**. For the exact env var, provider placement, and
+callback wiring for each framework — Vite, TanStack Router, TanStack Start, and
+Next.js — see the [Next.js note](#nextjs-note) and the runnable
+[examples](https://github.com/Fanzzzd/convex-logto/tree/main/examples).
+
 ### 1. Create a Logto app
 
 In Logto Console → **Applications** → **Create application** → under **Single page app** pick your framework (e.g. **React**) — **not** a **Third-party app**. A third-party app is for letting *other people's* apps sign in through your Logto; it withholds the `profile` / `email` scopes this package requests, so sign-in fails with `invalid_scope`. The app type can't be changed after creation.
@@ -33,7 +38,7 @@ Note the **endpoint** (e.g. `https://auth.example.com`) and the **App ID**, and 
 
 `signIn()` returns to the redirect URI and `signOut()` to the post-sign-out URI, so remember to add both.
 
-**Required — use an RSA signing key.** Convex only accepts ID tokens signed with **RS256** (or EdDSA); Logto signs with **ES384** by default, which Convex silently rejects (sign-in looks fine, but `ctx.auth.getUserIdentity()` returns `null`). Rotate it once per tenant: Logto Console → **Tenant settings → OIDC configs** → **OIDC private keys** → **Rotate private key** → choose **RSA**. Logto keeps the old key during a transition, so existing sessions stay signed in.
+**Required — use an RSA signing key.** Convex only accepts ID tokens signed with **RS256** (or EdDSA); Logto signs with **ES384** by default, which Convex silently rejects (sign-in looks fine, but `ctx.auth.getUserIdentity()` returns `null`). Rotate it once per tenant: in the Logto Console, open **Tenant settings → OIDC configs**, click **Rotate private keys**, and choose **RSA** as the signing algorithm. Logto keeps the old key during a transition, so existing sessions stay signed in.
 
 ### 2. Set the config on your Convex deployment (only place needed)
 

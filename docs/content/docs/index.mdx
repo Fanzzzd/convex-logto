@@ -44,3 +44,25 @@ pnpm add convex-logto @logto/react
 - [API reference](/docs/api-reference) — every export and its signature.
 - [How it works](/docs/how-it-works) — why the ID token, and why there's no JWT
   config.
+- [Examples](https://github.com/Fanzzzd/convex-logto/tree/main/examples) — runnable
+  apps for Vite, TanStack Router / Start, and Next.js.
+
+## Examples
+
+Runnable apps you can copy from — each wires the same package for a different
+framework:
+
+<Cards>
+  <Card title="Vite + React" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react">
+    Minimal setup: one provider + declarative auth gating.
+  </Card>
+  <Card title="TanStack Router (SPA)" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-router-spa">
+    Route guards in beforeLoad, plus a webhook-synced users table with RBAC.
+  </Card>
+  <Card title="TanStack Start (SSR)" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-start">
+    One SSR-safe provider + beforeLoad route guards.
+  </Card>
+  <Card title="Next.js App Router" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs">
+    Client provider boundary + callback route.
+  </Card>
+</Cards>
