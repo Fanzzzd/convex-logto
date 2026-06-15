@@ -10,5 +10,8 @@ Each is a standalone app — see its README to run it.
 | [`tanstack-start`](./tanstack-start) | TanStack Start (SSR): one SSR-safe provider + `beforeLoad` route guards. |
 | [`nextjs`](./nextjs) | Next.js App Router: client provider boundary + callback route. |
 
+> The webhook user-sync and RBAC shown in `tanstack-router-spa` are **framework-agnostic** —
+> the `convex/` backend code is identical everywhere, so a Vite or Next.js app wires them the same way.
+
 In this monorepo each example depends on the package via `convex-logto: workspace:*`.
 Standalone, install it from npm: `npm i convex-logto @logto/react`.

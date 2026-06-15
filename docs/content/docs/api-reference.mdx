@@ -75,7 +75,7 @@ config from the backend via `configQuery`, so the frontend carries none.
 | `client` | yes | Your `ConvexReactClient`. |
 | `configQuery` | yes | Ref to the `logtoConfigQuery()` export, e.g. `api.logto.config`. |
 | `afterSignIn` | — | Where to go once sign-in completes. Default `/`. |
-| `navigate` | — | Soft navigation (your router's `navigate`). Falls back to a hard redirect. |
+| `navigate` | — | Soft navigation (your router's `navigate`). Optional for plain Vite; **recommended for any router** (TanStack / Next) so post-sign-in is a soft navigation rather than a full-page reload that drops router state. Falls back to a hard redirect. |
 | `scopes` / `resources` | — | Extra OIDC scopes / API resources. `openid`, `profile`, `offline_access`, and `email` are always included. |
 
 Safe to render on the server: while config loads, children render under Convex's
