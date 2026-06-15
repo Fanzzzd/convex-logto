@@ -1,0 +1,172 @@
+---
+title: React Native (Expo)
+description: Wire Logto auth into a Convex Expo app with the convex-logto/native entry.
+---
+
+The same package works in React Native through the **`convex-logto/native`** entry,
+built on [`@logto/rn`](https://github.com/logto-io/react-native). The backend is
+**identical** to the web setup — only the frontend provider differs.
+
+<Callout>
+`@logto/rn` signs in through the system browser and returns via your custom
+`io.logto://` scheme, which **Expo Go on Android can't register** — so use a
+development build (`npx expo run:android` / `run:ios`, or an EAS dev build).
+</Callout>
+
+## Install
+
+```bash
+pnpm add convex-logto @logto/rn
+npx expo install expo-crypto expo-secure-store expo-web-browser @react-native-async-storage/async-storage
+```
+
+`convex` and `react` are peers you already have. `@logto/rn` needs those four Expo
+modules; `expo install` picks the versions matching your SDK.
+
+## 1. Create a Logto app
+
+In Logto Console → **Applications** → **Create application** → under **Single page
+app** pick **React** — **not** a **Third-party app** (it withholds the `profile` /
+`email` scopes this package needs, so sign-in fails with `invalid_scope`).
+
+Note the **endpoint** and **App ID**, and register the **native** redirect URIs —
+these use your app's URL scheme, not `http(s)`:
+
+- **Redirect URIs** → `io.logto://callback`
+- **Post sign-out redirect URIs** → `io.logto://callback`
+
+**Required — use an RSA signing key.** Convex only accepts ID tokens signed with
+**RS256** (or EdDSA). Logto signs with **ES384** by default, which Convex silently
+rejects: sign-in looks like it works, but `ctx.auth.getUserIdentity()` returns
+`null`. Rotate the key once per tenant — in the Logto Console, open **Tenant
+settings → OIDC configs**, click **Rotate private keys**, and choose **RSA**. Logto
+keeps the old key during a transition, so existing sessions stay signed in.
+
+## 2. Set the config on your Convex deployment (only place needed)
+
+```bash
+npx convex env set LOGTO_ENDPOINT https://auth.example.com
+npx convex env set LOGTO_APP_ID   your-app-id
+```
+
+## 3. Wire Convex
+
+Exactly the same as the web setup — the backend is framework-agnostic:
+
+```ts title="convex/auth.config.ts"
+import { logtoAuthConfig } from "convex-logto";
+export default { providers: [logtoAuthConfig()] };
+```
+
+```ts title="convex/logto.ts"
+// serves the public { endpoint, appId } to the frontend
+import { logtoConfigQuery } from "convex-logto";
+export const config = logtoConfigQuery();
+```
+
+## 4. Set your URL scheme
+
+The native redirect URI is your `app.json` `scheme` plus a path:
+
+```json title="app.json"
+{
+  "expo": {
+    "scheme": "io.logto"
+  }
+}
+```
+
+On Android the scheme **must** be set here; on iOS it's listened to regardless.
+It must match the redirect URI you registered in step 1.
+
+## 5. Wrap your app
+
+The frontend carries **no Logto config** — it asks the backend. Pass `redirectUri`
+(the scheme callback) so `signIn()` has a default. Expo exposes only `EXPO_PUBLIC_*`
+env vars to the bundle:
+
+```tsx title="App.tsx"
+import { ConvexLogtoProvider } from "convex-logto/native";
+import { ConvexReactClient } from "convex/react";
+import { api } from "./convex/_generated/api";
+
+const convex = new ConvexReactClient(process.env.EXPO_PUBLIC_CONVEX_URL!, {
+  unsavedChangesWarning: false,
+});
+
+export default function App() {
+  return (
+    <ConvexLogtoProvider
+      client={convex}
+      configQuery={api.logto.config}
+      redirectUri="io.logto://callback"
+    >
+      <Main />
+    </ConvexLogtoProvider>
+  );
+}
+```
+
+<Callout>
+**No callback route.** Unlike the web, there's nothing to add for `/callback` —
+`@logto/rn`'s `signIn` opens the system browser and resolves when the deep link
+returns. `<ConvexLogtoProvider>` renders an optional `fallback` during the one-time
+config fetch (native has no SSR inert-client trick); Convex's `<AuthLoading>` covers
+the token handshake after that.
+</Callout>
+
+## 6. Sign in, and read the user
+
+```tsx
+import { useLogtoAuth } from "convex-logto/native";
+import { Button, Text } from "react-native";
+
+function Main() {
+  const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
+  if (isLoading) return <Text>Signing in…</Text>;
+  return isAuthenticated ? (
+    <Button title={`Sign out (${user?.email ?? user?.sub})`} onPress={() => void signOut()} />
+  ) : (
+    // signIn() defaults to the provider's redirectUri
+    <Button title="Sign in" onPress={() => void signIn()} />
+  );
+}
+```
+
+In any Convex function, the Logto identity is already there — the same `me` query as
+the web examples:
+
+```ts
+export const me = query({
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return null;
+    return { id: identity.subject, email: identity.email, name: identity.name };
+  },
+});
+```
+
+Full runnable app: [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo).
+
+## How native differs from web
+
+| | Web (`convex-logto/react`) | Native (`convex-logto/native`) |
+| --- | --- | --- |
+| SDK | `@logto/react` | `@logto/rn` |
+| Sign-in callback | a `/callback` route you add | none — `signIn` resolves in place |
+| `signIn()` default | `${origin}/callback` | the provider's `redirectUri` |
+| Sign-out | federated redirect to origin | revokes tokens + clears storage (no browser) |
+| Loading | SSR-safe, renders children immediately | `fallback` covers the one-time config fetch |
+
+Everything else — `logtoAuthConfig`, `logtoConfigQuery`, the webhook
+[user-sync](/docs/webhook-sync), and reading `ctx.auth.getUserIdentity()` — is shared.
+
+## Expo SDK and `@logto/rn` versions
+
+The published `@logto/rn@1.1.0` declares peer ranges for the older,
+independently-versioned Expo modules (`expo-* >=14 <16`). On **Expo SDK 54+** those
+modules are renumbered to the SDK version (e.g. `expo-crypto@56.x`), so `pnpm install`
+prints peer-dependency **warnings**. They are warnings, not errors — the SDK runs on
+54+ (Logto's own sample targets SDK 56) and they clear once Logto publishes updated
+peers. To avoid them entirely, use **Expo SDK 53** (RN 0.79), which is within the
+published ranges.

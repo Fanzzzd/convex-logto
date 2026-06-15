@@ -6,6 +6,8 @@ const external = [
   /^react(\/.*)?$/,
   /^react-dom(\/.*)?$/,
   /^@logto\/react(\/.*)?$/,
+  /^@logto\/rn(\/.*)?$/,
+  /^react-native(\/.*)?$/,
 ];
 
 const shared = {
@@ -28,6 +30,13 @@ export default defineConfig([
   {
     ...shared,
     entry: { react: "src/react.tsx" },
+    format: ["esm"],
+  },
+  // `@logto/rn` is ESM-only (and React Native bundlers are ESM-first), so the
+  // native entry is ESM-only too.
+  {
+    ...shared,
+    entry: { native: "src/native.tsx" },
     format: ["esm"],
   },
 ]);

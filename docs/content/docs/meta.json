@@ -3,6 +3,7 @@
   "pages": [
     "index",
     "quick-start",
+    "react-native",
     "auth-in-your-app",
     "multiple-environments",
     "webhook-sync",
