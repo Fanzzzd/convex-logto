@@ -24,20 +24,21 @@ export type LogtoUserEntity = {
   applicationId?: string | null;
 };
 
-/** Logto data-mutation events that carry a User entity. */
-export type LogtoUserEvent =
-  | "User.Created"
-  | "User.Data.Updated"
-  | "User.Deleted"
-  | "User.SuspensionStatus.Updated";
-
-/** The known User.* events, for membership-testing an incoming payload. */
-const LOGTO_USER_EVENTS: ReadonlySet<LogtoUserEvent> = new Set([
+/** The known User.* data-mutation events, each carrying a User entity. */
+const LOGTO_USER_EVENTS = [
   "User.Created",
   "User.Data.Updated",
   "User.Deleted",
   "User.SuspensionStatus.Updated",
-]);
+] as const;
+
+/** Logto data-mutation events that carry a User entity. */
+export type LogtoUserEvent = (typeof LOGTO_USER_EVENTS)[number];
+
+/** Set form of {@link LOGTO_USER_EVENTS}, for membership-testing a payload. */
+const LOGTO_USER_EVENT_SET: ReadonlySet<LogtoUserEvent> = new Set(
+  LOGTO_USER_EVENTS,
+);
 
 /** Shape of a Logto data-mutation webhook delivery (User family). */
 export type LogtoWebhookPayload = {
@@ -46,7 +47,18 @@ export type LogtoWebhookPayload = {
   createdAt: string;
   userAgent?: string;
   ip?: string;
-  data: LogtoUserEntity;
+  /**
+   * The affected User entity — but `null` for `User.Deleted`: Logto can't
+   * summarize a deletion as a single entity, so it sends `data: null` and the
+   * deleted user's id rides in the Management API `params` (`{ userId }`) instead.
+   */
+  data: LogtoUserEntity | null;
+  /** Management API context, present for admin-triggered changes (e.g. deletion). */
+  path?: string;
+  method?: string;
+  status?: number;
+  params?: Record<string, unknown>;
+  matchedRoute?: string;
   [key: string]: unknown;
 };
 
@@ -80,8 +92,8 @@ export async function verifyLogtoSignature(
   expectedSignature: string,
 ): Promise<boolean> {
   if (!signingKey || !expectedSignature) return false;
-  // Reject anything that isn't a 64-char lowercase-hex SHA-256 digest before the
-  // compare, so a malformed header can never be (length-)matched by accident.
+  // Normalize to lowercase, then reject anything that isn't a 64-char hex SHA-256
+  // digest, so a malformed header can never be (length-)matched by accident.
   const expected = expectedSignature.trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(expected)) return false;
   const body = typeof rawBody === "string" ? encoder.encode(rawBody) : rawBody;
@@ -96,24 +108,45 @@ export async function verifyLogtoSignature(
   return timingSafeEqual(toHex(signature), expected);
 }
 
+/** The id from the User entity in `data` — present on every event but `User.Deleted`. */
+function entityId(payload: Record<string, unknown>): string | undefined {
+  const data = payload.data;
+  if (typeof data === "object" && data !== null) {
+    const id = (data as Record<string, unknown>).id;
+    if (typeof id === "string") return id;
+  }
+  return undefined;
+}
+
+/** The deleted user's id from the Management API route params (`DELETE /users/:userId`). */
+function paramsUserId(payload: Record<string, unknown>): string | undefined {
+  const params = payload.params;
+  if (typeof params === "object" && params !== null) {
+    const userId = (params as Record<string, unknown>).userId;
+    if (typeof userId === "string") return userId;
+  }
+  return undefined;
+}
+
 function isLogtoWebhookPayload(value: unknown): value is LogtoWebhookPayload {
   if (typeof value !== "object" || value === null) return false;
-  const { event, data } = value as Record<string, unknown>;
+  const candidate = value as Record<string, unknown>;
+  const event = candidate.event;
   // Only accept the known User.* events; an unknown event would otherwise 200
   // silently with no handler, hiding a misconfigured hook.
   if (
     typeof event !== "string" ||
-    !LOGTO_USER_EVENTS.has(event as LogtoUserEvent)
+    !LOGTO_USER_EVENT_SET.has(event as LogtoUserEvent)
   ) {
     return false;
   }
-  // Every User.* data-mutation event carries an entity with a string id;
-  // requiring it keeps a malformed body from reaching handlers as `id: undefined`.
-  return (
-    typeof data === "object" &&
-    data !== null &&
-    typeof (data as Record<string, unknown>).id === "string"
-  );
+  // `User.Deleted` is the one event Logto sends with `data: null` — there the id
+  // rides in the route params. Every other User.* event must carry the full entity,
+  // so require it; that keeps a malformed `data: null` body from reaching a sync
+  // handler as a bare `{ id }` (which it could misread as "all fields were cleared").
+  return event === "User.Deleted"
+    ? entityId(candidate) !== undefined || paramsUserId(candidate) !== undefined
+    : entityId(candidate) !== undefined;
 }
 
 /** A per-event sync handler. Runs in a Convex mutation, so `ctx.db` is available. */
@@ -131,7 +164,7 @@ export type LogtoSyncHandlers<DataModel extends GenericDataModel> = Partial<
 export type LogtoSyncReference = FunctionReference<
   "mutation",
   "internal",
-  { event: string; payload: unknown },
+  { payload: unknown },
   null
 >;
 
@@ -141,14 +174,27 @@ export type LogtoSyncReference = FunctionReference<
  * signature. Handlers get a mutation `ctx`, so you write to `ctx.db` directly.
  * Pass your generated `DataModel` for a typed `ctx.db`.
  *
+ * Sync rows here; don't create them. `User.Created` doesn't fire for users who
+ * already existed in Logto, so create rows from an authenticated mutation and let
+ * these handlers keep them in sync. See the Webhook sync guide for the ownership
+ * rules (which fields the webhook may write, and which are app-owned).
+ *
  * @example
- * // convex/logto.ts
+ * // convex/logto.ts — keep an existing user's profile in sync (never create here)
  * import { logtoSync } from "convex-logto";
  * import type { DataModel } from "./_generated/dataModel";
  *
  * export const { sync } = logtoSync<DataModel>({
- *   "User.Created": (ctx, u) =>
- *     ctx.db.insert("users", { authId: u.id, email: u.primaryEmail ?? "" }),
+ *   "User.Data.Updated": async (ctx, u) => {
+ *     const row = await ctx.db
+ *       .query("users")
+ *       .withIndex("by_authId", (q) => q.eq("authId", u.id))
+ *       .unique();
+ *     // Mirror only fields the event carries (present → set, absent → leave).
+ *     if (row && u.primaryEmail !== undefined) {
+ *       await ctx.db.patch(row._id, { email: u.primaryEmail ?? undefined });
+ *     }
+ *   },
  * });
  */
 export function logtoSync<
@@ -156,19 +202,30 @@ export function logtoSync<
 >(handlers: LogtoSyncHandlers<DataModel>) {
   return {
     sync: internalMutationGeneric({
-      args: { event: v.string(), payload: v.any() },
+      args: { payload: v.any() },
       returns: v.null(),
       handler: async (ctx, args) => {
-        const handler = handlers[args.event as LogtoUserEvent];
+        // registerLogtoWebhook validates before calling, but this is an exported
+        // internal mutation — reject anything that isn't a known User.* event.
+        if (!isLogtoWebhookPayload(args.payload)) {
+          throw new Error(
+            "convex-logto: logtoSync received a payload that isn't a known Logto User.* event.",
+          );
+        }
+        const payload = args.payload;
+        const handler = handlers[payload.event];
         if (handler) {
-          const payload = args.payload as LogtoWebhookPayload;
+          // Use the entity Logto sent when it actually carries an id; `User.Deleted`
+          // has none (`data: null`), so synthesize one from the route params. Keyed
+          // on entityId, not `data ?? …`, so a stray `data: {}` can't slip through as
+          // an id-less user. (The guard guaranteed one of the two is present.)
+          const user: LogtoUserEntity =
+            entityId(payload) !== undefined
+              ? (payload.data as LogtoUserEntity)
+              : { id: paramsUserId(payload)! };
           // `ctx` here is typed for the generic data model; the user's handlers
           // are written against their concrete `DataModel`.
-          await handler(
-            ctx as GenericMutationCtx<DataModel>,
-            payload.data,
-            payload,
-          );
+          await handler(ctx as GenericMutationCtx<DataModel>, user, payload);
         }
         return null;
       },
@@ -235,7 +292,7 @@ export function registerLogtoWebhook(
         });
       }
 
-      await ctx.runMutation(sync, { event: parsed.event, payload: parsed });
+      await ctx.runMutation(sync, { payload: parsed });
       return new Response(null, { status: 200 });
     }),
   });

@@ -1,0 +1,56 @@
+import { describe, expect, it } from "vitest";
+import { classifySignInSearch } from "./callback";
+
+describe("classifySignInSearch", () => {
+  it("ignores URLs without a `state` param (not a sign-in redirect)", () => {
+    expect(classifySignInSearch("")).toEqual({ kind: "none" });
+    expect(classifySignInSearch("?foo=bar")).toEqual({ kind: "none" });
+    // A stray ?error= on an ordinary app route must NOT be read as a sign-in failure.
+    expect(classifySignInSearch("?error=invalid_scope")).toEqual({
+      kind: "none",
+    });
+    expect(classifySignInSearch("?code=abc")).toEqual({ kind: "none" });
+  });
+
+  it("is 'pending' only for a real code redirect (both code and state)", () => {
+    expect(classifySignInSearch("?code=abc&state=xyz")).toEqual({
+      kind: "pending",
+    });
+    // state without a code is not a callback we should try to exchange.
+    expect(classifySignInSearch("?state=xyz")).toEqual({ kind: "none" });
+  });
+
+  it("treats 'no session' errors (e.g. the user cancelled) as benign", () => {
+    for (const error of [
+      "access_denied",
+      "login_required",
+      "interaction_required",
+      "consent_required",
+    ]) {
+      expect(classifySignInSearch(`?error=${error}&state=xyz`)).toEqual({
+        kind: "benign",
+      });
+    }
+  });
+
+  it("surfaces a setup error with its description and a hint", () => {
+    const outcome = classifySignInSearch(
+      "?error=invalid_scope&error_description=bad%20scope&state=xyz",
+    );
+    expect(outcome.kind).toBe("error");
+    if (outcome.kind === "error") {
+      expect(outcome.message).toContain("invalid_scope");
+      expect(outcome.message).toContain("bad scope");
+      expect(outcome.message).toContain("scope"); // the hint mentions scopes
+    }
+  });
+
+  it("surfaces an unknown error without inventing a hint", () => {
+    const outcome = classifySignInSearch("?error=server_error&state=xyz");
+    expect(outcome.kind).toBe("error");
+    if (outcome.kind === "error") {
+      expect(outcome.message).toContain("server_error");
+      expect(outcome.message).not.toContain("Single-page app");
+    }
+  });
+});

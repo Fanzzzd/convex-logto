@@ -1,0 +1,10 @@
+node_modules
+.output
+.nitro
+.tanstack
+dist
+*.tsbuildinfo
+.convex
+convex/_generated
+src/routeTree.gen.ts
+.env.local

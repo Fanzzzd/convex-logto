@@ -1,0 +1,44 @@
+// Classifies the URL after a Logto sign-in redirect. Only a real OIDC redirect
+// carries a `state` param, so a stray `?error=`/`?code=` on an ordinary app route
+// is ignored rather than mistaken for a sign-in result.
+
+const OAUTH_ERROR_HINTS: Record<string, string> = {
+  invalid_scope:
+    "This usually means a requested scope isn't allowed — check any extra `scopes` " +
+    "you passed, and that LOGTO_APP_ID points at a Single-page app (not a Third-party app).",
+};
+
+// OAuth errors that just mean "no session" (e.g. the user cancelled): return to the app.
+const BENIGN_OAUTH_ERRORS = new Set([
+  "access_denied",
+  "login_required",
+  "interaction_required",
+  "consent_required",
+]);
+
+export type SignInOutcome =
+  | { kind: "none" } // not a sign-in redirect
+  | { kind: "pending" } // a redirect with no error — the SDK is exchanging the code
+  | { kind: "benign" } // the user cancelled / no session — return to the app
+  | { kind: "error"; message: string }; // a setup error worth surfacing
+
+export function classifySignInSearch(search: string): SignInOutcome {
+  const params = new URLSearchParams(search);
+  // Every OIDC redirect carries `state`; without it, this isn't a sign-in result.
+  if (!params.has("state")) return { kind: "none" };
+  const error = params.get("error");
+  if (error) {
+    if (BENIGN_OAUTH_ERRORS.has(error)) return { kind: "benign" };
+    const description = params.get("error_description");
+    const hint = OAUTH_ERROR_HINTS[error];
+    return {
+      kind: "error",
+      message:
+        `Logto sign-in failed with "${error}"` +
+        (description ? ` (${description})` : "") +
+        (hint ? `. ${hint}` : "."),
+    };
+  }
+  // A successful redirect carries both `code` and `state`.
+  return params.has("code") ? { kind: "pending" } : { kind: "none" };
+}

@@ -1,0 +1,173 @@
+---
+title: Auth in your app
+description: Render and route on auth state — declaratively, with a hook, or in a route guard — and store your own data for a user.
+---
+
+There is no special concept to learn. `convex-logto` plugs into Convex's normal
+auth, so you get **all** the standard ways to react to auth state:
+
+- **`useLogtoAuth()`** — a hook returning `{ isAuthenticated, isLoading, user, signIn, signOut }`.
+- **Convex's `<Authenticated>` / `<Unauthenticated>` / `<AuthLoading>`** and **`useConvexAuth()`** from `convex/react` — they work unchanged.
+
+`isAuthenticated` / `isLoading` from `useLogtoAuth()` come from `useConvexAuth()`,
+so they're **authoritative**: `isAuthenticated` is `true` only once Convex has
+accepted the token. Gate on these and there's no flash of the wrong state.
+
+## Storing data for a user
+
+You usually **don't need a users table**. Every Convex function already has the
+signed-in user's identity from the token — `identity.subject` is their stable Logto
+id — so attach your data to _your own_ tables, keyed by it:
+
+```ts
+export const createPost = mutation({
+  args: { body: v.string() },
+  handler: async (ctx, { body }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("unauthenticated");
+    await ctx.db.insert("posts", { body, authorId: identity.subject }); // ← the link
+  },
+});
+```
+
+The user isn't a row — their _data_ points at `identity.subject`. That covers "the
+current user and the things they own."
+
+Reach for a synced **users table** only when you need users who _aren't_ the current
+caller (an admin list, another user's display name) or Logto-owned profile and
+lifecycle fields mirrored into Convex (email, name, suspended, deleted). App-owned
+data the token doesn't carry — preferences, plan, feature flags — can stay in your
+own tables keyed by `identity.subject`. See [Webhook sync](/docs/webhook-sync).
+
+## Declarative gating
+
+The simplest app shell. Each branch renders only in its state; queries inside
+`<Authenticated>` never run before auth settles.
+
+```tsx
+import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
+
+function App() {
+  return (
+    <>
+      <AuthLoading>
+        <Spinner />
+      </AuthLoading>
+      <Unauthenticated>
+        <SignInButton />
+      </Unauthenticated>
+      <Authenticated>
+        <Dashboard />
+      </Authenticated>
+    </>
+  );
+}
+```
+
+## The hook
+
+`useLogtoAuth()` is plain state. Call it at the top of your component, then use
+the values and `signIn` / `signOut` anywhere — in `return`, event handlers,
+effects, or conditionals.
+
+```tsx
+import { useLogtoAuth } from "convex-logto/react";
+
+function AuthButton() {
+  const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
+  if (isLoading) return <Spinner />;
+  return isAuthenticated ? (
+    <button onClick={() => void signOut()}>Sign out ({user?.email ?? user?.sub})</button>
+  ) : (
+    <button onClick={() => void signIn()}>Sign in</button>
+  );
+}
+```
+
+## Route guards (TanStack Router)
+
+For redirect-based protection you need auth **outside render** — in a route's
+`beforeLoad`. Lift `useLogtoAuth()` into the router `context` and guard there.
+This is the standard TanStack Router auth pattern; it works because
+`useLogtoAuth()` is just state.
+
+```tsx title="src/main.tsx"
+import { useEffect } from "react";
+import { ConvexReactClient } from "convex/react";
+import { ConvexLogtoProvider, useLogtoAuth } from "convex-logto/react";
+import { RouterProvider } from "@tanstack/react-router";
+import { router } from "./router";
+import { api } from "../convex/_generated/api";
+
+const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
+
+// Lives inside <ConvexLogtoProvider> so useLogtoAuth() has its context.
+function InnerApp() {
+  const auth = useLogtoAuth();
+
+  // Re-run every route's beforeLoad when the authn outcome flips (loading→settled,
+  // sign in/out). Key on the primitive booleans so it fires on exactly those changes
+  // — not on every token refresh or profile (`user`) update.
+  useEffect(() => {
+    void router.invalidate();
+  }, [auth.isLoading, auth.isAuthenticated]);
+
+  return <RouterProvider router={router} context={{ auth }} />;
+}
+
+root.render(
+  <ConvexLogtoProvider
+    client={convex}
+    configQuery={api.logto.config}
+    navigate={(to) => void router.navigate({ to })}
+  >
+    <InnerApp />
+  </ConvexLogtoProvider>,
+);
+```
+
+```tsx title="src/router.tsx"
+import {
+  createRootRouteWithContext,
+  createRoute,
+  createRouter,
+  redirect,
+  Outlet,
+} from "@tanstack/react-router";
+import type { useLogtoAuth } from "convex-logto/react";
+
+type RouterAuthContext = { auth: ReturnType<typeof useLogtoAuth> };
+
+const rootRoute = createRootRouteWithContext<RouterAuthContext>()({
+  component: () => <Outlet />,
+});
+
+// Protected layout route — guarded outside render, in beforeLoad.
+const authedRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  id: "_authed",
+  beforeLoad: ({ context }) => {
+    if (context.auth.isLoading) return; // still settling — don't redirect yet
+    if (!context.auth.isAuthenticated) throw redirect({ to: "/signin" });
+  },
+  pendingComponent: () => <p>Checking access…</p>,
+  component: () => <Outlet />,
+});
+
+export const router = createRouter({
+  routeTree: rootRoute.addChildren([signinRoute, authedRoute.addChildren([dashboardRoute])]),
+  context: { auth: undefined! }, // real value injected by <RouterProvider context>
+  defaultPendingMs: 0, // show pendingComponent immediately while auth settles
+});
+```
+
+A few things make this robust:
+
+- **Check `isLoading` first.** `isAuthenticated` is `false` while auth is still
+  settling, so without the `if (context.auth.isLoading) return` you'd redirect a
+  signed-in user on every reload.
+- **The `router.invalidate()` effect is required** — it's what re-runs the guard
+  when auth resolves. Depend on `[auth.isLoading, auth.isAuthenticated]`.
+- **Give the route a `pendingComponent`** (with `defaultPendingMs: 0`) so the
+  loading window shows it instead of a flash of protected content.
+- **Pass `navigate`** to the provider so post-sign-in is a soft router navigation.

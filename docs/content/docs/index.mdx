@@ -19,8 +19,10 @@ Use [Logto](https://logto.io) (self-hosted or cloud) as the auth provider for a
 ## ID token over OIDC
 
 It uses Logto's **ID token** over OIDC, so Convex auto-discovers the signing key
-and algorithm (Logto signs with ES384). There is nothing about JWTs for you to
-configure.
+and JWKS — no JWT template, no algorithm, no JWKS URL to configure. The one
+Logto-side requirement: the OIDC signing key must be **RSA/RS256** (Convex
+rejects Logto's default ES384). It's a one-time tenant rotation — see
+[Quick start](/docs/quick-start).
 
 ## Install
 
@@ -33,6 +35,8 @@ pnpm add convex-logto @logto/react
 ## Where to next
 
 - [Quick start](/docs/quick-start) — wire auth end to end in six steps.
+- [Auth in your app](/docs/auth-in-your-app) — render and route on auth state, and
+  store your own data for a user.
 - [Multiple environments](/docs/multiple-environments) — dev / staging / prod
   with a single source of config.
 - [Webhook sync](/docs/webhook-sync) — mirror Logto users into a queryable

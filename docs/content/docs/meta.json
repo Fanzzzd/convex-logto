@@ -3,6 +3,7 @@
   "pages": [
     "index",
     "quick-start",
+    "auth-in-your-app",
     "multiple-environments",
     "webhook-sync",
     "api-reference",

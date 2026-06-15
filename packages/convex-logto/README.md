@@ -10,7 +10,7 @@ Use [Logto](https://logto.io) (self-hosted or cloud) as the auth provider for a 
 - **One line on the backend.** `logtoAuthConfig()` reads your env. No JWT template, no algorithm, no JWKS URL to copy.
 - **One source of truth across environments.** The frontend can pull its Logto config from the backend, so you configure Logto in exactly one place per environment — the Convex deployment.
 
-It uses Logto's **ID token** over OIDC, so Convex auto-discovers the signing key and algorithm (Logto signs with ES384). There is nothing about JWTs for you to configure.
+It uses Logto's **ID token** over OIDC, so Convex auto-discovers the signing key and JWKS — no JWT template, no algorithm, no JWKS URL to configure. (One Logto-side requirement: the OIDC signing key must be RSA/RS256 — see [step 1](#1-create-a-logto-app).)
 
 ## Install
 
@@ -24,7 +24,16 @@ pnpm add convex-logto @logto/react
 
 ### 1. Create a Logto app
 
-In Logto Console → **Applications** → create a **Single Page App**. Note the **endpoint** (e.g. `https://auth.example.com`) and the **App ID**. Under **Redirect URIs** add `http://localhost:5173/callback` (and your prod URL); under **Post sign-out redirect URIs** add your origin.
+In Logto Console → **Applications** → **Create application** → under **Single page app** pick your framework (e.g. **React**) — **not** a **Third-party app**. A third-party app is for letting *other people's* apps sign in through your Logto; it withholds the `profile` / `email` scopes this package requests, so sign-in fails with `invalid_scope`. The app type can't be changed after creation.
+
+Note the **endpoint** (e.g. `https://auth.example.com`) and the **App ID**, and add two URLs on the app (for each environment):
+
+- **Redirect URIs** → `http://localhost:5173/callback` (and your prod callback)
+- **Post sign-out redirect URIs** → `http://localhost:5173` (your app's origin, and your prod origin)
+
+`signIn()` returns to the redirect URI and `signOut()` to the post-sign-out URI, so remember to add both.
+
+**Required — use an RSA signing key.** Convex only accepts ID tokens signed with **RS256** (or EdDSA); Logto signs with **ES384** by default, which Convex silently rejects (sign-in looks fine, but `ctx.auth.getUserIdentity()` returns `null`). Rotate it once per tenant: Logto Console → **Tenant settings → OIDC configs** → **OIDC private keys** → **Rotate private key** → choose **RSA**. Logto keeps the old key during a transition, so existing sessions stay signed in.
 
 ### 2. Set the config on your Convex deployment (only place needed)
 
@@ -87,9 +96,9 @@ function Header() {
   const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
   if (isLoading) return null;
   return isAuthenticated ? (
-    <button onClick={() => signOut()}>Sign out ({user?.email})</button>
+    <button onClick={() => void signOut()}>Sign out ({user?.email ?? user?.sub})</button>
   ) : (
-    <button onClick={() => signIn()}>Sign in</button>
+    <button onClick={() => void signIn()}>Sign in</button>
   );
 }
 ```
@@ -117,112 +126,56 @@ Create one Logto app per environment (dev / staging / prod — best practice, so
 
 ```bash
 # dev deployment
-npx convex env set LOGTO_APP_ID <dev-app-id>
+npx convex env set LOGTO_ENDPOINT https://your-logto.example.com
+npx convex env set LOGTO_APP_ID   <dev-app-id>
 # production deployment
-npx convex env set --prod LOGTO_APP_ID <prod-app-id>
+npx convex env set --prod LOGTO_ENDPOINT https://your-logto.example.com
+npx convex env set --prod LOGTO_APP_ID   <prod-app-id>
 # staging: target that deployment the same way
 ```
 
-Same code everywhere. Switching environments = pointing `VITE_CONVEX_URL` at a different deployment. Nothing to recompile, nothing to copy twice.
-
-### Prefer literal values instead?
-
-If you'd rather not add the config query, pass the values directly (e.g. from `import.meta.env`). Then the frontend needs its own `VITE_LOGTO_*` vars per environment:
-
-```tsx
-<ConvexLogtoProvider
-  client={convex}
-  endpoint={import.meta.env.VITE_LOGTO_ENDPOINT}
-  appId={import.meta.env.VITE_LOGTO_APP_ID}
->
-```
+Same code everywhere. The only thing that changes per environment is which Convex deployment `VITE_CONVEX_URL` points at — there's no Logto config to duplicate or keep in sync.
 
 ## Optional: sync Logto users into a table
 
-If you want a queryable `users` table (to list users, store roles, or join app data), add a webhook sync. It mirrors `@convex-dev/workos-authkit`'s ergonomics.
-
-### 1. Schema
+You don't need a table to authenticate — identity comes from the token, so attach
+your data to your own tables keyed by `identity.subject`. Add a `users` table only
+when you need to query users (an admin list, another user's name) or store fields
+the token doesn't carry (a per-app **role**). The table is **yours**; the package
+just provides the webhook glue.
 
 ```ts
-// convex/schema.ts
+// convex/schema.ts — fields grouped by who owns them
 users: defineTable({
-  authId: v.string(),            // Logto user id (== identity.subject)
-  email: v.string(),
-  name: v.string(),
-  role: v.string(),              // for RBAC, if you want it
-}).index("authId", ["authId"]),
+  authId: v.string(), // == identity.subject
+  email: v.optional(v.string()), // Logto-owned (synced)
+  name: v.optional(v.string()), // Logto-owned (synced)
+  role: v.union(v.literal("user"), v.literal("admin")), // app-owned (RBAC)
+  status: v.union(v.literal("active"), v.literal("suspended"), v.literal("deleted")),
+}).index("by_authId", ["authId"]),
 ```
 
-### 2. Map events to your table
+Three rules keep it correct:
 
-```ts
-// convex/logto.ts  (alongside `config` from above)
-import { logtoSync } from "convex-logto";
-import type { DataModel } from "./_generated/dataModel";
+- **The webhook writes only Logto-owned fields (`email`, `name`, `status`), never
+  `role`** — otherwise a Logto profile edit would reset everyone's role.
+- **The webhook never creates rows — it only syncs existing ones.** `User.Created`
+  doesn't fire for users who already existed in Logto, so create rows from an
+  authenticated mutation on first load (get-or-create) and let the webhook keep them
+  in sync. (Webhook-only creation is the bug that bites component-owned auth tables.)
+- **Soft-delete on `User.Deleted`** — scrub PII but keep a tombstone row, so authz
+  fails closed and nothing referencing the user by id dangles.
 
-const upsert = async (ctx, u) => {
-  const existing = await ctx.db
-    .query("users")
-    .withIndex("authId", (q) => q.eq("authId", u.id))
-    .unique();
-  const fields = { email: u.primaryEmail ?? "", name: u.name ?? "" };
-  if (existing) await ctx.db.patch(existing._id, fields);
-  else await ctx.db.insert("users", { authId: u.id, role: "user", ...fields });
-};
+Full walkthrough — `logtoSync` handlers, `registerLogtoWebhook`, signing-key setup,
+and `requireRole` authz — in the [Webhook sync guide][webhook-sync] and the runnable
+[`tanstack-router-spa`][spa-example] example.
 
-export const { sync } = logtoSync<DataModel>({
-  "User.Created": upsert,
-  "User.Data.Updated": upsert,
-  "User.Deleted": async (ctx, u) => {
-    const row = await ctx.db
-      .query("users")
-      .withIndex("authId", (q) => q.eq("authId", u.id))
-      .unique();
-    if (row) await ctx.db.delete(row._id);
-  },
-});
-```
-
-### 3. Register the route
-
-```ts
-// convex/http.ts
-import { httpRouter } from "convex/server";
-import { registerLogtoWebhook } from "convex-logto";
-import { internal } from "./_generated/api";
-
-const http = httpRouter();
-registerLogtoWebhook(http, internal.logto.sync); // serves POST /logto/webhook
-export default http;
-```
-
-### 4. Create the webhook in Logto
-
-Logto Console → **Webhooks** → new webhook pointed at `<your-convex-site-url>/logto/webhook` (your Convex **HTTP Actions** URL, e.g. `https://happy-otter-123.convex.site/logto/webhook`). Subscribe to `User.Created`, `User.Data.Updated`, `User.Deleted`, and copy the **Signing key** — the one Logto value that *is* a secret:
-
-```bash
-npx convex env set LOGTO_WEBHOOK_SIGNING_KEY <signing-key>
-```
-
-The signature is verified with Web Crypto (HMAC-SHA256) inside the Convex runtime; bad signatures get a 401.
-
-### RBAC
-
-Store a `role` on the synced user (above), then gate in Convex by loading the row via `identity.subject`:
-
-```ts
-const user = await ctx.db
-  .query("users")
-  .withIndex("authId", (q) => q.eq("authId", identity.subject))
-  .unique();
-if (user?.role !== "admin") throw new Error("forbidden");
-```
-
-Keep the ability map in your app — the package stays out of your authorization policy.
+[webhook-sync]: https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/webhook-sync.mdx
+[spa-example]: https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-router-spa
 
 ## Why the ID token (and why there's no JWT config)
 
-Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`, which Convex does not accept ([convex#75](https://github.com/get-convex/convex-backend/issues/75)), so this package returns the ID token. Because it goes through Convex's **OIDC** provider (not Custom JWT), Convex reads the issuer's discovery document and JWKS itself — including the signing algorithm (Logto uses **ES384**). That is why you never set an algorithm or a JWKS URL. Sessions refresh via Logto's refresh token, which is why `ConvexLogtoProvider` requests the `offline_access` scope by default.
+Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`, which Convex does not accept ([convex#75](https://github.com/get-convex/convex-backend/issues/75)), so this package returns the ID token. Because it goes through Convex's **OIDC** provider (not Custom JWT), Convex reads the issuer's discovery document and JWKS itself, so you never set an algorithm or a JWKS URL — with one catch: Convex's OIDC verifier accepts only **RS256**/**EdDSA**, while Logto signs with **ES384** by default, so you rotate the Logto OIDC signing key to **RSA** once (step 1). A mismatch is rejected silently (`getUserIdentity()` returns `null`). Sessions refresh via Logto's refresh token, which is why `ConvexLogtoProvider` requests the `offline_access` scope by default.
 
 ## API
 
@@ -233,12 +186,12 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 | `logtoSync<DataModel>(handlers)` | `convex-logto` | Returns `{ sync }`, an internal mutation mapping user events to your tables. |
 | `registerLogtoWebhook(http, sync, opts?)` | `convex-logto` | Registers the verified webhook route. Reads `LOGTO_WEBHOOK_SIGNING_KEY`. |
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
-| `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto callback in one provider. Takes `configQuery` or `endpoint`+`appId`. |
+| `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Pulls Logto config from the backend via `configQuery`. |
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
 
 ### Next.js note
 
-`ConvexLogtoProvider` and `useLogtoAuth` are client-only (they use React hooks and `window`). In the Next.js App Router, render them inside a `"use client"` component.
+`ConvexLogtoProvider` and `useLogtoAuth` use React hooks (and `window` for sign-in / sign-out), so in the Next.js App Router render them from a `"use client"` component — the provider is SSR-safe within that boundary.
 
 ## License
 
