@@ -79,9 +79,9 @@ export type ConvexLogtoProviderProps = {
   /**
    * Native sign-in callback URI — your `app.json` `scheme` plus a path, e.g.
    * `io.logto://callback`. Must be registered as a Redirect URI on the Logto app.
-   * Used as the default for `useLogtoAuth().signIn()`.
+   * `useLogtoAuth().signIn()` uses this; pass an argument to `signIn` to override.
    */
-  redirectUri?: string;
+  redirectUri: string;
   /** Extra scopes. `openid`, `profile`, `offline_access`, and `email` are always included. */
   scopes?: string[];
   /** API resource indicators to request, if any. */
@@ -193,11 +193,12 @@ export type LogtoAuth = {
    */
   signIn: (redirectUri?: string) => Promise<void>;
   /**
-   * Sign out. On native this clears the local session by default (it does not
-   * open the browser); pass a registered post-sign-out URI to end the Logto
-   * session in the browser too.
+   * Sign out: revokes the tokens and clears local storage. Unlike the web, it
+   * does not open the browser — `@logto/rn` skips the federated sign-out flow by
+   * default — so the Logto SSO session in the system browser may persist and a
+   * later sign-in can be seamless.
    */
-  signOut: (postLogoutRedirectUri?: string) => Promise<void>;
+  signOut: () => Promise<void>;
 };
 
 /**
@@ -246,10 +247,7 @@ export function useLogtoAuth(): LogtoAuth {
     },
     [signIn, defaultRedirectUri],
   );
-  const doSignOut = useCallback(
-    (postLogoutRedirectUri?: string) => signOut(postLogoutRedirectUri),
-    [signOut],
-  );
+  const doSignOut = useCallback(() => signOut(), [signOut]);
 
   return useMemo(
     () => ({

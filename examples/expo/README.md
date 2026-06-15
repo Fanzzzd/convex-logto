@@ -45,10 +45,10 @@ entry on top of [`@logto/rn`](https://github.com/logto-io/react-native).
 
 ## Requires a development build
 
-`@logto/rn` uses native modules (`expo-secure-store`, `expo-crypto`, `expo-web-browser`),
-so it is **not** compatible with **Expo Go on Android** — use a development build
-(`npx expo run:android` / `run:ios`, or an EAS dev build). iOS Simulator via
-`expo run:ios` works.
+`@logto/rn` returns from sign-in via your custom `io.logto://` scheme, which
+**Expo Go on Android can't register** — so use a development build on Android
+(`npx expo run:android`, or an EAS dev build). A dev build (`expo run:ios` /
+`run:android`) is the reliable path on both platforms.
 
 ## A note on Expo SDK / `@logto/rn` versions
 

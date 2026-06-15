@@ -8,8 +8,9 @@ built on [`@logto/rn`](https://github.com/logto-io/react-native). The backend is
 **identical** to the web setup — only the frontend provider differs.
 
 <Callout>
-`@logto/rn` uses native modules, so it does **not** run in **Expo Go on Android** —
-use a development build (`npx expo run:android` / `run:ios`, or an EAS dev build).
+`@logto/rn` signs in through the system browser and returns via your custom
+`io.logto://` scheme, which **Expo Go on Android can't register** — so use a
+development build (`npx expo run:android` / `run:ios`, or an EAS dev build).
 </Callout>
 
 ## Install
@@ -154,7 +155,7 @@ Full runnable app: [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tre
 | SDK | `@logto/react` | `@logto/rn` |
 | Sign-in callback | a `/callback` route you add | none — `signIn` resolves in place |
 | `signIn()` default | `${origin}/callback` | the provider's `redirectUri` |
-| Sign-out | federated redirect to origin | clears the local session by default |
+| Sign-out | federated redirect to origin | revokes tokens + clears storage (no browser) |
 | Loading | SSR-safe, renders children immediately | `fallback` covers the one-time config fetch |
 
 Everything else — `logtoAuthConfig`, `logtoConfigQuery`, the webhook
