@@ -1,5 +1,13 @@
 # convex-logto
 
+## 0.3.1
+
+### Patch Changes
+
+- [#7](https://github.com/Fanzzzd/convex-logto/pull/7) [`1daaf39`](https://github.com/Fanzzzd/convex-logto/commit/1daaf3931a55f0f85dd98973d4ef4b80d8de79b0) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Clarify the `convex-logto/native` `fallback` JSDoc: it renders during the one-time
+  config fetch, before the Convex provider mounts, so Convex's `<AuthLoading>` belongs
+  in your app's children — not inside `fallback`.
+
 ## 0.3.0
 
 ### Minor Changes
