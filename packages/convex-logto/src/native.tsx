@@ -87,10 +87,11 @@ export type ConvexLogtoProviderProps = {
   /** API resource indicators to request, if any. */
   resources?: string[];
   /**
-   * Rendered during the one-time backend config fetch. Unlike the web provider,
-   * native has no inert-client trick, so children mount only once `{ endpoint,
-   * appId }` arrives. Default `null`. Use Convex's `<AuthLoading>` inside for the
-   * subsequent auth handshake.
+   * A splash rendered during the one-time backend config fetch. Native has no
+   * inert-client trick (unlike the web provider), so children — and the Convex
+   * provider — mount only once `{ endpoint, appId }` arrives. Default `null`.
+   * Convex's `<AuthLoading>` then covers the sign-in handshake from inside your
+   * app, not from `fallback` (which renders before Convex is mounted).
    */
   fallback?: ReactNode;
   children: ReactNode;
