@@ -1,5 +1,18 @@
 # convex-logto
 
+## 0.3.0
+
+### Minor Changes
+
+- [#5](https://github.com/Fanzzzd/convex-logto/pull/5) [`0296a82`](https://github.com/Fanzzzd/convex-logto/commit/0296a82f00bd269dc205e4d9fb786089e59f429a) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Add React Native / Expo support via a new `convex-logto/native` entry.
+
+  `ConvexLogtoProvider` and `useLogtoAuth` now have native counterparts built on
+  `@logto/rn` (added as an optional peer dependency). The server APIs
+  (`logtoAuthConfig`, `logtoConfigQuery`, the webhook sync) are unchanged and fully
+  shared. On native, `signIn` opens the system browser and resolves on the deep-link
+  return — there's no callback route to add, and `signIn()` defaults to the
+  provider's `redirectUri`. See the new React Native guide and the `examples/expo` app.
+
 ## 0.2.0
 
 ### Minor Changes
