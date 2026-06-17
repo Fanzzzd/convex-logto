@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import type { HttpRouter } from "convex/server";
+import { httpRouter } from "convex/server";
 import { describe, expect, it, vi } from "vitest";
 import { registerLogtoWebhook, verifyLogtoSignature } from "./webhooks";
 
@@ -90,9 +90,12 @@ describe("verifyLogtoSignature", () => {
   });
 });
 
-// The handler registered via `http.route` is an `httpActionGeneric` wrapper;
-// convex attaches the raw `(ctx, request) => Response` function as `._handler`,
-// which lets us assert the route's status-code contract without a Convex runtime.
+// `registerLogtoWebhook` calls `http.route` with an `httpActionGeneric` wrapper.
+// We register it on a real `httpRouter()` and resolve it back with `http.lookup`
+// — the same path + method matching Convex's runtime uses — so a route registered
+// at the wrong path or method fails these tests, not just a status-code regression.
+// Convex attaches the raw `(ctx, request) => Response` as `._handler`, which lets
+// us drive the handler directly without a Convex runtime.
 type RouteHandler = (
   ctx: { runMutation: (ref: unknown, args: unknown) => Promise<unknown> },
   request: Request,
@@ -102,15 +105,16 @@ function captureWebhookRoute(options?: {
   path?: string;
   signingKey?: string;
 }): RouteHandler {
-  let registered: { handler?: { _handler?: RouteHandler } } | undefined;
-  const http = {
-    route: (route: { handler?: { _handler?: RouteHandler } }) => {
-      registered = route;
-    },
-  } as unknown as HttpRouter;
+  const http = httpRouter();
   // `sync` is only forwarded to `ctx.runMutation`; an opaque ref is enough here.
   registerLogtoWebhook(http, {} as never, options);
-  const handler = registered?.handler?._handler;
+  const path = options?.path ?? "/logto/webhook";
+  const match = http.lookup(path, "POST");
+  if (!match) throw new Error(`no POST route registered at ${path}`);
+  // Bracket access: `_handler` is convex's internal, not part of its public type.
+  const handler = (match[0] as unknown as Record<string, RouteHandler>)[
+    "_handler"
+  ];
   if (!handler) throw new Error("webhook route handler was not captured");
   return handler;
 }
@@ -184,5 +188,18 @@ describe("registerLogtoWebhook route", () => {
     expect(runMutation).toHaveBeenCalledWith(expect.anything(), {
       payload: expect.objectContaining({ event: "User.Created" }),
     });
+  });
+
+  it("honors a custom path and dispatches there", async () => {
+    // captureWebhookRoute looks up this exact path, so it already asserts the
+    // `path` option is wired through; confirm the handler then works end-to-end.
+    const handler = captureWebhookRoute({ signingKey, path: "/hooks/logto" });
+    const runMutation = vi.fn().mockResolvedValue(null);
+    const res = await handler(
+      { runMutation },
+      post(sign(signingKey, body), body),
+    );
+    expect(res.status).toBe(200);
+    expect(runMutation).toHaveBeenCalledTimes(1);
   });
 });

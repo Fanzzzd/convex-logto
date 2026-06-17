@@ -15,4 +15,7 @@ Each is a standalone app — see its README to run it.
 > the `convex/` backend code is identical everywhere, so a Vite, Next.js, or Expo app wires them the same way.
 
 In this monorepo each example depends on the package via `convex-logto: workspace:*`.
-Standalone, install it from npm: `npm i convex-logto @logto/react`.
+Standalone, install it from npm with the Logto peer for your platform:
+
+- Web (Vite / Next.js / TanStack): `npm i convex-logto @logto/react`
+- React Native / Expo: `npm i convex-logto @logto/rn` (plus the Expo modules — see the [`expo`](./expo) README)
