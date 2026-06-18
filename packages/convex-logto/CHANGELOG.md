@@ -1,5 +1,14 @@
 # convex-logto
 
+## 0.3.2
+
+### Patch Changes
+
+- [#9](https://github.com/Fanzzzd/convex-logto/pull/9) [`5857537`](https://github.com/Fanzzzd/convex-logto/commit/5857537bcb3b881213371d43e5237f1aaa3aec49) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Docs: the README install command now covers React Native / Expo. The npm front
+  page only showed `pnpm add convex-logto @logto/react`, which installs the wrong
+  Logto peer for native apps — they need `@logto/rn`. Added a one-line note pointing
+  native users at `@logto/rn` (everything else is identical). No code change.
+
 ## 0.3.1
 
 ### Patch Changes
