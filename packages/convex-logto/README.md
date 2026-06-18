@@ -18,7 +18,9 @@ It uses Logto's **ID token** over OIDC, so Convex auto-discovers the signing key
 pnpm add convex-logto @logto/react
 ```
 
-`convex` and `react` are peers you already have.
+`convex` and `react` are peers you already have. For **React Native / Expo**, install
+`@logto/rn` in place of `@logto/react` — everything else is the same (see
+[React Native / Expo](#react-native--expo)).
 
 ## Quick start
 
