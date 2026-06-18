@@ -127,18 +127,39 @@ export default http;
 
 ## 4. Create the webhook in Logto
 
-Logto Console → **Webhooks** → new webhook pointed at
-`<your-convex-site-url>/logto/webhook` (your Convex **HTTP Actions** URL, e.g.
-`https://happy-otter-123.convex.site/logto/webhook`). Subscribe to the events you
-handle — `User.Data.Updated`, `User.SuspensionStatus.Updated`, and `User.Deleted` —
-then copy the **Signing key**, the one Logto value that _is_ a secret:
+Logto Console → **Webhooks** → **Create webhook**, pointed at
+`<your-convex-site-url>/logto/webhook`. That's your Convex **HTTP Actions** URL —
+the `.convex.site` one, **not** `.convex.cloud` — e.g.
+`https://happy-otter-123.convex.site/logto/webhook`. Find it in the Convex dashboard
+on your deployment's **Settings** page (it lists both URLs); each deployment has its
+own, so use the dev URL while developing and the prod URL in production.
+
+Under the **Data mutation** events, subscribe to the ones you handle —
+`User.Data.Updated`, `User.SuspensionStatus.Updated`, and `User.Deleted`. Subscribing
+to `User.Created` as well is harmless: with no handler mapped for it the route just
+answers `200` and does nothing — new rows come from your authenticated mutation
+(section 2), not the webhook.
+
+Then copy the **Signing key**, the one Logto value that _is_ a secret:
 
 ```bash
 npx convex env set LOGTO_WEBHOOK_SIGNING_KEY <signing-key>
 ```
 
-The signature is verified with Web Crypto (HMAC-SHA256) inside the Convex runtime;
-bad signatures get a 401.
+The signature is verified with Web Crypto (HMAC-SHA256) inside the Convex runtime.
+
+**Confirm it's wired.** The definitive check is a real event: change a test user's
+profile in Logto (fires `User.Data.Updated`), then watch your Convex logs
+(dashboard → **Logs**, or `npx convex logs`) for `POST /logto/webhook`. Logto's
+**Send test payload** button is a quick reachability check too — though it sends a
+synthetic payload, so read the status it gets back rather than expecting a `200`:
+
+| Status | Meaning |
+| --- | --- |
+| `200` | Verified and dispatched to your `sync` mutation. |
+| `400` | Body wasn't valid JSON, or wasn't a recognized `User.*` event. |
+| `401` | Signature didn't match — wrong (or unset) `LOGTO_WEBHOOK_SIGNING_KEY`. |
+| `500` | `LOGTO_WEBHOOK_SIGNING_KEY` isn't set on the deployment. |
 
 ## RBAC
 

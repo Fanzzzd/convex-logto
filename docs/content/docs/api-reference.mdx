@@ -1,6 +1,6 @@
 ---
 title: API reference
-description: Every export from convex-logto and convex-logto/react, with signatures.
+description: Every export from convex-logto, convex-logto/react, and convex-logto/native, with signatures.
 ---
 
 ## Exports
@@ -14,6 +14,8 @@ description: Every export from convex-logto and convex-logto/react, with signatu
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
 | `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Pulls Logto config from the backend via `configQuery`. |
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
+| `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `configQuery` model; no callback route. |
+| `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signOut()` takes no argument. |
 
 ## Backend
 
@@ -92,4 +94,44 @@ Returns `{ isAuthenticated, isLoading, user, signIn, signOut }`.
 
 ```tsx
 const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
+```
+
+## Native (`convex-logto/native`)
+
+For React Native / Expo, built on [`@logto/rn`](https://github.com/logto-io/react-native).
+The backend exports above are identical — only the frontend provider differs. Full
+walkthrough in [React Native (Expo)](/docs/react-native).
+
+### `ConvexLogtoProvider` (native)
+
+Wires Logto to Convex on native: pulls `{ endpoint, appId }` from the backend via
+`configQuery`. There is **no callback route** — `signIn` opens the system browser and
+resolves when the deep link returns.
+
+```tsx
+<ConvexLogtoProvider
+  client={convex}
+  configQuery={api.logto.config}
+  redirectUri="io.logto://callback"
+>
+  <App />
+</ConvexLogtoProvider>
+```
+
+| Prop | Required | Purpose |
+| --- | --- | --- |
+| `client` | yes | Your `ConvexReactClient`. |
+| `configQuery` | yes | Ref to the `logtoConfigQuery()` export, e.g. `api.logto.config`. |
+| `redirectUri` | **yes** | Native callback URI — your `app.json` `scheme` plus a path (e.g. `io.logto://callback`), registered on the Logto app. The default for `signIn()`. |
+| `fallback` | — | Rendered during the one-time config fetch, before the Convex provider mounts. Default `null`. |
+| `scopes` / `resources` | — | Extra OIDC scopes / API resources. `openid`, `profile`, `offline_access`, and `email` are always included. |
+
+### `useLogtoAuth()` (native)
+
+Returns `{ isAuthenticated, isLoading, user, signIn, signOut }`. `signIn(redirectUri?)`
+defaults to the provider's `redirectUri`; **`signOut()` takes no argument** — on native
+it revokes the tokens and clears local storage (no browser / federated sign-out).
+
+```tsx
+const { isAuthenticated, user, signIn, signOut } = useLogtoAuth();
 ```
