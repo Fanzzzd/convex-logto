@@ -1,5 +1,12 @@
 # convex-logto-example-expo
 
+## 1.0.4
+
+### Patch Changes
+
+- Updated dependencies [[`0f2e2d5`](https://github.com/Fanzzzd/convex-logto/commit/0f2e2d55d57778582ef44711a155f3aa2afe2bcc)]:
+  - convex-logto@0.3.3
+
 ## 1.0.3
 
 ### Patch Changes

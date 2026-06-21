@@ -1,5 +1,31 @@
 # convex-logto
 
+## 0.3.3
+
+### Patch Changes
+
+- [#12](https://github.com/Fanzzzd/convex-logto/pull/12) [`0f2e2d5`](https://github.com/Fanzzzd/convex-logto/commit/0f2e2d55d57778582ef44711a155f3aa2afe2bcc) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Fix a transient `{ isLoading: false, isAuthenticated: false }` window right after
+  sign-in that made `useLogtoAuth()` look logged-out while Convex was still
+  validating the freshly-issued ID token. A TanStack Router `beforeLoad` guard (or
+  any auth gate that acts on that tick) would redirect the just-signed-in user away
+  — and bounce into an infinite loop if the sign-in route auto-restarts `signIn()`
+  (issue [#11](https://github.com/Fanzzzd/convex-logto/issues/11)).
+
+  Both entries are fixed:
+
+  - **Web (`convex-logto/react`):** the bridge keeps reporting `isLoading: true`
+    while a sign-in callback is in flight (an unconsumed `code` in the URL and Logto
+    not yet authenticated), so guards wait the validation window out instead of
+    seeing a state indistinguishable from a clean logout.
+  - **Native (`convex-logto/native`):** `@logto/rn` flips `isAuthenticated` true the
+    instant `signIn()` resolves, with no loading signal of its own. The bridge now
+    emits one loading frame on that transition — reported as not-yet-authenticated —
+    so Convex resets cleanly to "validating" instead of surfacing the logged-out
+    tick, with no auth churn once the token validates.
+
+  Post-login token refreshes still don't flicker the identity, and a genuine
+  logged-out visit still settles to signed-out as before.
+
 ## 0.3.2
 
 ### Patch Changes
