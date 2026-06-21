@@ -19,6 +19,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { nextAuthLoading } from "./auth-loading";
 import { type SignInOutcome, classifySignInSearch } from "./callback";
 import type { LogtoConfigQueryRef, LogtoPublicConfig } from "./config";
 
@@ -34,13 +35,24 @@ function useAuthFromLogto() {
     clearAccessToken,
   } = useLogto();
 
+  // A `/callback?code=` exchange is in flight: the SDK has the code but hasn't
+  // authenticated yet. Hold `isLoading` true through it so Convex never sees a
+  // transient logged-out tick that route guards mistake for a sign-out (#11).
+  const search = typeof window === "undefined" ? "" : window.location.search;
+  const authFlowPending =
+    !isAuthenticated && classifySignInSearch(search).kind === "pending";
+
   // `@logto/react` toggles `isLoading` around every SDK call; forwarding that to
-  // Convex creates a token-fetch ↔ loading feedback loop that flickers the
-  // identity. Latch on the first settle and ignore the churn after.
+  // Convex flickers the identity. Latch on the first settle and ignore the churn.
   const [settled, setSettled] = useState(false);
+  const { settled: shouldSettle, isLoading: reportedLoading } = nextAuthLoading(
+    settled,
+    isLoading,
+    authFlowPending,
+  );
   useEffect(() => {
-    if (!isLoading) setSettled(true);
-  }, [isLoading]);
+    if (shouldSettle) setSettled(true);
+  }, [shouldSettle]);
 
   const fetchAccessToken = useCallback(
     async ({ forceRefreshToken }: { forceRefreshToken: boolean }) => {
@@ -63,8 +75,8 @@ function useAuthFromLogto() {
   );
 
   return useMemo(
-    () => ({ isLoading: !settled, isAuthenticated, fetchAccessToken }),
-    [settled, isAuthenticated, fetchAccessToken],
+    () => ({ isLoading: reportedLoading, isAuthenticated, fetchAccessToken }),
+    [reportedLoading, isAuthenticated, fetchAccessToken],
   );
 }
 

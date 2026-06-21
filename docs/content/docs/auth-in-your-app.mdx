@@ -165,7 +165,9 @@ A few things make this robust:
 
 - **Check `isLoading` first.** `isAuthenticated` is `false` while auth is still
   settling, so without the `if (context.auth.isLoading) return` you'd redirect a
-  signed-in user on every reload.
+  signed-in user on every reload — and bounce a just-returned user mid sign-in
+  callback. The bridge keeps `isLoading` `true` across that whole validation
+  window, so the guard waits instead of redirecting.
 - **The `router.invalidate()` effect is required** — it's what re-runs the guard
   when auth resolves. Depend on `[auth.isLoading, auth.isAuthenticated]`.
 - **Give the route a `pendingComponent`** (with `defaultPendingMs: 0`) so the

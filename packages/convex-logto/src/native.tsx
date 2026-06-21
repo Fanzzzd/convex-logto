@@ -19,6 +19,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { useNativeAuthState } from "./auth-loading";
 import type { LogtoConfigQueryRef, LogtoPublicConfig } from "./config";
 
 /**
@@ -26,15 +27,22 @@ import type { LogtoConfigQueryRef, LogtoPublicConfig } from "./config";
  * expects — the React Native counterpart of `useAuthFromLogto` in `react.tsx`.
  *
  * `@logto/rn` exposes `getIdToken()` (the raw JWT Convex validates) just like the
- * web SDK, but differs in two ways the bridge accounts for:
- *   - it has no `isLoading`; `isInitialized` is a one-way false→true latch, so we
- *     map `isLoading: !isInitialized` directly (no "settle latch" needed on web);
+ * web SDK, but differs in ways the bridge accounts for:
+ *   - it has no `isLoading` churn; `isInitialized` is a one-way false→true latch;
+ *   - it flips `isAuthenticated` true the instant `signIn()` resolves, so we feed a
+ *     one-render loading pulse on that transition via `useNativeAuthState` (#11);
  *   - it has no top-level `clearAccessToken`, so the force-refresh path reaches it
  *     through the underlying `client` (`@logto/client`'s `LogtoClient`).
  */
 function useAuthFromLogto() {
   const { isAuthenticated, isInitialized, getIdToken, getAccessToken, client } =
     useLogto();
+
+  // One loading frame on the render Logto first authenticates, reported as
+  // not-yet-authenticated, so Convex resets cleanly instead of surfacing the
+  // logged-out tick (issue #11; see `useNativeAuthState`).
+  const { isLoading, isAuthenticated: reportedAuthenticated } =
+    useNativeAuthState(isInitialized, isAuthenticated);
 
   const fetchAccessToken = useCallback(
     async ({ forceRefreshToken }: { forceRefreshToken: boolean }) => {
@@ -57,8 +65,12 @@ function useAuthFromLogto() {
   );
 
   return useMemo(
-    () => ({ isLoading: !isInitialized, isAuthenticated, fetchAccessToken }),
-    [isInitialized, isAuthenticated, fetchAccessToken],
+    () => ({
+      isLoading,
+      isAuthenticated: reportedAuthenticated,
+      fetchAccessToken,
+    }),
+    [isLoading, reportedAuthenticated, fetchAccessToken],
   );
 }
 
