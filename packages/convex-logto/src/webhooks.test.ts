@@ -1,7 +1,11 @@
 import { createHmac } from "node:crypto";
 import { httpRouter } from "convex/server";
 import { describe, expect, it, vi } from "vitest";
-import { registerLogtoWebhook, verifyLogtoSignature } from "./webhooks";
+import {
+  logtoSync,
+  registerLogtoWebhook,
+  verifyLogtoSignature,
+} from "./webhooks";
 
 const signingKey = "whsec_test_signing_key_1234567890";
 const body = JSON.stringify({
@@ -201,5 +205,97 @@ describe("registerLogtoWebhook route", () => {
     );
     expect(res.status).toBe(200);
     expect(runMutation).toHaveBeenCalledTimes(1);
+  });
+});
+
+// `logtoSync` returns an internal mutation; Convex attaches the raw handler as
+// `._handler`, which lets us drive the dispatch logic directly with a fake ctx
+// (no Convex runtime). Type-level coverage of the `ctx.db` cast lives in
+// webhooks.test-d.ts (checked by `tsc`, not vitest).
+type SyncHandler = (
+  ctx: unknown,
+  args: { payload: unknown },
+) => Promise<unknown>;
+const callSync = (
+  sync: unknown,
+  ctx: unknown,
+  payload: unknown,
+): Promise<unknown> =>
+  // Bracket access: `_handler` is convex's internal, not part of its public type.
+  (sync as unknown as Record<string, SyncHandler>)["_handler"](ctx, {
+    payload,
+  });
+
+describe("logtoSync dispatch", () => {
+  it("dispatches an event to its handler with (ctx, user, payload)", async () => {
+    const seen: Array<{ ctx: unknown; user: unknown; payload: unknown }> = [];
+    const { sync } = logtoSync({
+      "User.Data.Updated": async (ctx, user, payload) => {
+        seen.push({ ctx, user, payload });
+      },
+    });
+    const ctx = { db: {} };
+    const payload = {
+      event: "User.Data.Updated",
+      hookId: "h",
+      createdAt: "t",
+      data: { id: "u1", primaryEmail: "a@b.com" },
+    };
+    await callSync(sync, ctx, payload);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.ctx).toBe(ctx); // ctx forwarded verbatim (the `as` cast is identity at runtime)
+    expect(seen[0]?.user).toEqual({ id: "u1", primaryEmail: "a@b.com" });
+    expect(seen[0]?.payload).toBe(payload);
+  });
+
+  it("synthesizes { id } from params.userId for User.Deleted (data: null)", async () => {
+    let got: unknown;
+    const { sync } = logtoSync({
+      "User.Deleted": async (_ctx, user) => {
+        got = user;
+      },
+    });
+    await callSync(
+      sync,
+      { db: {} },
+      {
+        event: "User.Deleted",
+        hookId: "h",
+        createdAt: "t",
+        data: null,
+        params: { userId: "u2" },
+      },
+    );
+    expect(got).toEqual({ id: "u2" });
+  });
+
+  it("is a no-op (resolves null) when no handler is mapped for the event", async () => {
+    const { sync } = logtoSync({});
+    await expect(
+      callSync(
+        sync,
+        { db: {} },
+        {
+          event: "User.Created",
+          hookId: "h",
+          createdAt: "t",
+          data: { id: "u3" },
+        },
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it("throws on a payload that isn't a known User.* event", async () => {
+    const { sync } = logtoSync({ "User.Created": async () => {} });
+    await expect(
+      callSync(
+        sync,
+        { db: {} },
+        {
+          event: "Organization.Created",
+          data: { id: "o1" },
+        },
+      ),
+    ).rejects.toThrow(/known Logto User\.\* event/);
   });
 });
