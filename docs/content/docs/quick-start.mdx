@@ -1,12 +1,20 @@
 ---
 title: Quick start
-description: Wire Logto auth into your Convex React app end to end, in six steps.
+description: Wire Logto auth into a Convex + Vite React app end to end, in six steps.
 ---
 
-Everything below is copy-pasteable; work top to bottom and your Convex functions will see a signed-in user.
+The **Vite + React** happy path — copy-pasteable, top to bottom, and your Convex
+functions will see a signed-in user. On **TanStack Router / Start, Next.js, or Expo**?
+Steps 1–3 are identical; the provider and callback differ — see
+[Integrations](/docs/vite).
 
-<Callout>
-Steps 4 and 5 differ by framework — pick yours in the tabs, and the choice follows you down the page.
+<Callout type="warn">
+**Before you start — rotate the Logto signing key to RSA.** Convex only accepts ID
+tokens signed with **RS256** (or EdDSA). Logto signs with **ES384** by default, which
+Convex rejects _silently_: sign-in looks like it works, but
+`ctx.auth.getUserIdentity()` returns `null`. In the Logto Console open **Tenant
+settings → OIDC configs → Rotate private keys** and choose **RSA**. One-time, per
+tenant; Logto keeps the old key during a transition, so existing sessions stay signed in.
 </Callout>
 
 ## Install
@@ -15,7 +23,7 @@ Steps 4 and 5 differ by framework — pick yours in the tabs, and the choice fol
 pnpm add convex-logto @logto/react
 ```
 
-`convex` and `react` are peers you already have.
+`convex` and `react` are peers you already have. (React Native? See [Expo](/docs/react-native).)
 
 ## 1. Create a Logto app
 
@@ -35,14 +43,6 @@ add two URLs on the app (for each environment):
 
 `signIn()` returns to the redirect URI and `signOut()` to the post-sign-out URI,
 so remember to add both.
-
-**Required — use an RSA signing key.** Convex only accepts ID tokens signed with
-**RS256** (or EdDSA). Logto signs with **ES384** by default, which Convex
-silently rejects: sign-in looks like it works, but `ctx.auth.getUserIdentity()`
-returns `null`. Rotate the key once per tenant — in the Logto Console, open **Tenant
-settings → OIDC configs**, click **Rotate private keys**, and choose **RSA** as
-the signing algorithm. Logto keeps the old key during a transition, so existing
-sessions stay signed in.
 
 ## 2. Set the config on your Convex deployment (only place needed)
 
@@ -70,12 +70,7 @@ export const config = logtoConfigQuery();
 
 ## 4. Wrap your app
 
-The frontend carries **no Logto config** — it asks the backend. Where the provider
-lives, the env var name, and whether you pass `navigate` depend on your framework:
-
-<Tabs groupId="framework" persist items={['Vite', 'TanStack Router', 'TanStack Start', 'Next.js']}>
-
-<Tab value="Vite">
+The frontend carries **no Logto config** — it asks the backend.
 
 ```tsx title="src/main.tsx"
 import { ConvexReactClient } from "convex/react";
@@ -91,138 +86,21 @@ root.render(
 );
 ```
 
-Full app: [`examples/vite-react`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react).
-
-</Tab>
-
-<Tab value="TanStack Router">
-
-```tsx title="src/main.tsx"
-const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
-
-root.render(
-  <ConvexLogtoProvider
-    client={convex}
-    configQuery={api.logto.config}
-    navigate={(to) => void router.navigate({ to })}
-  >
-    <RouterProvider router={router} />
-  </ConvexLogtoProvider>,
-);
-```
-
-Pass `navigate` so post-sign-in is a soft router navigation, not a full reload.
-Full app: [`examples/tanstack-router-spa`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-router-spa).
-
-</Tab>
-
-<Tab value="TanStack Start">
-
-One SSR-safe provider — the same one you'd use in a SPA, no client boundary needed.
-
-```tsx title="src/router.tsx"
-const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
-
-<ConvexLogtoProvider
-  client={convex}
-  configQuery={api.logto.config}
-  navigate={(to) => void router.navigate({ to })}
->
-  <RouterProvider router={router} />
-</ConvexLogtoProvider>;
-```
-
-Full app: [`examples/tanstack-start`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-start).
-
-</Tab>
-
-<Tab value="Next.js">
-
-The provider uses hooks and `window`, so it lives in a `"use client"` component;
-`app/layout.tsx` stays a Server Component and just renders it.
-
-```tsx title="app/providers.tsx"
-"use client";
-import { ConvexReactClient } from "convex/react";
-import { ConvexLogtoProvider } from "convex-logto/react";
-import { useRouter } from "next/navigation";
-import { api } from "../convex/_generated/api";
-
-const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
-
-export function Providers({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
-  return (
-    <ConvexLogtoProvider
-      client={convex}
-      configQuery={api.logto.config}
-      navigate={(to) => router.push(to)}
-    >
-      {children}
-    </ConvexLogtoProvider>
-  );
-}
-```
-
-Note `NEXT_PUBLIC_CONVEX_URL` — not `import.meta.env`.
-Full app: [`examples/nextjs`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs).
-
-</Tab>
-
-</Tabs>
+<Callout>
+Using a router or SSR framework? The provider mounts a little differently (where it
+lives, the env var name, and whether you pass `navigate`) — see
+[Integrations](/docs/tanstack-router) for TanStack Router / Start, Next.js, and Expo.
+</Callout>
 
 ## 5. Add a callback route
 
 `signIn()` lands on `/callback`. The provider finishes the OIDC code exchange
-automatically — the route just needs to render. Wire it the way your framework routes:
-
-<Tabs groupId="framework" persist items={['Vite', 'TanStack Router', 'TanStack Start', 'Next.js']}>
-
-<Tab value="Vite">
-
-No router — render a callback view when the path matches:
+automatically — the route just needs to render. In a plain Vite app with no router,
+render a callback view when the path matches:
 
 ```tsx title="src/App.tsx"
 if (window.location.pathname === "/callback") return <p>Finishing sign in…</p>;
 ```
-
-</Tab>
-
-<Tab value="TanStack Router">
-
-```tsx title="src/router.tsx"
-const callbackRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/callback",
-  component: () => <p>Finishing sign in…</p>,
-});
-```
-
-</Tab>
-
-<Tab value="TanStack Start">
-
-```tsx title="src/routes/callback.tsx"
-import { createFileRoute } from "@tanstack/react-router";
-export const Route = createFileRoute("/callback")({
-  component: () => <p>Finishing sign in…</p>,
-});
-```
-
-</Tab>
-
-<Tab value="Next.js">
-
-```tsx title="app/callback/page.tsx"
-// Server Component — the provider in app/providers.tsx finishes the exchange.
-export default function CallbackPage() {
-  return <p>Finishing sign in…</p>;
-}
-```
-
-</Tab>
-
-</Tabs>
 
 ## 6. Sign in, and read the user
 
@@ -257,4 +135,5 @@ export const me = query({
 });
 ```
 
-That is the whole auth setup. Many apps need nothing more.
+That is the whole auth setup. Many apps need nothing more — from here, see
+[Auth in your app](/docs/auth-in-your-app) to gate and route on auth state.

@@ -1,0 +1,42 @@
+---
+title: Vite + React
+description: Mount ConvexLogtoProvider in a Vite SPA — the Quick start, condensed to the Vite-specific pieces.
+---
+
+The [Quick start](/docs/quick-start) is the full Vite walkthrough. This page is the
+condensed reference for the two Vite-specific pieces — where the provider mounts and
+the callback route.
+
+<Callout>
+Backend setup (Logto app + RSA key, Convex env, `auth.config.ts`, `logtoConfigQuery`)
+is identical for every framework — see [Quick start](/docs/quick-start) steps 1–3.
+</Callout>
+
+## Provider
+
+A plain SPA needs no `navigate` — the provider falls back to a hard redirect after
+sign-in. (Add `navigate` once you have a router, as TanStack Router does below.)
+
+```tsx title="src/main.tsx"
+import { ConvexReactClient } from "convex/react";
+import { ConvexLogtoProvider } from "convex-logto/react";
+import { api } from "../convex/_generated/api";
+
+const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
+
+root.render(
+  <ConvexLogtoProvider client={convex} configQuery={api.logto.config}>
+    <App />
+  </ConvexLogtoProvider>,
+);
+```
+
+## Callback route
+
+No router — render a callback view when the path matches:
+
+```tsx title="src/App.tsx"
+if (window.location.pathname === "/callback") return <p>Finishing sign in…</p>;
+```
+
+Full app: [`examples/vite-react`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react).

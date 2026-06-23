@@ -1,12 +1,20 @@
 {
   "title": "Documentation",
   "pages": [
+    "---Get started---",
     "index",
     "quick-start",
+    "---Integrations---",
+    "vite",
+    "tanstack-router",
+    "tanstack-start",
+    "nextjs",
     "react-native",
+    "---Guides---",
     "auth-in-your-app",
-    "multiple-environments",
     "webhook-sync",
+    "multiple-environments",
+    "---Reference---",
     "api-reference",
     "how-it-works"
   ]

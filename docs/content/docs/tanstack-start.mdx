@@ -1,0 +1,35 @@
+---
+title: TanStack Start
+description: One SSR-safe ConvexLogtoProvider for TanStack Start — the same provider you'd use in a SPA, no client boundary.
+---
+
+Finish [Quick start](/docs/quick-start) steps 1–3, then mount the provider. TanStack
+Start renders on the server, but `ConvexLogtoProvider` is **SSR-safe**, so there's no
+client boundary to add — use the same single provider you'd use in a SPA.
+([How it works → Server-side rendering](/docs/how-it-works#server-side-rendering)
+explains the inert-client trick that makes this safe.)
+
+## Provider
+
+```tsx title="src/router.tsx"
+const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
+
+<ConvexLogtoProvider
+  client={convex}
+  configQuery={api.logto.config}
+  navigate={(to) => void router.navigate({ to })}
+>
+  <RouterProvider router={router} />
+</ConvexLogtoProvider>;
+```
+
+## Callback route
+
+```tsx title="src/routes/callback.tsx"
+import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/callback")({
+  component: () => <p>Finishing sign in…</p>,
+});
+```
+
+Full app: [`examples/tanstack-start`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-start).

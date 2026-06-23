@@ -1,0 +1,44 @@
+---
+title: TanStack Router
+description: Mount ConvexLogtoProvider in a TanStack Router SPA — soft navigation, a callback route, and beforeLoad guards.
+---
+
+Finish [Quick start](/docs/quick-start) steps 1–3 (the backend is framework-agnostic),
+then wire the provider and callback the TanStack Router way.
+
+## Provider
+
+Pass `navigate` so post-sign-in is a soft router navigation, not a full reload.
+
+```tsx title="src/main.tsx"
+const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
+
+root.render(
+  <ConvexLogtoProvider
+    client={convex}
+    configQuery={api.logto.config}
+    navigate={(to) => void router.navigate({ to })}
+  >
+    <RouterProvider router={router} />
+  </ConvexLogtoProvider>,
+);
+```
+
+## Callback route
+
+```tsx title="src/router.tsx"
+const callbackRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/callback",
+  component: () => <p>Finishing sign in…</p>,
+});
+```
+
+## Route guards
+
+For redirect-based protection you need auth **outside render**, in a route's
+`beforeLoad`. Lift `useLogtoAuth()` into the router `context` and guard there — the
+full pattern (with the `isLoading`-first check that avoids bouncing a just-returned
+user) is in [Auth in your app → Route guards](/docs/auth-in-your-app#route-guards-tanstack-router).
+
+Full app: [`examples/tanstack-router-spa`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-router-spa).
