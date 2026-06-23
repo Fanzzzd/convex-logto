@@ -32,7 +32,7 @@ function Home() {
           <pre className="overflow-x-auto rounded-xl border border-fd-border bg-fd-secondary/40 px-5 py-4 text-left font-mono text-sm">
             <code>
               <span className="text-fd-muted-foreground select-none">$ </span>
-              npm i convex-logto
+              npm i convex-logto @logto/react
             </code>
           </pre>
         </div>
