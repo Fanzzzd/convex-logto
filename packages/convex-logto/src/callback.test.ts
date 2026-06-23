@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifySignInSearch } from "./callback";
+import { callbackResolved, classifySignInSearch } from "./callback";
 
 describe("classifySignInSearch", () => {
   it("ignores URLs without a `state` param (not a sign-in redirect)", () => {
@@ -52,5 +52,33 @@ describe("classifySignInSearch", () => {
       expect(outcome.message).toContain("server_error");
       expect(outcome.message).not.toContain("Single-page app");
     }
+  });
+});
+
+describe("callbackResolved (#14: a /callback URL must never wait forever)", () => {
+  it("keeps waiting only while not authenticated and not timed out", () => {
+    // The genuine in-flight exchange: hold the page until one signal arrives.
+    expect(callbackResolved({ isAuthenticated: false, timedOut: false })).toBe(
+      false,
+    );
+  });
+
+  it("resolves as soon as the client is authenticated", () => {
+    // Covers BOTH a successful first-time exchange (SDK flips this true as it
+    // finishes) AND a stale/replayed callback URL where the user is already
+    // authenticated and no exchange — hence no SDK callback — will ever run.
+    expect(callbackResolved({ isAuthenticated: true, timedOut: false })).toBe(
+      true,
+    );
+  });
+
+  it("resolves on the timeout safety net even if never authenticated", () => {
+    // The rare lost-session case: no exchange, no error, no auth — leave anyway.
+    expect(callbackResolved({ isAuthenticated: false, timedOut: true })).toBe(
+      true,
+    );
+    expect(callbackResolved({ isAuthenticated: true, timedOut: true })).toBe(
+      true,
+    );
   });
 });

@@ -42,3 +42,23 @@ export function classifySignInSearch(search: string): SignInOutcome {
   // A successful redirect carries both `code` and `state`.
   return params.has("code") ? { kind: "pending" } : { kind: "none" };
 }
+
+/**
+ * Should a `/callback` landing stop waiting and return to the app? The URL only
+ * tells us a redirect *looks* pending; `@logto/react` actually exchanges the code
+ * only when `!isAuthenticated && isSignInRedirected(url)`. When that's false — the
+ * user is already authenticated (a stale/replayed callback URL), or the sign-in
+ * session was lost — the exchange never runs and its callback never fires, so we
+ * must resolve from observable state instead of waiting forever (#14):
+ *
+ * - `isAuthenticated`: covers both a successful exchange (the SDK flips it true as
+ *   it finishes) AND an already-authenticated replay (true on entry, no exchange).
+ * - `timedOut`: the rare `!isAuthenticated && !isSignInRedirected` case (no session,
+ *   no error ever arrives) — a safety net so the page can't spin indefinitely.
+ */
+export function callbackResolved(state: {
+  isAuthenticated: boolean;
+  timedOut: boolean;
+}): boolean {
+  return state.isAuthenticated || state.timedOut;
+}

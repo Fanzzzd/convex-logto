@@ -17,13 +17,25 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { nextAuthLoading } from "./auth-loading";
-import { type SignInOutcome, classifySignInSearch } from "./callback";
+import {
+  type SignInOutcome,
+  callbackResolved,
+  classifySignInSearch,
+} from "./callback";
 import type { LogtoConfigQueryRef, LogtoPublicConfig } from "./config";
 
 const CALLBACK_PATH = "/callback";
+
+// Safety net for a `/callback` URL that will never exchange and never error (the
+// sign-in session was lost): after this long, give up waiting and return to the
+// app rather than spinning forever. A real exchange resolves in well under this
+// (the SDK flips `isAuthenticated` as it finishes), so this only bites the rare
+// stuck case. See {@link callbackResolved} and #14.
+const STALE_CALLBACK_TIMEOUT_MS = 10_000;
 
 /** Bridges Logto's ID token into the `useAuth` shape `ConvexProviderWithAuth` expects. */
 function useAuthFromLogto() {
@@ -126,24 +138,27 @@ function LogtoCallback({
         : classifySignInSearch(window.location.search),
     [],
   );
-  // This component renders on every route, so once the exchange succeeds we latch
-  // it finished and unmount <CodeExchange> — otherwise it lingers off `/callback`,
-  // keeping the SDK's callback hook alive over an already-consumed code.
-  const [exchanged, setExchanged] = useState(false);
+  // This component renders on every route and `outcome` is frozen at mount, so once
+  // the callback resolves we latch it done and unmount <CodeExchange> — otherwise it
+  // lingers off `/callback`, keeping the SDK's callback hook alive over a spent code.
+  const [done, setDone] = useState(false);
 
   useEffect(() => {
     // The user cancelled / there was no session — just return to the app.
-    if (outcome.kind === "benign") goAfterSignIn();
+    if (outcome.kind === "benign") {
+      setDone(true);
+      goAfterSignIn();
+    }
   }, [outcome, goAfterSignIn]);
 
   if (outcome.kind === "error")
     throw new Error(`convex-logto: ${outcome.message}`);
   // Only a real `?code=` callback runs the token exchange; benign/error redirects
   // never touch the SDK, so a cancelled sign-in can't poison the next one.
-  if (outcome.kind === "pending" && !exchanged)
+  if (outcome.kind === "pending" && !done)
     return (
       <CodeExchange
-        onExchanged={() => setExchanged(true)}
+        onDone={() => setDone(true)}
         goAfterSignIn={goAfterSignIn}
       />
     );
@@ -152,19 +167,46 @@ function LogtoCallback({
 
 /** Runs the code→token exchange for a real `/callback?code=…` landing. */
 function CodeExchange({
-  onExchanged,
+  onDone,
   goAfterSignIn,
 }: {
-  onExchanged: () => void;
+  onDone: () => void;
   goAfterSignIn: () => void;
 }) {
-  // Fires once when the code→token exchange succeeds: stop rendering this handler
-  // (so the spent code is never re-submitted), then continue into the app.
-  useHandleSignInCallback(() => {
-    onExchanged();
-    goAfterSignIn();
-  });
-  const { error } = useLogto();
+  const { isAuthenticated, isLoading, error } = useLogto();
+  // Rendering the hook is what makes @logto/react run the code→token exchange. We
+  // deliberately do NOT navigate from its callback: on a stale/replayed callback URL
+  // the SDK won't exchange (already authenticated, or the sign-in session is gone),
+  // so that callback never fires (#14). We resolve from observable state instead.
+  useHandleSignInCallback(() => {});
+
+  // Safety net for a callback that resolves on its own (lost session: no exchange,
+  // no error, never authenticated). Arm the countdown ONLY while the SDK is idle and
+  // unauthenticated — an in-flight exchange holds `isLoading` true, which cancels and
+  // re-arms the timer, so a slow-but-legit sign-in is never abandoned mid-exchange.
+  const [timedOut, setTimedOut] = useState(false);
+  useEffect(() => {
+    if (isAuthenticated || isLoading) return;
+    const timer = setTimeout(
+      () => setTimedOut(true),
+      STALE_CALLBACK_TIMEOUT_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [isAuthenticated, isLoading]);
+
+  // Resolve once: a successful exchange flips `isAuthenticated` true, an
+  // already-authenticated replay is true on entry, and the timeout covers the rare
+  // lost-session case. Idempotent via the ref so overlapping signals don't double-fire.
+  const resolved = useRef(false);
+  useEffect(() => {
+    if (resolved.current) return;
+    if (callbackResolved({ isAuthenticated, timedOut })) {
+      resolved.current = true;
+      onDone();
+      goAfterSignIn();
+    }
+  }, [isAuthenticated, timedOut, onDone, goAfterSignIn]);
+
   // Surface a failed exchange instead of hanging the page on "finishing sign in".
   if (error) {
     throw new Error(
