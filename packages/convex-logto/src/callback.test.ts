@@ -56,29 +56,52 @@ describe("classifySignInSearch", () => {
 });
 
 describe("callbackResolved (#14: a /callback URL must never wait forever)", () => {
-  it("keeps waiting only while not authenticated and not timed out", () => {
+  it("keeps waiting only while not authenticated, not timed out, and not errored", () => {
     // The genuine in-flight exchange: hold the page until one signal arrives.
-    expect(callbackResolved({ isAuthenticated: false, timedOut: false })).toBe(
-      false,
-    );
+    expect(
+      callbackResolved({
+        isAuthenticated: false,
+        timedOut: false,
+        errored: false,
+      }),
+    ).toBe(false);
   });
 
   it("resolves as soon as the client is authenticated", () => {
     // Covers BOTH a successful first-time exchange (SDK flips this true as it
     // finishes) AND a stale/replayed callback URL where the user is already
     // authenticated and no exchange — hence no SDK callback — will ever run.
-    expect(callbackResolved({ isAuthenticated: true, timedOut: false })).toBe(
-      true,
-    );
+    expect(
+      callbackResolved({
+        isAuthenticated: true,
+        timedOut: false,
+        errored: false,
+      }),
+    ).toBe(true);
   });
 
   it("resolves on the timeout safety net even if never authenticated", () => {
     // The rare lost-session case: no exchange, no error, no auth — leave anyway.
-    expect(callbackResolved({ isAuthenticated: false, timedOut: true })).toBe(
-      true,
-    );
-    expect(callbackResolved({ isAuthenticated: true, timedOut: true })).toBe(
-      true,
-    );
+    expect(
+      callbackResolved({
+        isAuthenticated: false,
+        timedOut: true,
+        errored: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("resolves (returns to the app) on a failed exchange instead of crashing", () => {
+    // A stale/replayed callback: the SDK ran the exchange and it failed (state
+    // mismatch / spent code / lost sign-in session). Must resolve, not throw —
+    // matching react-oidc-context / @auth0/auth0-react, which never crash the app
+    // on a callback failure. The provider logs it and returns to the app.
+    expect(
+      callbackResolved({
+        isAuthenticated: false,
+        timedOut: false,
+        errored: true,
+      }),
+    ).toBe(true);
   });
 });
