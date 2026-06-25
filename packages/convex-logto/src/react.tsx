@@ -194,28 +194,34 @@ function CodeExchange({
     return () => clearTimeout(timer);
   }, [isAuthenticated, isLoading]);
 
-  // Resolve once: a successful exchange flips `isAuthenticated` true, an
-  // already-authenticated replay is true on entry, and the timeout covers the rare
-  // lost-session case. Idempotent via the ref so overlapping signals don't double-fire.
+  // Resolve once. Success flips `isAuthenticated`; an already-authenticated replay is
+  // true on entry; the timeout covers a silent lost session; and a failed exchange
+  // (`error`) is recoverable, not fatal. The popular auto-callback providers
+  // (react-oidc-context, @auth0/auth0-react) put a callback failure into state and
+  // never throw during render, so a stale/replayed `/callback` — state mismatch, spent
+  // code, lost sign-in session — can't crash the app. We mirror that: log it and return
+  // to the app (the user lands logged-out and can start sign-in again) rather than
+  // throwing, which would blank any tree not wrapped in an error boundary above the
+  // provider. Idempotent via the ref so overlapping signals don't double-fire.
   const resolved = useRef(false);
   useEffect(() => {
     if (resolved.current) return;
-    if (callbackResolved({ isAuthenticated, timedOut })) {
+    if (
+      callbackResolved({ isAuthenticated, timedOut, errored: error != null })
+    ) {
+      if (error)
+        console.error(
+          `convex-logto: completing Logto sign-in failed (${error.message}). ` +
+            `The callback URL was likely stale or the sign-in session was lost — ` +
+            `start sign-in again.`,
+          error,
+        );
       resolved.current = true;
       onDone();
       goAfterSignIn();
     }
-  }, [isAuthenticated, timedOut, onDone, goAfterSignIn]);
+  }, [error, isAuthenticated, timedOut, onDone, goAfterSignIn]);
 
-  // Surface a failed exchange instead of hanging the page on "finishing sign in".
-  if (error) {
-    throw new Error(
-      `convex-logto: completing Logto sign-in failed (${error.message}). ` +
-        `The callback URL was likely stale or the sign-in session was lost — ` +
-        `start sign-in again.`,
-      { cause: error },
-    );
-  }
   return null;
 }
 

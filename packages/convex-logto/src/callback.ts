@@ -55,10 +55,16 @@ export function classifySignInSearch(search: string): SignInOutcome {
  *   it finishes) AND an already-authenticated replay (true on entry, no exchange).
  * - `timedOut`: the rare `!isAuthenticated && !isSignInRedirected` case (no session,
  *   no error ever arrives) — a safety net so the page can't spin indefinitely.
+ * - `errored`: the exchange ran and failed — a state mismatch on a stale/replayed
+ *   callback URL, a spent code, or a lost sign-in session. The popular auto-callback
+ *   providers (`react-oidc-context`, `@auth0/auth0-react`) put such a failure into
+ *   state and never throw during render, so a stale callback can't crash the app; we
+ *   mirror that by treating it as resolved (return to the app) rather than fatal.
  */
 export function callbackResolved(state: {
   isAuthenticated: boolean;
   timedOut: boolean;
+  errored: boolean;
 }): boolean {
-  return state.isAuthenticated || state.timedOut;
+  return state.isAuthenticated || state.timedOut || state.errored;
 }
