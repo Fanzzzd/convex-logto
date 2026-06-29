@@ -1,5 +1,11 @@
 # convex-logto
 
+## 0.3.6
+
+### Patch Changes
+
+- [#20](https://github.com/Fanzzzd/convex-logto/pull/20) [`8d9506d`](https://github.com/Fanzzzd/convex-logto/commit/8d9506d7c0f4cd857211c96743967c91d975705d) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Fix the app hanging on a loading spinner when `signIn()` is called before the backend config has finished loading (the "stuck on the login button" symptom). During config load the provider mounts an inert Logto client; a `signIn()` in that window poisoned `@logto/react`'s `loadingCount` (its `signIn` increments but never resets, and the inert method never navigates away), and that count survived the swap to the real client — pinning `isLoading` true forever. The `LogtoProvider` is now remounted across the loading→ready transition, so any state built against the inert client is discarded.
+
 ## 0.3.5
 
 ### Patch Changes
