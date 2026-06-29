@@ -94,10 +94,10 @@ function useAuthFromLogto() {
 
 // An inert Logto client mounted only while the backend config loads. Its
 // `isAuthenticated()` never resolves, so @logto/react's loadingCount stays > 0 —
-// `isLoading` holds true and there's no signed-out flash — until the real client
-// swaps in once config arrives. A Proxy covers every method @logto/react binds,
-// and it touches no `window`, so the whole provider tree is safe to render on the
-// server (SSR) and during the first client paint.
+// `isLoading` holds true and there's no signed-out flash — until the provider
+// remounts with the real client once config arrives. A Proxy covers every method
+// @logto/react binds, and it touches no `window`, so the whole provider tree is safe
+// to render on the server (SSR) and during the first client paint.
 type LogtoClientClass = NonNullable<LogtoProviderProps["LogtoClientClass"]>;
 const pendingForever = new Promise<never>(() => {});
 const LoadingLogtoClient = function () {
@@ -275,7 +275,9 @@ export function ConvexLogtoProvider({
   children,
 }: ConvexLogtoProviderProps) {
   // One-shot fetch (config is per-deployment, fixed at runtime). Until it lands we
-  // mount the same tree with an inert client, so there's no remount when it does.
+  // mount the tree with an inert client; the LogtoProvider is keyed on loading→ready
+  // so it remounts when config arrives, dropping any @logto/react state built against
+  // the inert client (e.g. a loadingCount poisoned by a signIn during load).
   const [state, setState] = useState<ConfigState>({ status: "loading" });
 
   useEffect(() => {
@@ -322,6 +324,11 @@ export function ConvexLogtoProvider({
   const ready = state.status === "ready";
   return (
     <LogtoProvider
+      // Remount across loading→ready: a signIn called while the inert client is up
+      // poisons @logto/react's loadingCount (signIn never resets it and the inert
+      // method doesn't navigate), and that count is provider state that would survive
+      // an in-place client swap — pinning isLoading true forever. Keying drops it.
+      key={ready ? "ready" : "loading"}
       config={logtoConfig}
       {...(ready ? {} : { LogtoClientClass: LoadingLogtoClient })}
     >

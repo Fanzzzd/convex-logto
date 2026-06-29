@@ -91,6 +91,7 @@
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.2.3",
     "convex": "^1.38.0",
+    "happy-dom": "^20.10.6",
     "oxfmt": "^0.54.0",
     "oxlint": "^1.69.0",
     "publint": "^0.3.21",
