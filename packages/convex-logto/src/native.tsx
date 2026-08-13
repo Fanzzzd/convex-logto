@@ -86,8 +86,6 @@ const RedirectUriContext = createContext<string | undefined>(undefined);
 export type ConvexLogtoProviderProps = {
   /** Your `ConvexReactClient`. */
   client: ConvexReactClient;
-  /** Reference to the query exported from `logtoConfigQuery()`, e.g. `api.logto.config`. */
-  configQuery: LogtoConfigQueryRef;
   /**
    * Native sign-in callback URI — your `app.json` `scheme` plus a path, e.g.
    * `io.logto://callback`. Must be registered as a Redirect URI on the Logto app.
@@ -99,15 +97,36 @@ export type ConvexLogtoProviderProps = {
   /** API resource indicators to request, if any. */
   resources?: string[];
   /**
-   * A splash rendered during the one-time backend config fetch. Native has no
-   * inert-client trick (unlike the web provider), so children — and the Convex
-   * provider — mount only once `{ endpoint, appId }` arrives. Default `null`.
-   * Convex's `<AuthLoading>` then covers the sign-in handshake from inside your
-   * app, not from `fallback` (which renders before Convex is mounted).
+   * A splash rendered while `configQuery` loads (that mode only — with static
+   * `config` there is no loading phase). Children — and the Convex provider —
+   * mount only once `{ endpoint, appId }` is known. Default `null`. Convex's
+   * `<AuthLoading>` then covers the sign-in handshake from inside your app, not
+   * from `fallback` (which renders before Convex is mounted).
    */
   fallback?: ReactNode;
   children: ReactNode;
-};
+} & (
+  | {
+      /**
+       * Your Logto public config, statically: `{ endpoint, appId }`. Both are
+       * public values (the OAuth client id is not a secret) — pass them from
+       * build-time env (e.g. `EXPO_PUBLIC_…`). This is the default, fastest
+       * path: no config round-trip before sign-in is interactive.
+       */
+      config: LogtoPublicConfig;
+      configQuery?: never;
+    }
+  | {
+      config?: never;
+      /**
+       * Reference to the query exported from `logtoConfigQuery()`, e.g.
+       * `api.logto.config` — fetches `{ endpoint, appId }` from the Convex
+       * deployment at runtime. Prefer static `config` unless you need
+       * runtime-resolved config.
+       */
+      configQuery: LogtoConfigQueryRef;
+    }
+);
 
 /**
  * Wires Logto to Convex on React Native / Expo: pulls `{ endpoint, appId }` from
@@ -126,39 +145,53 @@ export type ConvexLogtoProviderProps = {
  *   <App />
  * </ConvexLogtoProvider>
  */
-export function ConvexLogtoProvider({
-  client,
-  configQuery,
-  redirectUri,
-  scopes,
-  resources,
-  fallback = null,
-  children,
-}: ConvexLogtoProviderProps) {
-  // One-shot fetch (config is per-deployment, fixed at runtime).
-  const [state, setState] = useState<ConfigState>({ status: "loading" });
+export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
+  const {
+    client,
+    redirectUri,
+    scopes,
+    resources,
+    fallback = null,
+    children,
+  } = props;
+  const staticConfig = props.config;
+  const configQuery = props.configQuery;
+  if (!staticConfig && !configQuery) {
+    // TypeScript enforces the union, but plain-JS callers can miss both.
+    throw new Error(
+      "convex-logto: pass either `config` (static { endpoint, appId }) or `configQuery` to ConvexLogtoProvider.",
+    );
+  }
+
+  // One-shot fetch (config is per-deployment, fixed at runtime), used only in
+  // configQuery mode.
+  const [fetched, setFetched] = useState<ConfigState>({ status: "loading" });
 
   useEffect(() => {
+    if (!configQuery) return;
     let active = true;
     client
       .query(configQuery)
       .then((config) => {
-        if (active) setState({ status: "ready", config });
+        if (active) setFetched({ status: "ready", config });
       })
       .catch((error: unknown) => {
-        if (active) setState({ status: "error", error });
+        if (active) setFetched({ status: "error", error });
       });
     return () => {
       active = false;
     };
   }, [client, configQuery]);
 
+  const resolved: LogtoPublicConfig | undefined =
+    staticConfig ?? (fetched.status === "ready" ? fetched.config : undefined);
+
   // Key the memo on array contents, not identity, so a fresh `scopes`/`resources`
   // array each render doesn't rebuild the LogtoClient.
   const scopesKey = scopes?.join(" ") ?? "";
   const resourcesKey = resources?.join(" ") ?? "";
-  const endpoint = state.status === "ready" ? state.config.endpoint : "";
-  const appId = state.status === "ready" ? state.config.appId : "";
+  const endpoint = resolved?.endpoint ?? "";
+  const appId = resolved?.appId ?? "";
   const logtoConfig = useMemo<LogtoConfig>(
     () => ({
       endpoint,
@@ -170,18 +203,18 @@ export function ConvexLogtoProvider({
     [endpoint, appId, scopesKey, resourcesKey],
   );
 
-  if (state.status === "error") {
+  if (configQuery && fetched.status === "error") {
     // Throw so an error boundary / dev overlay shows it, instead of a blank screen.
     throw new Error(
       "convex-logto: could not load Logto config from configQuery. Check the query " +
         "is deployed and LOGTO_ENDPOINT / LOGTO_APP_ID are set on the Convex deployment.",
-      { cause: state.error },
+      { cause: fetched.error },
     );
   }
 
-  // No inert-client trick on native (LogtoProvider takes no LogtoClientClass), so
-  // hold the fallback until the real config arrives, then mount the tree once.
-  if (state.status !== "ready") return <>{fallback}</>;
+  // Hold the fallback until the config is known, then mount the tree once (with
+  // static `config` this is immediate — there is no loading phase at all).
+  if (!resolved) return <>{fallback}</>;
 
   return (
     <RedirectUriContext.Provider value={redirectUri}>

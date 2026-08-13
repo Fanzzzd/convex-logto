@@ -8,13 +8,13 @@ description: Every export from convex-logto, convex-logto/react, and convex-logt
 | Export | From | Purpose |
 | --- | --- | --- |
 | `logtoAuthConfig(opts?)` | `convex-logto` | Provider entry for `auth.config.ts`. Reads `LOGTO_ENDPOINT` / `LOGTO_APP_ID`. |
-| `logtoConfigQuery()` | `convex-logto` | Public query serving `{ endpoint, appId }` to the frontend. |
+| `logtoConfigQuery()` | `convex-logto` | Public query serving `{ endpoint, appId }` to the frontend (runtime-config mode). |
 | `logtoSync<DataModel>(handlers)` | `convex-logto` | Returns `{ sync }`, an internal mutation mapping user events to your tables. |
 | `registerLogtoWebhook(http, sync, opts?)` | `convex-logto` | Registers the verified webhook route. Reads `LOGTO_WEBHOOK_SIGNING_KEY`. |
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
-| `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Pulls Logto config from the backend via `configQuery`. |
+| `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Static `config` or backend `configQuery`. |
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
-| `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `configQuery` model; no callback route. |
+| `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `config` / `configQuery` model; no callback route. |
 | `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signOut()` takes no argument. |
 
 ## Backend
@@ -31,8 +31,10 @@ export default { providers: [logtoAuthConfig()] };
 
 ### `logtoConfigQuery()`
 
-A public Convex query that serves `{ endpoint, appId }` to the frontend, so the
-client carries no Logto config.
+A public Convex query that serves `{ endpoint, appId }` to the frontend, for
+apps that resolve their Logto config at runtime (`configQuery` mode — e.g.
+multi-tenant, one artifact for many environments). Most apps should pass static
+`config` instead.
 
 ```ts title="convex/logto.ts"
 import { logtoConfigQuery } from "convex-logto";
@@ -63,11 +65,18 @@ webhook yourself instead of using `registerLogtoWebhook`.
 
 ### `ConvexLogtoProvider`
 
-Logto + Convex + the auto sign-in callback in one provider. Pulls your Logto
-config from the backend via `configQuery`, so the frontend carries none.
+Logto + Convex + the auto sign-in callback in one provider. Pass your public
+Logto config statically (the default — no config round-trip), or `configQuery`
+to resolve it from the backend at runtime. Exactly one of the two.
 
 ```tsx
-<ConvexLogtoProvider client={convex} configQuery={api.logto.config}>
+<ConvexLogtoProvider
+  client={convex}
+  config={{
+    endpoint: import.meta.env.VITE_LOGTO_ENDPOINT,
+    appId: import.meta.env.VITE_LOGTO_APP_ID,
+  }}
+>
   <App />
 </ConvexLogtoProvider>
 ```
@@ -75,18 +84,22 @@ config from the backend via `configQuery`, so the frontend carries none.
 | Prop | Required | Purpose |
 | --- | --- | --- |
 | `client` | yes | Your `ConvexReactClient`. |
-| `configQuery` | yes | Ref to the `logtoConfigQuery()` export, e.g. `api.logto.config`. |
-| `afterSignIn` | — | Where to go once sign-in completes. Default `/`. |
-| `navigate` | — | Soft navigation (your router's `navigate`). Optional for plain Vite; **recommended for any router** (TanStack / Next) so post-sign-in is a soft navigation rather than a full-page reload that drops router state. Falls back to a hard redirect. |
+| `config` | one of | Static `{ endpoint, appId }` — both public values, from build-time env. |
+| `configQuery` | one of | Ref to the `logtoConfigQuery()` export, e.g. `api.logto.config`, for runtime-resolved config. |
+| `fallback` | — | Rendered while `configQuery` loads (children mount once, when ready). Default `null`. No effect with static `config`. |
+| `callbackPath` | — | The route that finishes the OIDC redirect. Default `/callback`. Must match a registered Redirect URI's path; only this exact path runs callback handling. |
+| `afterSignIn` | — | Where to go once sign-in completes. Default `/`. `signIn({ returnTo })` overrides it. |
+| `navigate` | — | Soft navigation (your router's `navigate`). Optional for plain Vite; **recommended for any router** (TanStack / Next) so post-sign-in is a soft navigation rather than a full-page reload that drops router state. Prefer a replace-style navigate. Falls back to a hard `location.replace`. |
+| `onAuthError` | — | Called on recoverable sign-in failures (stale/replayed callback, setup errors like `invalid_scope`). The user is returned to the app logged out either way; also logged to the console. |
+| `discoveryCache` | — | Cache OIDC discovery + JWKS in sessionStorage. Default `true`. |
 | `scopes` / `resources` | — | Extra OIDC scopes / API resources. `openid`, `profile`, `offline_access`, and `email` are always included. |
 
-Safe to render on the server: while config loads, children render under Convex's
-`<AuthLoading>` and nothing touches `window` — no stub or mount-gate. (In the
-Next.js App Router, mark the component that imports it `"use client"`, as with any
-hook.)
+Safe to render on the server: nothing touches `window` during render — no stub
+or mount-gate. (In the Next.js App Router, mark the component that imports it
+`"use client"`, as with any hook.)
 
-The sign-in redirect lands on `/callback` — add a route there that just renders.
-Use a different path by passing ``signIn(`${origin}/your-path`)``.
+The sign-in redirect lands on `callbackPath` (default `/callback`) — add a route
+there that just renders.
 
 ### `useLogtoAuth()`
 
@@ -96,6 +109,12 @@ Returns `{ isAuthenticated, isLoading, user, signIn, signOut }`.
 const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
 ```
 
+`signIn({ returnTo })` starts sign-in and lands the user on `returnTo` after it
+completes — a same-origin path starting with `/` (anything else is rejected, to
+prevent open redirects). Without `returnTo`, the provider's `afterSignIn` is
+used. `signIn(redirectUri: string)` is **deprecated**: set `callbackPath` on the
+provider instead if your callback route isn't `/callback`.
+
 ## Native (`convex-logto/native`)
 
 For React Native / Expo, built on [`@logto/rn`](https://github.com/logto-io/react-native).
@@ -104,14 +123,17 @@ walkthrough in [React Native (Expo)](/docs/react-native).
 
 ### `ConvexLogtoProvider` (native)
 
-Wires Logto to Convex on native: pulls `{ endpoint, appId }` from the backend via
-`configQuery`. There is **no callback route** — `signIn` opens the system browser and
-resolves when the deep link returns.
+Wires Logto to Convex on native. Same `config` XOR `configQuery` model as the
+web provider. There is **no callback route** — `signIn` opens the system browser
+and resolves when the deep link returns.
 
 ```tsx
 <ConvexLogtoProvider
   client={convex}
-  configQuery={api.logto.config}
+  config={{
+    endpoint: process.env.EXPO_PUBLIC_LOGTO_ENDPOINT!,
+    appId: process.env.EXPO_PUBLIC_LOGTO_APP_ID!,
+  }}
   redirectUri="io.logto://callback"
 >
   <App />
@@ -121,9 +143,10 @@ resolves when the deep link returns.
 | Prop | Required | Purpose |
 | --- | --- | --- |
 | `client` | yes | Your `ConvexReactClient`. |
-| `configQuery` | yes | Ref to the `logtoConfigQuery()` export, e.g. `api.logto.config`. |
+| `config` | one of | Static `{ endpoint, appId }` — both public values, from build-time env. |
+| `configQuery` | one of | Ref to the `logtoConfigQuery()` export, for runtime-resolved config. |
 | `redirectUri` | **yes** | Native callback URI — your `app.json` `scheme` plus a path (e.g. `io.logto://callback`), registered on the Logto app. The default for `signIn()`. |
-| `fallback` | — | Rendered during the one-time config fetch, before the Convex provider mounts. Default `null`. |
+| `fallback` | — | Rendered while `configQuery` loads, before the Convex provider mounts. Default `null`. |
 | `scopes` / `resources` | — | Extra OIDC scopes / API resources. `openid`, `profile`, `offline_access`, and `email` are always included. |
 
 ### `useLogtoAuth()` (native)

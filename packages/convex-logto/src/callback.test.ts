@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { callbackResolved, classifySignInSearch } from "./callback";
+import {
+  callbackResolved,
+  classifySignInSearch,
+  isSafeReturnTo,
+} from "./callback";
 
 describe("classifySignInSearch", () => {
   it("ignores URLs without a `state` param (not a sign-in redirect)", () => {
@@ -103,5 +107,27 @@ describe("callbackResolved (#14: a /callback URL must never wait forever)", () =
         errored: true,
       }),
     ).toBe(true);
+  });
+});
+
+describe("isSafeReturnTo (open-redirect guard)", () => {
+  it("accepts same-origin paths, with or without query/hash", () => {
+    expect(isSafeReturnTo("/")).toBe(true);
+    expect(isSafeReturnTo("/dashboard")).toBe(true);
+    expect(isSafeReturnTo("/deep/page?tab=1#anchor")).toBe(true);
+  });
+
+  it("rejects anything that could leave the origin", () => {
+    // Protocol-relative: the classic open-redirect vector.
+    expect(isSafeReturnTo("//evil.example.com")).toBe(false);
+    // Absolute URLs.
+    expect(isSafeReturnTo("https://evil.example.com")).toBe(false);
+    // Backslash variants: some parsers fold `\` into `/`, so `/\evil.com`
+    // becomes `//evil.com`.
+    expect(isSafeReturnTo("/\\evil.example.com")).toBe(false);
+    expect(isSafeReturnTo("/ok\\..\\evil")).toBe(false);
+    // Not a path at all.
+    expect(isSafeReturnTo("dashboard")).toBe(false);
+    expect(isSafeReturnTo("")).toBe(false);
   });
 });

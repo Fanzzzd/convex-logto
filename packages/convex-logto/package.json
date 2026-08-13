@@ -68,7 +68,7 @@
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {
-    "@logto/react": ">=3.0.0",
+    "@logto/react": ">=4.0.0",
     "@logto/rn": ">=1.1.0",
     "convex": ">=1.21.0",
     "react": ">=18.0.0"
