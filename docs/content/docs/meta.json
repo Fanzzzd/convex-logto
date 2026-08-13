@@ -11,6 +11,7 @@
     "nextjs",
     "react-native",
     "---Guides---",
+    "session-mode",
     "auth-in-your-app",
     "webhook-sync",
     "multiple-environments",

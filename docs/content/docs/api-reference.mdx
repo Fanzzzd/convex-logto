@@ -1,6 +1,6 @@
 ---
 title: API reference
-description: Every export from convex-logto, convex-logto/react, and convex-logto/native, with signatures.
+description: Every export from convex-logto, convex-logto/react, convex-logto/react-session, and convex-logto/native, with signatures.
 ---
 
 ## Exports
@@ -12,8 +12,13 @@ description: Every export from convex-logto, convex-logto/react, and convex-logt
 | `logtoSync<DataModel>(handlers)` | `convex-logto` | Returns `{ sync }`, an internal mutation mapping user events to your tables. |
 | `registerLogtoWebhook(http, sync, opts?)` | `convex-logto` | Registers the verified webhook route. Reads `LOGTO_WEBHOOK_SIGNING_KEY`. |
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
+| `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](/docs/session-mode): builds the five public auth functions backed by the session component. |
+| `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Session mode: throw unless the caller still has a live (unrevoked) session. |
 | `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Static `config` or backend `configQuery`. |
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
+| default | `convex-logto/convex.config` | The session component, for `app.use(logto)` in `convex/convex.config.ts`. |
+| `ConvexLogtoSessionProvider` | `convex-logto/react-session` | Session mode's provider — no Logto SDK; talks to your `logtoSessionApi` functions. |
+| `useLogtoAuth()` | `convex-logto/react-session` | Same shape as the bridge hook; `signOut(opts?)` takes `{ postLogoutRedirectUri?, federated? }`. |
 | `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `config` / `configQuery` model; no callback route. |
 | `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signOut()` takes no argument. |
 
@@ -60,6 +65,31 @@ registerLogtoWebhook(http, internal.logto.sync);
 
 Low-level signature check (HMAC-SHA256 via Web Crypto), for when you route the
 webhook yourself instead of using `registerLogtoWebhook`.
+
+### `logtoSessionApi(component, opts?)`
+
+[Session mode](/docs/session-mode)'s server surface: pass `components.logto`
+(after `app.use(logto)`), re-export the five functions it returns. Reads
+`LOGTO_ENDPOINT`, `LOGTO_APP_ID`, and `LOGTO_CLIENT_SECRET`.
+
+```ts title="convex/auth.ts"
+import { logtoSessionApi } from "convex-logto";
+import { components } from "./_generated/api";
+
+export const { signIn, callback, refresh, signOut, sessionValid } =
+  logtoSessionApi(components.logto);
+```
+
+Options: `scopes` / `resources` (server-configured — the browser can't request
+its own), `reuseWindowMs` (default 10s), and `endpoint` / `appId` /
+`clientSecret` env overrides.
+
+### `assertUserHasActiveSession(ctx, component)`
+
+Throws (`ConvexError`, `code: "unauthenticated" | "session_revoked"`) unless the
+calling user is authenticated **and** still has a live session in the component.
+Use in sensitive functions so revocation bites immediately instead of at ID
+token expiry.
 
 ## Frontend (`convex-logto/react`)
 
@@ -114,6 +144,45 @@ completes — a same-origin path starting with `/` (anything else is rejected, t
 prevent open redirects). Without `returnTo`, the provider's `afterSignIn` is
 used. `signIn(redirectUri: string)` is **deprecated**: set `callbackPath` on the
 provider instead if your callback route isn't `/callback`.
+
+## Session mode (`convex-logto/react-session`)
+
+### `ConvexLogtoSessionProvider`
+
+The [session mode](/docs/session-mode) provider. No Logto SDK, no Logto config
+in the bundle — it talks to the functions from `logtoSessionApi(...)`.
+
+```tsx
+<ConvexLogtoSessionProvider client={convex} sessionApi={api.auth}>
+  <App />
+</ConvexLogtoSessionProvider>
+```
+
+| Prop | Required | Purpose |
+| --- | --- | --- |
+| `client` | yes | Your `ConvexReactClient`. |
+| `sessionApi` | yes | The module re-exporting `logtoSessionApi(...)`'s functions, e.g. `api.auth` (exact names: `signIn` / `callback` / `refresh` / `signOut` / `sessionValid`). |
+| `callbackPath` | — | Route that finishes the redirect. Default `/callback`; exact match against the registered Redirect URI's path. |
+| `afterSignIn` | — | Where to land after sign-in. Default `/`. `signIn({ returnTo })` overrides it. |
+| `navigate` | — | Your router's navigate (prefer replace-style) for soft post-sign-in navigation. Falls back to a hard `location.replace`. |
+| `tokenStorage` | — | Where the ID token persists: `"session"` (default, per-tab; reload without a round-trip), `"memory"` (strictest), `"local"`. |
+| `reactiveRevocation` | — | Subscribe to session liveness; drop auth live on revocation. Default `true`. |
+| `onAuthError` | — | Recoverable sign-in failures (stale/forged callback, Logto unreachable). Also logged to the console. |
+
+There is no callback component to add — the provider completes the exchange on
+`callbackPath` and replace-navigates into the app itself.
+
+### `useLogtoAuth()` (session)
+
+Same shape as the bridge hook: `{ isAuthenticated, isLoading, user, signIn, signOut }`.
+
+- `signIn({ returnTo? })` — one round-trip to mint the sign-in URL, then a
+  full-page redirect. `returnTo` must be a same-origin path.
+- `signOut({ postLogoutRedirectUri?, federated? })` — kills the session and
+  revokes the Logto grant server-side, clears every tab, then (unless
+  `federated: false`) ends the Logto SSO session and returns to
+  `postLogoutRedirectUri` (default: your origin, which must be a registered
+  Post sign-out redirect URI).
 
 ## Native (`convex-logto/native`)
 

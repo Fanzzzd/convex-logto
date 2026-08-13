@@ -13,7 +13,8 @@ export type LogtoOidcProvider = {
   applicationID: string;
 };
 
-function readEndpointAndAppId(options: LogtoAuthConfigOptions = {}): {
+/** @internal Shared with session.ts — not part of the public API. */
+export function readEndpointAndAppId(options: LogtoAuthConfigOptions = {}): {
   endpoint: string;
   appId: string;
 } {

@@ -7,6 +7,13 @@ export {
   type LogtoPublicConfig,
 } from "./config";
 export {
+  assertUserHasActiveSession,
+  logtoSessionApi,
+  type LogtoSessionApi,
+  type LogtoSessionApiOptions,
+  type LogtoSessionComponent,
+} from "./session";
+export {
   logtoSync,
   registerLogtoWebhook,
   verifyLogtoSignature,

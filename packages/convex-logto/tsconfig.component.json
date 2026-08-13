@@ -1,0 +1,15 @@
+{
+  // The session component is compiled by tsc (not tsup): the Convex CLI treats
+  // dist/component/ as the component's root directory and bundles the function
+  // modules it finds there, so the file structure must be preserved 1:1 —
+  // matching the official @convex-dev component packages.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist/component",
+    "rootDir": "src/component",
+    "sourceMap": true,
+    "declarationMap": true
+  },
+  "include": ["src/component"]
+}

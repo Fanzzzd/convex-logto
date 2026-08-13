@@ -1,0 +1,190 @@
+---
+title: Session mode
+description: Keep the Logto refresh token out of the browser — a Convex component holds it, rotates one-time session tokens, and revokes sessions reactively.
+---
+
+Session mode makes your **Convex deployment the OAuth client** instead of the
+browser. A Convex component holds the Logto refresh token server-side; the
+browser holds only two things:
+
+- a **short-lived ID token** (the bearer Convex validates — minutes of exposure,
+  not weeks), and
+- a **one-time session token** that rotates on every refresh. The server stores
+  only its hash; presenting a spent token outside a small grace window kills the
+  session and revokes the Logto grant.
+
+Compared to the default [bridge mode](/docs/quick-start) (Logto's SPA SDK in the
+browser, refresh token in `localStorage`):
+
+| | Bridge mode | Session mode |
+|---|---|---|
+| Logto app type | Single-page app | **Traditional web** |
+| Refresh token lives | browser `localStorage` | Convex component (never leaves) |
+| XSS steals | a ~2-week refresh token | a ~1-hour ID token, and any theft of the session token is detected on next use |
+| Sign-out elsewhere / user suspended | at token expiry | **pushed live** (reactive revocation) |
+| Frontend dependencies | `@logto/react` | none beyond `convex` + `react` |
+| Logto config in the bundle | endpoint + app id | nothing |
+
+Works on any static host/CDN — no cookie domain, no server for the frontend.
+
+## Setup
+
+### 1. Create a Traditional Web app in Logto
+
+In Logto Console: **Applications → Create application → Traditional web**. Add:
+
+- **Redirect URI** → `http://localhost:5173/callback`
+- **Post sign-out redirect URI** → `http://localhost:5173`
+
+Note the **App ID** and **App Secret**. As in bridge mode, the tenant's OIDC
+signing key must be **RSA** (Convex rejects Logto's default ES384 — see
+[Quick start](/docs/quick-start) step 2).
+
+### 2. Install the component
+
+```ts title="convex/convex.config.ts"
+import { defineApp } from "convex/server";
+import logto from "convex-logto/convex.config";
+
+const app = defineApp();
+app.use(logto);
+export default app;
+```
+
+### 3. Configure the deployment
+
+All Logto config lives server-side — including the app secret, which never
+reaches the browser:
+
+```bash
+npx convex env set LOGTO_ENDPOINT      https://your-logto.example.com
+npx convex env set LOGTO_APP_ID        your-traditional-web-app-id
+npx convex env set LOGTO_CLIENT_SECRET your-traditional-web-app-secret
+```
+
+`convex/auth.config.ts` is the same one line as bridge mode
+(`logtoAuthConfig()`) — session mode validates the same OIDC ID token, just
+issued to the Traditional Web app.
+
+### 4. Expose the auth functions
+
+```ts title="convex/auth.ts"
+import { logtoSessionApi } from "convex-logto";
+import { components } from "./_generated/api";
+
+export const { signIn, callback, refresh, signOut, sessionValid } =
+  logtoSessionApi(components.logto);
+```
+
+Re-export all five with these exact names — the provider looks them up on the
+module you pass it.
+
+### 5. Mount the provider
+
+```tsx title="src/main.tsx"
+import { ConvexReactClient } from "convex/react";
+import { ConvexLogtoSessionProvider } from "convex-logto/react-session";
+import { api } from "../convex/_generated/api";
+
+const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
+
+<ConvexLogtoSessionProvider client={convex} sessionApi={api.auth}>
+  <App />
+</ConvexLogtoSessionProvider>;
+```
+
+That's the whole frontend. No `@logto/react`, no callback component — the
+provider finishes the exchange on `/callback` and replace-navigates back into
+the app by itself. `useLogtoAuth()` from `convex-logto/react-session` has the
+same shape as the bridge hook:
+
+```tsx
+import { useLogtoAuth } from "convex-logto/react-session";
+
+const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
+// signIn({ returnTo: "/dashboard" }) — same-origin path, lands there after sign-in
+// signOut() — revokes the grant, clears every tab, ends the Logto SSO session
+```
+
+## Reactive revocation
+
+Every session's liveness is a Convex subscription. The moment a session is
+killed server-side — sign-out in another tab, token-theft detection, a webhook
+suspension — Convex pushes `false` and the app drops to signed-out **live**, not
+at token expiry.
+
+For sensitive functions, enforce it server-side too (an ID token stays
+cryptographically valid until it expires):
+
+```ts title="convex/me.ts"
+import { assertUserHasActiveSession } from "convex-logto";
+import { components } from "./_generated/api";
+
+export const sensitive = query({
+  handler: async (ctx) => {
+    await assertUserHasActiveSession(ctx, components.logto);
+    // ...
+  },
+});
+```
+
+One consequence to plan for: a reactive query gated this way starts **throwing**
+the instant the session is revoked — a beat before the client flips to
+signed-out. Wrap such data in an error boundary (ordinary Convex practice for
+query errors) so revocation renders as a clean sign-out; the
+[example's `SessionBoundary`](https://github.com/Fanzzzd/convex-logto/blob/main/examples/vite-react-session/src/App.tsx)
+is a 15-line version.
+
+## How the token dance works
+
+1. **Sign-in** — `signIn()` asks the component for an authorize URL. The OIDC
+   `state` and PKCE verifier stay server-side (a one-time, 10-minute
+   transaction); the browser also pins the `state` to the signing-in tab, so a
+   forged or replayed callback is refused before any exchange.
+2. **Exchange** — the callback action redeems the code (client secret + PKCE),
+   stores the refresh token in the component, and hands the browser the ID token
+   plus session token #1.
+3. **Refresh** — when the ID token nears expiry, the browser presents session
+   token #1; the component refreshes against Logto and answers with a fresh ID
+   token plus session token #2. Token #1's hash is kept briefly (10s) so
+   multi-tab races don't false-positive.
+4. **Theft detection** — if token #1 shows up *after* that window, someone has a
+   copy. The component deletes the session and revokes the whole Logto grant;
+   both the attacker and the victim are signed out, and the victim's next visit
+   is a clean re-authentication.
+5. **Sign-out** — clears local state first (other tabs follow via the `storage`
+   event), revokes the grant server-side (RFC 7009 — Logto's RP-initiated logout
+   alone does *not* revoke it), then ends the SSO session.
+
+Concurrent refreshes are single-flighted at three layers — per tab (in-flight
+merge), per browser (Web Locks), per session (a server-side claim) — because a
+concurrent replay of the same Logto refresh token at its rotation boundary would
+destroy the grant.
+
+## Provider props
+
+| Prop | Default | |
+|---|---|---|
+| `client` | — | Your `ConvexReactClient`. |
+| `sessionApi` | — | The module re-exporting `logtoSessionApi(...)`, e.g. `api.auth`. |
+| `callbackPath` | `"/callback"` | Route that finishes the redirect (exact match; must match the registered Redirect URI's path). |
+| `afterSignIn` | `"/"` | Where to land after sign-in; `signIn({ returnTo })` overrides. |
+| `navigate` | hard replace | Your router's navigate for soft post-sign-in navigation. |
+| `tokenStorage` | `"session"` | Where the ID token persists: `"session"` (per-tab, zero-round-trip reload), `"memory"` (strictest), `"local"`. |
+| `reactiveRevocation` | `true` | Subscribe to session liveness and drop auth live on revocation. |
+| `onAuthError` | — | Recoverable sign-in failures (stale/forged callback, Logto down). |
+
+`logtoSessionApi(component, opts?)` accepts `scopes`, `resources` (server-set —
+the browser can't request its own), `reuseWindowMs`, and env overrides.
+
+## Choosing a mode
+
+Stay on **bridge mode** if you want zero server-side state or you're already
+running it — it remains fully supported. Pick **session mode** for the smallest
+browser attack surface, live revocation, and a bundle with no auth SDK. Both
+modes present the same ID token to Convex, so `ctx.auth.getUserIdentity()` and
+the [webhook user sync](/docs/webhook-sync) work identically, and migrating is a
+config change (new Logto app + provider swap), not a data migration.
+
+See the runnable
+[vite-react-session example](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session).
