@@ -1,5 +1,50 @@
 # convex-logto
 
+## 0.4.0
+
+### Minor Changes
+
+- [#22](https://github.com/Fanzzzd/convex-logto/pull/22) [`75b3ed8`](https://github.com/Fanzzzd/convex-logto/commit/75b3ed8499c346b0c985ba9806d87f6971167ec3) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Bridge hardening: static config by default, exact-callback handling, and safer sign-in redirects.
+
+  - **Static `config` prop (new default).** Pass `config={{ endpoint, appId }}` (both public values) from build-time env instead of `configQuery` — no config round-trip, no loading phase; sign-in is interactive on first paint. `configQuery` remains supported for runtime-resolved config (multi-tenant), now rendering the new `fallback` prop while it loads and mounting children exactly once when ready. The internal inert-client + keyed-remount machinery is gone.
+  - **Callback handling is gated to `callbackPath`** (new prop, default `/callback`). A stray `?code=&state=` on any other route no longer triggers a pending auth state (previously a 10s spinner). The [#11](https://github.com/Fanzzzd/convex-logto/issues/11)/[#14](https://github.com/Fanzzzd/convex-logto/issues/14) protections (loading latch through the exchange, stale-callback resolution) are unchanged — only their trigger is now the exact callback route.
+  - **`signIn({ returnTo })`.** The post-sign-in destination must be a same-origin path starting with `/`; full URLs and protocol-relative values are rejected (open-redirect guard, RFC 9700 §4.11.1). `signIn(redirectUri: string)` is deprecated but still works; if its path can't match `callbackPath`, a console error explains the fix.
+  - **`onAuthError` prop.** Recoverable sign-in failures (stale/replayed callback, setup errors like `invalid_scope`) no longer throw during render — they're reported to `onAuthError` (and the console) and the user is returned to the app logged out.
+  - **OIDC discovery/JWKS cache on by default** (`discoveryCache={false}` to opt out), so the sign-in and callback pages don't each pay a discovery round-trip.
+  - **Concurrent token fetches merge** into one in-flight request per kind; a forced refresh is never satisfied by a stale in-flight fetch.
+  - **Peer dependency: `@logto/react >= 4`** (was `>= 3` — already de-facto required since the `/react` entry went ESM-only).
+  - Native (`convex-logto/native`): the same `config` XOR `configQuery` union; behavior otherwise unchanged.
+
+- [#23](https://github.com/Fanzzzd/convex-logto/pull/23) [`ff08337`](https://github.com/Fanzzzd/convex-logto/commit/ff0833732268735d8b3a555357142c806af0a174) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - New **session mode**: keep the Logto refresh token out of the browser entirely.
+
+  A Convex component (`convex-logto/convex.config`, installed with
+  `app.use(logto)`) acts as the OAuth client for a Logto **Traditional Web** app:
+  it performs the code exchange server-side (client secret + PKCE), stores the
+  refresh token in component-isolated tables, and gives the browser only a
+  short-lived ID token plus a one-time session token that rotates on every
+  refresh (hash-stored, reuse-detected — presenting a spent token outside a 10s
+  multi-tab grace window kills the session and revokes the Logto grant, RFC 7009).
+
+  - `logtoSessionApi(components.logto)` (from `convex-logto`) builds the five
+    public auth functions — `signIn` / `callback` / `refresh` / `signOut` /
+    `sessionValid` — reading `LOGTO_ENDPOINT` / `LOGTO_APP_ID` /
+    `LOGTO_CLIENT_SECRET` from the deployment env. The secret never reaches the
+    browser; scopes/resources are server-configured.
+  - New entry `convex-logto/react-session`: `ConvexLogtoSessionProvider` +
+    `useLogtoAuth()` with the same shape as the bridge hook — and **no
+    `@logto/react` dependency**, no Logto config in the bundle. Sign-in state is
+    pinned to the initiating tab (login-CSRF refusal), the callback completes
+    without a callback component, reloads authenticate with zero round-trips
+    while the cached ID token is fresh, and multi-tab refreshes are
+    single-flighted (Web Locks + in-flight merge + a server-side claim).
+  - **Reactive revocation**: every session's liveness is a Convex subscription —
+    sign-out elsewhere, theft detection, or a webhook suspension drops auth live,
+    not at token expiry. `assertUserHasActiveSession(ctx, components.logto)`
+    enforces the same server-side for sensitive functions.
+  - Runnable example: `examples/vite-react-session`; docs at `/docs/session-mode`.
+
+  Bridge mode is unchanged and remains the default.
+
 ## 0.3.6
 
 ### Patch Changes
