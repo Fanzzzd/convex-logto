@@ -42,7 +42,11 @@ export function AuthBoundary({
   return (
     <ConvexLogtoProvider
       client={client}
+      // This example keeps the runtime `configQuery` path (config served from
+      // the Convex deployment) to exercise it; static `config` is the default
+      // choice — see the other examples. `fallback` renders while it loads.
       configQuery={api.logto.config}
+      fallback={null}
       // Soft-navigate after sign-in instead of a hard redirect.
       navigate={(to) => void router.navigate({ to })}
     >

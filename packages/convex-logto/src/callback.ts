@@ -68,3 +68,18 @@ export function callbackResolved(state: {
 }): boolean {
   return state.isAuthenticated || state.timedOut || state.errored;
 }
+
+/**
+ * Is `returnTo` a safe post-sign-in destination? Only same-origin path
+ * navigation is allowed — a single leading `/`, not `//host` (protocol-relative)
+ * and no `\` (some URL parsers fold `\` into `/`, turning `/\evil.com` into
+ * `//evil.com`). Anything else would let a crafted link turn the sign-in flow
+ * into an open redirect (RFC 9700 §4.11.1 forbids client-side open redirectors).
+ */
+export function isSafeReturnTo(returnTo: string): boolean {
+  return (
+    returnTo.startsWith("/") &&
+    !returnTo.startsWith("//") &&
+    !returnTo.includes("\\")
+  );
+}

@@ -2,7 +2,6 @@ import {
   type IdTokenClaims,
   type LogtoConfig,
   LogtoProvider,
-  type LogtoProviderProps,
   UserScope,
   useHandleSignInCallback,
   useLogto,
@@ -13,8 +12,10 @@ import {
   useConvexAuth,
 } from "convex/react";
 import {
+  createContext,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -25,10 +26,11 @@ import {
   type SignInOutcome,
   callbackResolved,
   classifySignInSearch,
+  isSafeReturnTo,
 } from "./callback";
 import type { LogtoConfigQueryRef, LogtoPublicConfig } from "./config";
 
-const CALLBACK_PATH = "/callback";
+const DEFAULT_CALLBACK_PATH = "/callback";
 
 // Safety net for a `/callback` URL that will never exchange and never error (the
 // sign-in session was lost): after this long, give up waiting and return to the
@@ -37,8 +39,47 @@ const CALLBACK_PATH = "/callback";
 // stuck case. See {@link callbackResolved} and #14.
 const STALE_CALLBACK_TIMEOUT_MS = 10_000;
 
+// Provider-level settings the bridge hooks need but can't take as props, since
+// `ConvexProviderWithAuth` owns the `useAuth` call site.
+const BridgeContext = createContext<{ callbackPath: string }>({
+  callbackPath: DEFAULT_CALLBACK_PATH,
+});
+
+/** True only when the current document is on the provider's callback route. */
+function onCallbackRoute(callbackPath: string): boolean {
+  return (
+    typeof window !== "undefined" && window.location.pathname === callbackPath
+  );
+}
+
+// `signIn({ returnTo })` stashes the post-sign-in destination here; the callback
+// resolution consumes it. Our own stash (not the SDK's `postRedirectUri`) because
+// the SDK navigates to `postRedirectUri` itself with a hard redirect, which would
+// bypass the `navigate` prop and race our own resolution flow. sessionStorage is
+// same-tab, which is exactly the OIDC redirect's scope.
+const RETURN_TO_KEY = "convex-logto:returnTo";
+function stashReturnTo(returnTo: string): void {
+  try {
+    sessionStorage.setItem(RETURN_TO_KEY, returnTo);
+  } catch {
+    // Storage unavailable (private mode quota, sandbox): fall back to afterSignIn.
+  }
+}
+function takeReturnTo(): string | undefined {
+  try {
+    const value = sessionStorage.getItem(RETURN_TO_KEY);
+    sessionStorage.removeItem(RETURN_TO_KEY);
+    // Re-validate on read: the stash is same-origin storage, but a hostile or
+    // buggy write must still never turn the redirect into an open redirect.
+    return value !== null && isSafeReturnTo(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Bridges Logto's ID token into the `useAuth` shape `ConvexProviderWithAuth` expects. */
 function useAuthFromLogto() {
+  const { callbackPath } = useContext(BridgeContext);
   const {
     isAuthenticated,
     isLoading,
@@ -50,9 +91,12 @@ function useAuthFromLogto() {
   // A `/callback?code=` exchange is in flight: the SDK has the code but hasn't
   // authenticated yet. Hold `isLoading` true through it so Convex never sees a
   // transient logged-out tick that route guards mistake for a sign-out (#11).
-  const search = typeof window === "undefined" ? "" : window.location.search;
+  // Gated to the exact callback route: a stray `?code=&state=` on any other page
+  // is not a sign-in transaction and must not pin the app into a loading state.
   const authFlowPending =
-    !isAuthenticated && classifySignInSearch(search).kind === "pending";
+    !isAuthenticated &&
+    onCallbackRoute(callbackPath) &&
+    classifySignInSearch(window.location.search).kind === "pending";
 
   // `@logto/react` toggles `isLoading` around every SDK call; forwarding that to
   // Convex flickers the identity. Latch on the first settle and ignore the churn.
@@ -66,22 +110,39 @@ function useAuthFromLogto() {
     if (shouldSettle) setSettled(true);
   }, [shouldSettle]);
 
+  // Merge concurrent fetches of the same kind into one in-flight promise, so
+  // StrictMode double-invokes and overlapping WS auth attempts can't stack
+  // token-endpoint round-trips (a forced refresh is never satisfied by a plain
+  // in-flight fetch, so the two kinds don't merge with each other).
+  const inflight = useRef<{
+    forced?: Promise<string | null>;
+    plain?: Promise<string | null>;
+  }>({});
   const fetchAccessToken = useCallback(
     async ({ forceRefreshToken }: { forceRefreshToken: boolean }) => {
-      try {
-        if (forceRefreshToken) {
-          // Clearing the access token forces a token-endpoint round-trip that also
-          // rotates the ID token; bail if it fails rather than return a stale token.
-          await clearAccessToken();
-          if (!(await getAccessToken())) return null;
+      const kind = forceRefreshToken ? "forced" : "plain";
+      const existing = inflight.current[kind];
+      if (existing) return existing;
+      const request = (async () => {
+        try {
+          if (forceRefreshToken) {
+            // Clearing the access token forces a token-endpoint round-trip that also
+            // rotates the ID token; bail if it fails rather than return a stale token.
+            await clearAccessToken();
+            if (!(await getAccessToken())) return null;
+          }
+          return (await getIdToken()) ?? null;
+        } catch {
+          // The refresh token expired or Logto is unreachable: report "no token" so
+          // Convex transitions cleanly to unauthenticated instead of surfacing a
+          // rejection (which is how a returning user's stale session should resolve).
+          return null;
+        } finally {
+          inflight.current[kind] = undefined;
         }
-        return (await getIdToken()) ?? null;
-      } catch {
-        // The refresh token expired or Logto is unreachable: report "no token" so
-        // Convex transitions cleanly to unauthenticated instead of surfacing a
-        // rejection (which is how a returning user's stale session should resolve).
-        return null;
-      }
+      })();
+      inflight.current[kind] = request;
+      return request;
     },
     [getIdToken, getAccessToken, clearAccessToken],
   );
@@ -92,41 +153,32 @@ function useAuthFromLogto() {
   );
 }
 
-// An inert Logto client mounted only while the backend config loads. Its
-// `isAuthenticated()` never resolves, so @logto/react's loadingCount stays > 0 —
-// `isLoading` holds true and there's no signed-out flash — until the provider
-// remounts with the real client once config arrives. A Proxy covers every method
-// @logto/react binds, and it touches no `window`, so the whole provider tree is safe
-// to render on the server (SSR) and during the first client paint.
-type LogtoClientClass = NonNullable<LogtoProviderProps["LogtoClientClass"]>;
-const pendingForever = new Promise<never>(() => {});
-const LoadingLogtoClient = function () {
-  return new Proxy(
-    {},
-    {
-      get: (_t, key) =>
-        key === "isAuthenticated"
-          ? () => pendingForever
-          : async () => undefined,
-    },
-  );
-} as unknown as LogtoClientClass;
-const LOADING_LOGTO_CONFIG: LogtoConfig = {
-  endpoint: "https://convex-logto-loading.invalid",
-  appId: "__convex_logto_loading__",
-};
+/** Reports a recoverable auth error: loud in the console, surfaced to `onAuthError`. */
+function reportAuthError(
+  onAuthError: ((error: Error) => void) | undefined,
+  error: Error,
+): void {
+  console.error(`convex-logto: ${error.message}`, error);
+  onAuthError?.(error);
+}
 
-/** Finishes the OIDC redirect then navigates to `afterSignIn`; surfaces setup errors loudly. */
+/** Finishes the OIDC redirect then navigates to `returnTo`/`afterSignIn`; errors are recoverable. */
 function LogtoCallback({
   afterSignIn,
   navigate,
+  onAuthError,
 }: {
   afterSignIn: string;
   navigate?: (to: string) => void;
+  onAuthError?: (error: Error) => void;
 }) {
   const goAfterSignIn = useCallback(() => {
-    if (navigate) navigate(afterSignIn);
-    else window.location.replace(afterSignIn);
+    // `returnTo` (validated same-origin path) wins over the static default.
+    const to = takeReturnTo() ?? afterSignIn;
+    // Prefer a soft nav (pass a replace-style navigate for history hygiene);
+    // the hard fallback uses replace so the spent code never stays in history.
+    if (navigate) navigate(to);
+    else window.location.replace(to);
   }, [navigate, afterSignIn]);
 
   // Classified once from the landing URL; only a real OIDC redirect carries `state`.
@@ -138,9 +190,9 @@ function LogtoCallback({
         : classifySignInSearch(window.location.search),
     [],
   );
-  // This component renders on every route and `outcome` is frozen at mount, so once
-  // the callback resolves we latch it done and unmount <CodeExchange> — otherwise it
-  // lingers off `/callback`, keeping the SDK's callback hook alive over a spent code.
+  // `outcome` is frozen at mount, so once the callback resolves we latch it done
+  // and unmount <CodeExchange> — otherwise it would keep the SDK's callback hook
+  // alive over a spent code if this component re-renders before navigation.
   const [done, setDone] = useState(false);
 
   useEffect(() => {
@@ -149,10 +201,16 @@ function LogtoCallback({
       setDone(true);
       goAfterSignIn();
     }
-  }, [outcome, goAfterSignIn]);
+    // A setup error (e.g. invalid_scope): recoverable, not fatal. Report and
+    // return to the app logged out, instead of throwing during render — a throw
+    // would blank any tree without an error boundary above the provider.
+    if (outcome.kind === "error") {
+      setDone(true);
+      reportAuthError(onAuthError, new Error(outcome.message));
+      goAfterSignIn();
+    }
+  }, [outcome, goAfterSignIn, onAuthError]);
 
-  if (outcome.kind === "error")
-    throw new Error(`convex-logto: ${outcome.message}`);
   // Only a real `?code=` callback runs the token exchange; benign/error redirects
   // never touch the SDK, so a cancelled sign-in can't poison the next one.
   if (outcome.kind === "pending" && !done)
@@ -160,6 +218,7 @@ function LogtoCallback({
       <CodeExchange
         onDone={() => setDone(true)}
         goAfterSignIn={goAfterSignIn}
+        onAuthError={onAuthError}
       />
     );
   return null;
@@ -169,9 +228,11 @@ function LogtoCallback({
 function CodeExchange({
   onDone,
   goAfterSignIn,
+  onAuthError,
 }: {
   onDone: () => void;
   goAfterSignIn: () => void;
+  onAuthError?: (error: Error) => void;
 }) {
   const { isAuthenticated, isLoading, error } = useLogto();
   // Rendering the hook is what makes @logto/react run the code→token exchange. We
@@ -199,28 +260,30 @@ function CodeExchange({
   // (`error`) is recoverable, not fatal. The popular auto-callback providers
   // (react-oidc-context, @auth0/auth0-react) put a callback failure into state and
   // never throw during render, so a stale/replayed `/callback` — state mismatch, spent
-  // code, lost sign-in session — can't crash the app. We mirror that: log it and return
-  // to the app (the user lands logged-out and can start sign-in again) rather than
-  // throwing, which would blank any tree not wrapped in an error boundary above the
-  // provider. Idempotent via the ref so overlapping signals don't double-fire.
+  // code, lost sign-in session — can't crash the app. We mirror that: report it and
+  // return to the app (the user lands logged-out and can start sign-in again).
+  // Idempotent via the ref so overlapping signals don't double-fire.
   const resolved = useRef(false);
   useEffect(() => {
     if (resolved.current) return;
     if (
       callbackResolved({ isAuthenticated, timedOut, errored: error != null })
     ) {
-      if (error)
-        console.error(
-          `convex-logto: completing Logto sign-in failed (${error.message}). ` +
-            `The callback URL was likely stale or the sign-in session was lost — ` +
-            `start sign-in again.`,
-          error,
+      if (error) {
+        reportAuthError(
+          onAuthError,
+          new Error(
+            `completing Logto sign-in failed (${error.message}). The callback URL ` +
+              `was likely stale or the sign-in session was lost — start sign-in again.`,
+            { cause: error },
+          ),
         );
+      }
       resolved.current = true;
       onDone();
       goAfterSignIn();
     }
-  }, [error, isAuthenticated, timedOut, onDone, goAfterSignIn]);
+  }, [error, isAuthenticated, timedOut, onDone, goAfterSignIn, onAuthError]);
 
   return null;
 }
@@ -230,116 +293,189 @@ type ConfigState =
   | { status: "ready"; config: LogtoPublicConfig }
   | { status: "error"; error: unknown };
 
-export type ConvexLogtoProviderProps = {
+type CommonProviderProps = {
   /** Your `ConvexReactClient`. */
   client: ConvexReactClient;
-  /** Reference to the query exported from `logtoConfigQuery()`, e.g. `api.logto.config`. */
-  configQuery: LogtoConfigQueryRef;
   /** Extra scopes. `openid`, `profile`, `offline_access`, and `email` are always included. */
   scopes?: string[];
   /** API resource indicators to request, if any. */
   resources?: string[];
-  /** Where to go once sign-in completes. Default `/`. */
+  /** Where to go once sign-in completes. Default `/`. `signIn({ returnTo })` overrides it. */
   afterSignIn?: string;
   /**
    * Soft navigation (e.g. your router's navigate). Optional for plain Vite;
    * recommended for any router (TanStack/Next) so post-sign-in is a soft nav,
-   * not a full reload that drops router state. Falls back to a hard redirect.
+   * not a full reload that drops router state. Prefer a replace-style navigate
+   * so the spent callback URL doesn't stay in history. Falls back to a hard
+   * `location.replace`.
    */
   navigate?: (to: string) => void;
+  /**
+   * The route that finishes the OIDC redirect. Default `/callback`. Must match
+   * the path of a **Redirect URI** registered on the Logto app; sign-in
+   * redirects there, and only that exact path runs callback handling.
+   */
+  callbackPath?: string;
+  /**
+   * Called when finishing a sign-in fails recoverably (a stale/replayed
+   * callback, a setup error like `invalid_scope`). The user is returned to the
+   * app logged out either way; use this to toast/telemetry the failure.
+   * Errors are also logged to the console.
+   */
+  onAuthError?: (error: Error) => void;
+  /**
+   * Cache Logto's OIDC discovery + JWKS responses in sessionStorage (via
+   * `@logto/react`'s `unstable_enableCache`), so the sign-in page and the
+   * callback page don't each pay a discovery round-trip. Default `true`.
+   */
+  discoveryCache?: boolean;
+  /**
+   * Rendered while `configQuery` loads (that mode only — with static `config`
+   * there is no loading phase). Children mount once, when config is ready.
+   * Default `null`.
+   */
+  fallback?: ReactNode;
   children: ReactNode;
 };
 
+export type ConvexLogtoProviderProps = CommonProviderProps &
+  (
+    | {
+        /**
+         * Your Logto public config, statically: `{ endpoint, appId }`. Both are
+         * public values (the OAuth client id is not a secret) — pass them from
+         * build-time env (`VITE_…` / `NEXT_PUBLIC_…`). This is the default,
+         * fastest path: no config round-trip before sign-in is interactive.
+         */
+        config: LogtoPublicConfig;
+        configQuery?: never;
+      }
+    | {
+        config?: never;
+        /**
+         * Reference to the query exported from `logtoConfigQuery()`, e.g.
+         * `api.logto.config` — fetches `{ endpoint, appId }` from the Convex
+         * deployment at runtime. Prefer static `config` unless you need
+         * runtime-resolved config (multi-tenant, shared frontend artifacts).
+         */
+        configQuery: LogtoConfigQueryRef;
+      }
+  );
+
 /**
- * Wires Logto to Convex: pulls `{ endpoint, appId }` from the backend (`configQuery`),
- * mounts Logto, bridges the ID token into Convex, and finishes the sign-in redirect.
+ * Wires Logto to Convex: mounts Logto with your public config, bridges the ID
+ * token into Convex, and finishes the sign-in redirect on `callbackPath`.
  * No hand-rolled `useAuth`, no JWT template, no JWKS URL.
  *
- * Safe to render on the server: children mount immediately (under Convex's
- * `<AuthLoading>`) while config loads and nothing touches `window`, so SSR
- * frameworks need no stub or mount-gate. The redirect lands on `/callback` — add a
- * route there that just renders; pass `signIn(`${origin}/your-path`)` for another path.
+ * Safe to render on the server: nothing touches `window` during render, so SSR
+ * frameworks need no stub or mount-gate. The redirect lands on `/callback` — add
+ * a route there that just renders; set `callbackPath` to use another path.
  *
  * @example
- * <ConvexLogtoProvider client={convex} configQuery={api.logto.config}>
+ * <ConvexLogtoProvider
+ *   client={convex}
+ *   config={{
+ *     endpoint: import.meta.env.VITE_LOGTO_ENDPOINT,
+ *     appId: import.meta.env.VITE_LOGTO_APP_ID,
+ *   }}
+ * >
  *   <App />
  * </ConvexLogtoProvider>
  */
-export function ConvexLogtoProvider({
-  client,
-  configQuery,
-  scopes,
-  resources,
-  afterSignIn = "/",
-  navigate,
-  children,
-}: ConvexLogtoProviderProps) {
-  // One-shot fetch (config is per-deployment, fixed at runtime). Until it lands we
-  // mount the tree with an inert client; the LogtoProvider is keyed on loading→ready
-  // so it remounts when config arrives, dropping any @logto/react state built against
-  // the inert client (e.g. a loadingCount poisoned by a signIn during load).
-  const [state, setState] = useState<ConfigState>({ status: "loading" });
+export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
+  const {
+    client,
+    scopes,
+    resources,
+    afterSignIn = "/",
+    navigate,
+    callbackPath = DEFAULT_CALLBACK_PATH,
+    onAuthError,
+    discoveryCache = true,
+    fallback = null,
+    children,
+  } = props;
+  const staticConfig = props.config;
+  const configQuery = props.configQuery;
+  if (!staticConfig && !configQuery) {
+    // TypeScript enforces the union, but plain-JS callers can miss both.
+    throw new Error(
+      "convex-logto: pass either `config` (static { endpoint, appId }) or `configQuery` to ConvexLogtoProvider.",
+    );
+  }
+
+  // One-shot fetch (config is per-deployment, fixed at runtime), used only in
+  // configQuery mode. Until it lands we render `fallback`; children mount once.
+  const [fetched, setFetched] = useState<ConfigState>({ status: "loading" });
 
   useEffect(() => {
+    if (!configQuery) return;
     let active = true;
-    // Don't reset to "loading" on re-run: once resolved, demoting back would swap
-    // the live Logto client for the inert one mid-session and drop the identity.
+    // Don't reset to "loading" on re-run: once resolved, demoting back would
+    // unmount the live Logto tree mid-session and drop the identity.
     client
       .query(configQuery)
       .then((config) => {
-        if (active) setState({ status: "ready", config });
+        if (active) setFetched({ status: "ready", config });
       })
       .catch((error: unknown) => {
-        if (active) setState({ status: "error", error });
+        if (active) setFetched({ status: "error", error });
       });
     return () => {
       active = false;
     };
   }, [client, configQuery]);
 
-  // Key the memo on array contents, not identity, so a fresh `scopes`/`resources`
-  // array each render doesn't rebuild the LogtoClient.
+  const resolved: LogtoPublicConfig | undefined =
+    staticConfig ?? (fetched.status === "ready" ? fetched.config : undefined);
+
+  // Key the memo on scalar contents, not object identity, so a fresh `config`/
+  // `scopes`/`resources` value each render doesn't rebuild the LogtoClient.
   const scopesKey = scopes?.join(" ") ?? "";
   const resourcesKey = resources?.join(" ") ?? "";
-  const logtoConfig = useMemo<LogtoConfig>(() => {
-    if (state.status !== "ready") return LOADING_LOGTO_CONFIG;
-    return {
-      endpoint: state.config.endpoint,
-      appId: state.config.appId,
+  const endpoint = resolved?.endpoint ?? "";
+  const appId = resolved?.appId ?? "";
+  const logtoConfig = useMemo<LogtoConfig>(
+    () => ({
+      endpoint,
+      appId,
       // Logto adds openid, offline_access, and profile by default; we add email.
       scopes: [UserScope.Email, ...(scopesKey ? scopesKey.split(" ") : [])],
       ...(resourcesKey ? { resources: resourcesKey.split(" ") } : {}),
-    };
-  }, [state, scopesKey, resourcesKey]);
+    }),
+    [endpoint, appId, scopesKey, resourcesKey],
+  );
+  const bridgeValue = useMemo(() => ({ callbackPath }), [callbackPath]);
 
-  if (state.status === "error") {
-    // Throw so an error boundary / dev overlay shows it, instead of a blank screen.
+  if (configQuery && fetched.status === "error") {
+    // A missing/broken config query is a setup error: throw so an error
+    // boundary / dev overlay shows it, instead of a blank screen.
     throw new Error(
       "convex-logto: could not load Logto config from configQuery. Check the query " +
         "is deployed and LOGTO_ENDPOINT / LOGTO_APP_ID are set on the Convex deployment.",
-      { cause: state.error },
+      { cause: fetched.error },
     );
   }
 
-  const ready = state.status === "ready";
+  if (!resolved) return <>{fallback}</>;
+
   return (
-    <LogtoProvider
-      // Remount across loading→ready: a signIn called while the inert client is up
-      // poisons @logto/react's loadingCount (signIn never resets it and the inert
-      // method doesn't navigate), and that count is provider state that would survive
-      // an in-place client swap — pinning isLoading true forever. Keying drops it.
-      key={ready ? "ready" : "loading"}
-      config={logtoConfig}
-      {...(ready ? {} : { LogtoClientClass: LoadingLogtoClient })}
-    >
-      {/* Only meaningful once the real client is up; a no-op until the callback URL. */}
-      {ready ? (
-        <LogtoCallback afterSignIn={afterSignIn} navigate={navigate} />
-      ) : null}
-      <ConvexProviderWithAuth client={client} useAuth={useAuthFromLogto}>
-        {children}
-      </ConvexProviderWithAuth>
-    </LogtoProvider>
+    <BridgeContext.Provider value={bridgeValue}>
+      <LogtoProvider config={logtoConfig} unstable_enableCache={discoveryCache}>
+        {/* Callback handling is gated to the exact callback route: a real OIDC
+            redirect always lands as a full-page load, so mount == landing. */}
+        {onCallbackRoute(callbackPath) ? (
+          <LogtoCallback
+            afterSignIn={afterSignIn}
+            navigate={navigate}
+            onAuthError={onAuthError}
+          />
+        ) : null}
+        <ConvexProviderWithAuth client={client} useAuth={useAuthFromLogto}>
+          {children}
+        </ConvexProviderWithAuth>
+      </LogtoProvider>
+    </BridgeContext.Provider>
   );
 }
 
@@ -348,8 +484,20 @@ export type LogtoAuth = {
   isLoading: boolean;
   /** Decoded ID token claims (sub, email, name, ...), once authenticated. */
   user: IdTokenClaims | undefined;
-  /** Start sign-in. Defaults the redirect to `${origin}/callback`. */
-  signIn: (redirectUri?: string) => Promise<void>;
+  /**
+   * Start sign-in. Redirects to Logto and back to the provider's `callbackPath`.
+   * `returnTo` (a same-origin path starting with `/`) is where the user lands
+   * after sign-in completes; it overrides the provider's `afterSignIn`.
+   */
+  signIn: {
+    (options?: { returnTo?: string }): Promise<void>;
+    /**
+     * @deprecated Pass `{ returnTo }` instead, and set `callbackPath` on the
+     * provider if your callback route isn't `/callback`. A redirect URI whose
+     * path differs from `callbackPath` will not be handled.
+     */
+    (redirectUri: string): Promise<void>;
+  };
   /**
    * Sign out: ends the Logto session, then returns to `window.location.origin`,
    * which you must register as a **Post sign-out redirect URI** (exact match, no
@@ -368,6 +516,7 @@ export type LogtoAuth = {
 export function useLogtoAuth(): LogtoAuth {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const { signIn, signOut, getIdTokenClaims } = useLogto();
+  const { callbackPath } = useContext(BridgeContext);
   const [user, setUser] = useState<IdTokenClaims>();
 
   useEffect(() => {
@@ -386,9 +535,41 @@ export function useLogtoAuth(): LogtoAuth {
   }, [isAuthenticated, getIdTokenClaims]);
 
   const doSignIn = useCallback(
-    (redirectUri?: string) =>
-      signIn(redirectUri ?? `${window.location.origin}${CALLBACK_PATH}`),
-    [signIn],
+    (redirectUriOrOptions?: string | { returnTo?: string }) => {
+      // Deprecated escape hatch: a full redirect URI. Kept working for 0.3.x
+      // callers, but callback handling only runs on `callbackPath` — warn loudly
+      // when the two can't meet.
+      if (typeof redirectUriOrOptions === "string") {
+        try {
+          const url = new URL(redirectUriOrOptions, window.location.origin);
+          if (url.pathname !== callbackPath) {
+            console.error(
+              `convex-logto: signIn("${redirectUriOrOptions}") uses a path that isn't the ` +
+                `provider's callbackPath ("${callbackPath}"), so the sign-in redirect will ` +
+                `not be handled. Set callbackPath on <ConvexLogtoProvider> instead.`,
+            );
+          }
+        } catch {
+          // Unparseable URI: let the SDK surface its own error.
+        }
+        return signIn(redirectUriOrOptions);
+      }
+      const returnTo = redirectUriOrOptions?.returnTo;
+      if (returnTo !== undefined) {
+        if (!isSafeReturnTo(returnTo)) {
+          return Promise.reject(
+            new Error(
+              `convex-logto: signIn returnTo must be a same-origin path starting with "/" ` +
+                `(got "${returnTo}") — full URLs and protocol-relative paths are rejected ` +
+                `to prevent open redirects.`,
+            ),
+          );
+        }
+        stashReturnTo(returnTo);
+      }
+      return signIn(`${window.location.origin}${callbackPath}`);
+    },
+    [signIn, callbackPath],
   );
   // Federated sign-out: ends the SSO session (so the next sign-in isn't silent),
   // then returns to origin — which must be a registered Post sign-out redirect URI.

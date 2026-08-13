@@ -44,16 +44,22 @@ add two URLs on the app (for each environment):
 `signIn()` returns to the redirect URI and `signOut()` to the post-sign-out URI,
 so remember to add both.
 
-## 2. Set the config on your Convex deployment (only place needed)
+## 2. Set the config
+
+On your Convex deployment (used by `auth.config.ts` to validate tokens):
 
 ```bash
 npx convex env set LOGTO_ENDPOINT https://auth.example.com
 npx convex env set LOGTO_APP_ID   your-app-id
 ```
 
-These are public OAuth values, but keeping them as deployment env vars means
-each environment (dev / staging / prod) carries its own — see
-[Multiple environments](/docs/multiple-environments).
+And in your frontend env (`.env.local`) — both are **public** OAuth values
+(the app id is a client id, not a secret), safe in the bundle:
+
+```bash
+VITE_LOGTO_ENDPOINT=https://auth.example.com
+VITE_LOGTO_APP_ID=your-app-id
+```
 
 ## 3. Wire Convex
 
@@ -62,29 +68,35 @@ import { logtoAuthConfig } from "convex-logto";
 export default { providers: [logtoAuthConfig()] };
 ```
 
-```ts title="convex/logto.ts"
-// serves the public { endpoint, appId } to the frontend
-import { logtoConfigQuery } from "convex-logto";
-export const config = logtoConfigQuery();
-```
-
 ## 4. Wrap your app
-
-The frontend carries **no Logto config** — it asks the backend.
 
 ```tsx title="src/main.tsx"
 import { ConvexReactClient } from "convex/react";
 import { ConvexLogtoProvider } from "convex-logto/react";
-import { api } from "../convex/_generated/api";
 
 const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
 
 root.render(
-  <ConvexLogtoProvider client={convex} configQuery={api.logto.config}>
+  <ConvexLogtoProvider
+    client={convex}
+    config={{
+      endpoint: import.meta.env.VITE_LOGTO_ENDPOINT,
+      appId: import.meta.env.VITE_LOGTO_APP_ID,
+    }}
+  >
     <App />
   </ConvexLogtoProvider>,
 );
 ```
+
+<Callout>
+Prefer resolving the config at runtime from the Convex deployment instead (e.g.
+multi-tenant, one frontend artifact for many environments)? Export
+`logtoConfigQuery()` from `convex/logto.ts` and pass
+`configQuery={api.logto.config}` in place of `config` — the provider renders the
+`fallback` prop while it loads. Static `config` is the default: it removes a
+config round-trip from first paint, so sign-in is interactive immediately.
+</Callout>
 
 <Callout>
 Using a router or SSR framework? The provider mounts a little differently (where it
