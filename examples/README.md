@@ -6,6 +6,7 @@ Each is a standalone app — see its README to run it.
 | Example | What it shows |
 | --- | --- |
 | [`vite-react`](./vite-react) | The minimal setup: `ConvexLogtoProvider` + declarative auth gating. |
+| [`vite-react-session`](./vite-react-session) | **Session mode**: server-held refresh token (Convex component), rotating one-time session tokens, live session revocation — no Logto SDK in the bundle. |
 | [`tanstack-router-spa`](./tanstack-router-spa) | TanStack Router (SPA): declarative gating + `beforeLoad` route guards (auth outside render), **plus a webhook-synced users table with role-based access (RBAC)**. |
 | [`tanstack-start`](./tanstack-start) | TanStack Start (SSR): one SSR-safe provider + `beforeLoad` route guards. |
 | [`nextjs`](./nextjs) | Next.js App Router: client provider boundary + callback route. |
@@ -18,4 +19,5 @@ In this monorepo each example depends on the package via `convex-logto: workspac
 Standalone, install it from npm with the Logto peer for your platform:
 
 - Web (Vite / Next.js / TanStack): `npm i convex-logto @logto/react`
+- Web, session mode: `npm i convex-logto` (no Logto package needed)
 - React Native / Expo: `npm i convex-logto @logto/rn` (plus the Expo modules — see the [`expo`](./expo) README)

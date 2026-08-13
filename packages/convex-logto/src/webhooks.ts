@@ -248,7 +248,7 @@ export type RegisterLogtoWebhookOptions = {
   signingKey?: string;
   /**
    * The session component (`components.logto`), if you use
-   * [session mode](https://convex-logto.dev/docs/session-mode). Enables:
+   * [session mode](https://convex-logto-docs.vercel.app/docs/session-mode). Enables:
    *
    * - **exactly-once handling** — deliveries are deduplicated by raw-body
    *   SHA-256, so a Logto retry whose 200 got lost doesn't re-run your sync
