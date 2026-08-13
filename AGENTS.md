@@ -13,6 +13,9 @@ Guidance for AI agents and human contributors working in this repository.
   - `src/react.tsx` — `ConvexLogtoProvider`, `useLogtoAuth()`. This is the `convex-logto/react` entry and is **ESM-only**.
   - `src/webhooks.ts` — `logtoSync()`, `registerLogtoWebhook()`, `verifyLogtoSignature()`.
   - `src/index.ts` — the server entry, `convex-logto`.
+  - `src/session.ts` — session mode's app-side surface: `logtoSessionApi()`, `assertUserHasActiveSession()`.
+  - `src/component/` — the **session component** (`convex-logto/convex.config`): schema, `lib.ts` (functions), `core.ts` (pure logic), `crons.ts` (GC). Built by `tsc -p tsconfig.component.json` into `dist/component/` (structure preserved 1:1 — the Convex CLI bundles that directory); everything else is built by tsup. After changing its schema or function signatures, regenerate `src/component/_generated/` with `npx convex codegen --component-dir ../../packages/convex-logto/src/component --typecheck disable`, run from an example dir that has a Convex deployment (e.g. `examples/vite-react-session`).
+  - `src/session-client.ts` + `src/react-session.tsx` — session mode's browser half: the framework-free auth engine, and the `convex-logto/react-session` entry (`ConvexLogtoSessionProvider`, `useLogtoAuth()`; ESM-only, no Logto SDK dependency).
 - `docs/` — the documentation site (Fumadocs on TanStack Start; deployed to Vercel).
 - `.changeset/` — Changesets config + pending release notes (workspace-level).
 

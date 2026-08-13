@@ -39,4 +39,13 @@ export default defineConfig([
     entry: { native: "src/native.tsx" },
     format: ["esm"],
   },
+  // Session mode's React entry. No Logto SDK dependency; ESM-only like the
+  // other React entries. (The session *component* itself is built by
+  // `tsc -p tsconfig.component.json` into dist/component/, not by tsup — the
+  // Convex CLI needs its file structure preserved.)
+  {
+    ...shared,
+    entry: { "react-session": "src/react-session.tsx" },
+    format: ["esm"],
+  },
 ]);

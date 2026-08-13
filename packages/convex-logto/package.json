@@ -30,6 +30,7 @@
   "sideEffects": false,
   "files": [
     "dist",
+    "src/component",
     "README.md",
     "LICENSE"
   ],
@@ -55,10 +56,27 @@
     "./native": {
       "types": "./dist/native.d.ts",
       "import": "./dist/native.js"
+    },
+    "./react-session": {
+      "types": "./dist/react-session.d.ts",
+      "import": "./dist/react-session.js"
+    },
+    "./convex.config": {
+      "@convex-dev/component-source": "./src/component/convex.config.ts",
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    },
+    "./convex.config.js": {
+      "@convex-dev/component-source": "./src/component/convex.config.ts",
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    },
+    "./_generated/component.js": {
+      "types": "./dist/component/_generated/component.d.ts"
     }
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && tsc -p tsconfig.component.json",
     "check-types": "tsc --noEmit",
     "test": "vitest run",
     "lint": "oxlint",

@@ -16,6 +16,19 @@ Use [Logto](https://logto.io) (self-hosted or cloud) as the auth provider for a
   config from the backend, so you configure Logto in exactly one place per
   environment — the Convex deployment.
 
+## Two modes
+
+- **Bridge mode** (the default everywhere below): Logto's SPA SDK signs in the
+  browser; the package bridges its ID token into Convex. Zero server-side
+  state.
+- **[Session mode](/docs/session-mode)**: a Convex component holds the Logto
+  refresh token server-side and rotates one-time session tokens with the
+  browser — smallest browser attack surface, live session revocation, and no
+  Logto SDK in the bundle.
+
+Both present the same ID token to Convex, so everything else on this site
+(identity, webhook sync, environments) applies to both.
+
 ## ID token over OIDC
 
 It uses Logto's **ID token** over OIDC, so Convex auto-discovers the signing key
@@ -46,6 +59,8 @@ pnpm add convex-logto @logto/react
 
 **Guides**
 
+- [Session mode](/docs/session-mode) — keep the refresh token out of the
+  browser, with reactive revocation.
 - [Auth in your app](/docs/auth-in-your-app) — render and route on auth state.
 - [Webhook sync](/docs/webhook-sync) — mirror Logto users into a queryable
   Convex table.
@@ -68,6 +83,9 @@ framework:
 <Cards>
   <Card title="Vite + React" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react">
     Minimal setup: one provider + declarative auth gating.
+  </Card>
+  <Card title="Vite + React (session mode)" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session">
+    Server-held refresh token, rotating session tokens, reactive revocation.
   </Card>
   <Card title="TanStack Router (SPA)" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-router-spa">
     Route guards in beforeLoad, plus a webhook-synced users table with RBAC.
