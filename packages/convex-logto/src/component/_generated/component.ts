@@ -57,6 +57,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         Name
       >;
+      forgetWebhookDelivery: FunctionReference<
+        "mutation",
+        "internal",
+        { bodyHash: string },
+        null,
+        Name
+      >;
       hasActiveSessionForSubject: FunctionReference<
         "query",
         "internal",
@@ -69,6 +76,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { subject: string },
         number,
+        Name
+      >;
+      recordWebhookDelivery: FunctionReference<
+        "mutation",
+        "internal",
+        { bodyHash: string; now: number },
+        boolean,
         Name
       >;
       refresh: FunctionReference<

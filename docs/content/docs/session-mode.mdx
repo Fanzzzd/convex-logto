@@ -128,6 +128,14 @@ export const sensitive = query({
 });
 ```
 
+To wire Logto-side account events into revocation — deleting or suspending a
+user in Logto Console kills their sessions within seconds — register the
+[webhook](/docs/webhook-sync) with the component attached:
+
+```ts title="convex/http.ts"
+registerLogtoWebhook(http, internal.logto.sync, { sessions: components.logto });
+```
+
 One consequence to plan for: a reactive query gated this way starts **throwing**
 the instant the session is revoked — a beat before the client flips to
 signed-out. Wrap such data in an error boundary (ordinary Convex practice for

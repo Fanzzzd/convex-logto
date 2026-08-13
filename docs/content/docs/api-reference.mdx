@@ -55,10 +55,13 @@ Returns `{ sync }`, an internal mutation that maps Logto user events
 ### `registerLogtoWebhook(http, sync, opts?)`
 
 Registers the verified webhook route (serves `POST /logto/webhook`). Reads
-`LOGTO_WEBHOOK_SIGNING_KEY`.
+`LOGTO_WEBHOOK_SIGNING_KEY`. Enforces a freshness window on `createdAt` and a
+1 MB body cap. With `sessions: components.logto` ([session
+mode](/docs/session-mode)), deliveries are deduplicated by raw-body hash and
+user deletion/suspension revokes the user's sessions.
 
 ```ts title="convex/http.ts"
-registerLogtoWebhook(http, internal.logto.sync);
+registerLogtoWebhook(http, internal.logto.sync, { sessions: components.logto });
 ```
 
 ### `verifyLogtoSignature(key, body, sig)`

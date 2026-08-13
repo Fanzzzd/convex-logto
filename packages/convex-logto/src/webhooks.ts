@@ -7,6 +7,7 @@ import {
   internalMutationGeneric,
 } from "convex/server";
 import { v } from "convex/values";
+import type { LogtoSessionComponent } from "./session";
 
 /** Subset of Logto's data-mutation User entity carried in webhook payloads. */
 export type LogtoUserEntity = {
@@ -42,8 +43,15 @@ const LOGTO_USER_EVENT_SET: ReadonlySet<LogtoUserEvent> = new Set(
 
 /** Shape of a Logto data-mutation webhook delivery (User family). */
 export type LogtoWebhookPayload = {
+  /**
+   * Identifies the webhook **configuration** in Logto, not this delivery —
+   * every delivery from the same hook carries the same `hookId`, so it is NOT
+   * an idempotency key. Deliveries are deduplicated by raw-body hash instead
+   * (the `sessions` option of {@link registerLogtoWebhook}).
+   */
   hookId: string;
   event: LogtoUserEvent;
+  /** ISO 8601 creation time of the event — bounds the accepted delivery age. */
   createdAt: string;
   userAgent?: string;
   ip?: string;
@@ -238,23 +246,81 @@ export type RegisterLogtoWebhookOptions = {
   path?: string;
   /** Signing key. Defaults to `LOGTO_WEBHOOK_SIGNING_KEY`. */
   signingKey?: string;
+  /**
+   * The session component (`components.logto`), if you use
+   * [session mode](https://convex-logto-docs.vercel.app/docs/session-mode). Enables:
+   *
+   * - **exactly-once handling** — deliveries are deduplicated by raw-body
+   *   SHA-256, so a Logto retry whose 200 got lost doesn't re-run your sync
+   *   handlers;
+   * - **session revocation** — `User.Deleted`, and
+   *   `User.SuspensionStatus.Updated` with `isSuspended: true`, kill all of
+   *   that user's sessions immediately (reactive clients drop live).
+   */
+  sessions?: LogtoSessionComponent;
 };
 
 const SIGNATURE_HEADER = "logto-signature-sha-256";
 
 /**
- * Register the Logto webhook route in one line: verify the signature, then
- * dispatch to the mutation returned by {@link logtoSync}. Responds 401 on a bad
- * signature, 400 on a malformed body, 500 if the signing key is unset, else 200.
+ * Reject bodies larger than this before doing any crypto or parsing. Real
+ * Logto User.* payloads are a few KB; 1 MB is a generous ceiling.
+ */
+const MAX_BODY_BYTES = 1024 * 1024;
+
+// Freshness bounds on `createdAt`: Logto's own delivery retries land within
+// seconds, so minutes of allowance covers them plus clock drift — while a
+// captured delivery can't be replayed indefinitely (the signature scheme has
+// no timestamp binding of its own).
+const MAX_DELIVERY_AGE_MS = 5 * 60 * 1000;
+const MAX_DELIVERY_FUTURE_SKEW_MS = 60 * 1000;
+
+/** True when `createdAt` parses and lies within the accepted freshness window. */
+function isFreshDelivery(createdAt: unknown, now: number): boolean {
+  if (typeof createdAt !== "string") return false;
+  const t = Date.parse(createdAt);
+  if (Number.isNaN(t)) return false;
+  return (
+    now - t <= MAX_DELIVERY_AGE_MS && t - now <= MAX_DELIVERY_FUTURE_SKEW_MS
+  );
+}
+
+/**
+ * The subject whose sessions a delivery revokes, if any: a deleted user (id in
+ * `data` or, for the usual `data: null` deletion, in the route params), or a
+ * user whose suspension just flipped ON. Un-suspension revokes nothing.
+ */
+function subjectToRevoke(payload: LogtoWebhookPayload): string | undefined {
+  if (payload.event === "User.Deleted") {
+    return entityId(payload) ?? paramsUserId(payload);
+  }
+  if (
+    payload.event === "User.SuspensionStatus.Updated" &&
+    payload.data?.isSuspended === true
+  ) {
+    return entityId(payload);
+  }
+  return undefined;
+}
+
+/**
+ * Register the Logto webhook route in one line: verify the signature, check
+ * freshness, then dispatch to the mutation returned by {@link logtoSync}.
+ * Responds 401 on a bad signature, 400 on a malformed/stale body, 413 on an
+ * oversized body, 500 if the signing key is unset, else 200.
+ *
+ * With the `sessions` option (session mode), deliveries are additionally
+ * deduplicated by raw-body hash, and user deletion/suspension revokes the
+ * user's sessions before your sync handlers run.
  *
  * @example
  * // convex/http.ts
  * import { httpRouter } from "convex/server";
  * import { registerLogtoWebhook } from "convex-logto";
- * import { internal } from "./_generated/api";
+ * import { components, internal } from "./_generated/api";
  *
  * const http = httpRouter();
- * registerLogtoWebhook(http, internal.logto.sync);
+ * registerLogtoWebhook(http, internal.logto.sync, { sessions: components.logto });
  * export default http;
  */
 export function registerLogtoWebhook(
@@ -262,6 +328,7 @@ export function registerLogtoWebhook(
   sync: LogtoSyncReference,
   options: RegisterLogtoWebhookOptions = {},
 ): void {
+  const { sessions } = options;
   http.route({
     path: options.path ?? "/logto/webhook",
     method: "POST",
@@ -274,8 +341,11 @@ export function registerLogtoWebhook(
           { status: 500 },
         );
       }
-      const signature = request.headers.get(SIGNATURE_HEADER) ?? "";
       const rawBody = await request.arrayBuffer();
+      if (rawBody.byteLength > MAX_BODY_BYTES) {
+        return new Response("Payload too large", { status: 413 });
+      }
+      const signature = request.headers.get(SIGNATURE_HEADER) ?? "";
       if (!(await verifyLogtoSignature(signingKey, rawBody, signature))) {
         return new Response("Invalid Logto webhook signature", { status: 401 });
       }
@@ -291,8 +361,44 @@ export function registerLogtoWebhook(
           status: 400,
         });
       }
+      // An authentic but old delivery is a replay: the signature scheme has no
+      // timestamp binding, so bounded freshness is what retires captured
+      // deliveries. (Logto's own retries land within seconds.)
+      if (!isFreshDelivery(parsed.createdAt, Date.now())) {
+        return new Response("Stale webhook delivery", { status: 400 });
+      }
 
-      await ctx.runMutation(sync, { payload: parsed });
+      // Exactly-once: claim the delivery by its raw-body hash. Logto retries a
+      // delivery (same signed bytes) when it doesn't see the 200 — without
+      // this, a lost 200 would re-run the sync handlers.
+      let bodyHash: string | undefined;
+      if (sessions) {
+        bodyHash = toHex(await crypto.subtle.digest("SHA-256", rawBody));
+        const firstSeen = await ctx.runMutation(
+          sessions.lib.recordWebhookDelivery,
+          { bodyHash, now: Date.now() },
+        );
+        if (!firstSeen) return new Response(null, { status: 200 });
+      }
+
+      try {
+        // Revocation before sync: a deleted/suspended user's sessions die even
+        // if the app's own sync handler goes on to fail.
+        const subject = sessions && subjectToRevoke(parsed);
+        if (sessions && subject !== undefined) {
+          await ctx.runMutation(sessions.lib.killSubjectSessions, { subject });
+        }
+        await ctx.runMutation(sync, { payload: parsed });
+      } catch (error) {
+        // Release the dedupe claim so Logto's retry re-runs the failed work
+        // instead of being swallowed as a duplicate.
+        if (sessions && bodyHash !== undefined) {
+          await ctx
+            .runMutation(sessions.lib.forgetWebhookDelivery, { bodyHash })
+            .catch(() => {});
+        }
+        throw error;
+      }
       return new Response(null, { status: 200 });
     }),
   });
