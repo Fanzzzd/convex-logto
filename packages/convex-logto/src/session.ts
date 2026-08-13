@@ -93,6 +93,18 @@ export type LogtoSessionComponent = {
       { subject: string },
       number
     >;
+    recordWebhookDelivery: FunctionReference<
+      "mutation",
+      "internal",
+      { bodyHash: string; now: number },
+      boolean
+    >;
+    forgetWebhookDelivery: FunctionReference<
+      "mutation",
+      "internal",
+      { bodyHash: string },
+      null
+    >;
   };
 };
 

@@ -125,6 +125,24 @@ registerLogtoWebhook(http, internal.logto.sync); // serves POST /logto/webhook
 export default http;
 ```
 
+Beyond the HMAC signature, the route enforces a **freshness window** on the
+delivery's `createdAt` (minutes — retires replayed captures; Logto's own retries
+land within seconds) and caps the body at **1 MB**.
+
+If you use [session mode](/docs/session-mode), also pass the component:
+
+```ts title="convex/http.ts"
+import { components, internal } from "./_generated/api";
+
+registerLogtoWebhook(http, internal.logto.sync, { sessions: components.logto });
+```
+
+That adds two things: **exactly-once handling** (deliveries are deduplicated by
+raw-body hash, so a retry whose `200` got lost doesn't re-run your handlers) and
+**session revocation** — `User.Deleted`, and a suspension flipping ON, kill all
+of that user's sessions before your sync handlers run, so reactive clients drop
+to signed-out live.
+
 ## 4. Create the webhook in Logto
 
 Logto Console → **Webhooks** → **Create webhook**, pointed at
@@ -156,9 +174,10 @@ synthetic payload, so read the status it gets back rather than expecting a `200`
 
 | Status | Meaning |
 | --- | --- |
-| `200` | Verified and dispatched to your `sync` mutation. |
-| `400` | Body wasn't valid JSON, or wasn't a recognized `User.*` event. |
+| `200` | Verified and dispatched to your `sync` mutation (or a deduplicated retry). |
+| `400` | Body wasn't valid JSON, wasn't a recognized `User.*` event, or its `createdAt` fell outside the freshness window. |
 | `401` | Signature didn't match — wrong (or unset) `LOGTO_WEBHOOK_SIGNING_KEY`. |
+| `413` | Body over 1 MB. |
 | `500` | `LOGTO_WEBHOOK_SIGNING_KEY` isn't set on the deployment. |
 
 ## RBAC

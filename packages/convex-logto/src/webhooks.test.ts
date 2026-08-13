@@ -8,12 +8,16 @@ import {
 } from "./webhooks";
 
 const signingKey = "whsec_test_signing_key_1234567890";
-const body = JSON.stringify({
+// The route now enforces freshness on `createdAt`, so route-level tests build
+// their payloads with a current timestamp.
+const freshPayload = (overrides: Record<string, unknown> = {}) => ({
   hookId: "h1",
   event: "User.Created",
-  createdAt: "2026-06-14T00:00:00.000Z",
+  createdAt: new Date().toISOString(),
   data: { id: "user_abc", primaryEmail: "a@b.com", name: "Ada" },
+  ...overrides,
 });
+const body = JSON.stringify(freshPayload());
 
 const sign = (key: string, payload: Buffer | string) =>
   createHmac("sha256", key).update(payload).digest("hex");
@@ -105,10 +109,9 @@ type RouteHandler = (
   request: Request,
 ) => Promise<Response>;
 
-function captureWebhookRoute(options?: {
-  path?: string;
-  signingKey?: string;
-}): RouteHandler {
+function captureWebhookRoute(
+  options?: Parameters<typeof registerLogtoWebhook>[2],
+): RouteHandler {
   const http = httpRouter();
   // `sync` is only forwarded to `ctx.runMutation`; an opaque ref is enough here.
   registerLogtoWebhook(http, {} as never, options);
@@ -205,6 +208,190 @@ describe("registerLogtoWebhook route", () => {
     );
     expect(res.status).toBe(200);
     expect(runMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 413 on an oversized body without touching crypto or handlers", async () => {
+    const handler = captureWebhookRoute({ signingKey });
+    const huge = JSON.stringify(
+      freshPayload({ padding: "x".repeat(1024 * 1024) }),
+    );
+    const runMutation = vi.fn();
+    const res = await handler(
+      { runMutation },
+      post(sign(signingKey, huge), huge),
+    );
+    expect(res.status).toBe(413);
+    expect(runMutation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["6 minutes old", new Date(Date.now() - 6 * 60 * 1000).toISOString()],
+    [
+      "2 minutes in the future",
+      new Date(Date.now() + 2 * 60 * 1000).toISOString(),
+    ],
+    ["not a date", "yesterday-ish"],
+    ["missing", undefined],
+  ])(
+    "returns 400 on a stale/invalid createdAt (%s), even correctly signed",
+    async (_name, createdAt) => {
+      const handler = captureWebhookRoute({ signingKey });
+      const payload = freshPayload();
+      if (createdAt === undefined) {
+        delete (payload as Record<string, unknown>).createdAt;
+      } else {
+        payload.createdAt = createdAt;
+      }
+      const stale = JSON.stringify(payload);
+      const runMutation = vi.fn();
+      const res = await handler(
+        { runMutation },
+        post(sign(signingKey, stale), stale),
+      );
+      expect(res.status).toBe(400);
+      expect(runMutation).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts small clock skew (30s in the future)", async () => {
+    const handler = captureWebhookRoute({ signingKey });
+    const skewed = JSON.stringify(
+      freshPayload({
+        createdAt: new Date(Date.now() + 30 * 1000).toISOString(),
+      }),
+    );
+    const runMutation = vi.fn().mockResolvedValue(null);
+    const res = await handler(
+      { runMutation },
+      post(sign(signingKey, skewed), skewed),
+    );
+    expect(res.status).toBe(200);
+  });
+});
+
+// --- the `sessions` option: dedupe + revocation wiring ----------------------
+
+// Sentinel refs; the fake ctx dispatches runMutation calls on ref identity.
+const SYNC_REF = { fn: "sync" };
+const sessionsComponent = {
+  lib: {
+    recordWebhookDelivery: { fn: "record" },
+    forgetWebhookDelivery: { fn: "forget" },
+    killSubjectSessions: { fn: "kill" },
+  },
+} as never;
+
+function sessionsHarness(overrides?: {
+  record?: ReturnType<typeof vi.fn>;
+  sync?: ReturnType<typeof vi.fn>;
+}) {
+  const calls: Array<{ fn: string; args: unknown }> = [];
+  const handlers: Record<string, ReturnType<typeof vi.fn>> = {
+    record: overrides?.record ?? vi.fn().mockResolvedValue(true),
+    forget: vi.fn().mockResolvedValue(null),
+    kill: vi.fn().mockResolvedValue(0),
+    sync: overrides?.sync ?? vi.fn().mockResolvedValue(null),
+  };
+  const runMutation = vi.fn((ref: unknown, args: unknown) => {
+    const fn = (ref as { fn?: string }).fn ?? "sync";
+    calls.push({ fn, args });
+    return handlers[fn]!(args);
+  });
+  const http = httpRouter();
+  registerLogtoWebhook(http, SYNC_REF as never, {
+    signingKey,
+    sessions: sessionsComponent,
+  });
+  const handler = (
+    http.lookup("/logto/webhook", "POST")![0] as unknown as Record<
+      string,
+      RouteHandler
+    >
+  )["_handler"]!;
+  return { handler, runMutation, handlers, calls };
+}
+
+describe("registerLogtoWebhook with sessions", () => {
+  it("claims the delivery by body hash, then dispatches", async () => {
+    const { handler, runMutation, handlers, calls } = sessionsHarness();
+    const res = await handler(
+      { runMutation },
+      post(sign(signingKey, body), body),
+    );
+    expect(res.status).toBe(200);
+    expect(handlers.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bodyHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      }),
+    );
+    expect(calls.map((c) => c.fn)).toEqual(["record", "sync"]);
+  });
+
+  it("answers 200 on a duplicate delivery WITHOUT re-running sync", async () => {
+    const { handler, runMutation, handlers } = sessionsHarness({
+      record: vi.fn().mockResolvedValue(false),
+    });
+    const res = await handler(
+      { runMutation },
+      post(sign(signingKey, body), body),
+    );
+    expect(res.status).toBe(200);
+    expect(handlers.sync).not.toHaveBeenCalled();
+    expect(handlers.kill).not.toHaveBeenCalled();
+  });
+
+  it("User.Deleted kills the subject's sessions before sync runs", async () => {
+    const { handler, runMutation, handlers, calls } = sessionsHarness();
+    const deleted = JSON.stringify(
+      freshPayload({
+        event: "User.Deleted",
+        data: null,
+        params: { userId: "u9" },
+      }),
+    );
+    const res = await handler(
+      { runMutation },
+      post(sign(signingKey, deleted), deleted),
+    );
+    expect(res.status).toBe(200);
+    expect(handlers.kill).toHaveBeenCalledWith({ subject: "u9" });
+    expect(calls.map((c) => c.fn)).toEqual(["record", "kill", "sync"]);
+  });
+
+  it("suspension ON kills sessions; suspension OFF does not", async () => {
+    for (const [isSuspended, killed] of [
+      [true, true],
+      [false, false],
+    ] as const) {
+      const { handler, runMutation, handlers } = sessionsHarness();
+      const suspended = JSON.stringify(
+        freshPayload({
+          event: "User.SuspensionStatus.Updated",
+          data: { id: "u5", isSuspended },
+        }),
+      );
+      const res = await handler(
+        { runMutation },
+        post(sign(signingKey, suspended), suspended),
+      );
+      expect(res.status).toBe(200);
+      if (killed) expect(handlers.kill).toHaveBeenCalledWith({ subject: "u5" });
+      else expect(handlers.kill).not.toHaveBeenCalled();
+    }
+  });
+
+  it("releases the dedupe claim when sync fails, so Logto's retry re-runs it", async () => {
+    const { handler, runMutation, handlers } = sessionsHarness({
+      sync: vi.fn().mockRejectedValue(new Error("handler exploded")),
+    });
+    await expect(
+      handler({ runMutation }, post(sign(signingKey, body), body)),
+    ).rejects.toThrow("handler exploded");
+    expect(handlers.forget).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bodyHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      }),
+    );
   });
 });
 

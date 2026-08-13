@@ -10,6 +10,7 @@ import {
   DEFAULT_REUSE_WINDOW_MS,
   SESSION_GC_AFTER_MS,
   TRANSACTION_TTL_MS,
+  WEBHOOK_DELIVERY_GC_AFTER_MS,
   buildAuthorizeUrl,
   buildEndSessionUrl,
   classifyTokenEndpointFailure,
@@ -604,6 +605,47 @@ export const killSubjectSessions = mutation({
   },
 });
 
+// --- webhook delivery dedupe -------------------------------------------------
+
+/**
+ * Claim a webhook delivery by its raw-body hash. Returns `true` the first time
+ * a body is seen — the caller processes it; `false` on a repeat (a Logto retry
+ * whose original 200 was lost) — the caller answers 200 without reprocessing.
+ */
+export const recordWebhookDelivery = mutation({
+  args: { bodyHash: v.string(), now: v.number() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("webhookDeliveries")
+      .withIndex("by_bodyHash", (q) => q.eq("bodyHash", args.bodyHash))
+      .unique();
+    if (existing) return false;
+    await ctx.db.insert("webhookDeliveries", {
+      bodyHash: args.bodyHash,
+      seenAt: args.now,
+    });
+    return true;
+  },
+});
+
+/**
+ * Release a claimed delivery after processing failed, so Logto's retry isn't
+ * deduplicated into a lost event.
+ */
+export const forgetWebhookDelivery = mutation({
+  args: { bodyHash: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("webhookDeliveries")
+      .withIndex("by_bodyHash", (q) => q.eq("bodyHash", args.bodyHash))
+      .unique();
+    if (existing) await ctx.db.delete(existing._id);
+    return null;
+  },
+});
+
 // --- GC ---------------------------------------------------------------------
 
 export const gc = internalMutation({
@@ -625,6 +667,13 @@ export const gc = internalMutation({
       )
       .take(500);
     for (const s of deadSessions) await ctx.db.delete(s._id);
+    const staleDeliveries = await ctx.db
+      .query("webhookDeliveries")
+      .withIndex("by_seenAt", (q) =>
+        q.lt("seenAt", now - WEBHOOK_DELIVERY_GC_AFTER_MS),
+      )
+      .take(500);
+    for (const d of staleDeliveries) await ctx.db.delete(d._id);
     return null;
   },
 });

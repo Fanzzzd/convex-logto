@@ -21,6 +21,13 @@ export const DEFAULT_REUSE_WINDOW_MS = 10 * 1000;
  */
 export const SESSION_GC_AFTER_MS = 190 * 24 * 60 * 60 * 1000;
 
+/**
+ * GC horizon for webhook-delivery dedupe hashes. Logto's delivery retries land
+ * within seconds and the webhook route rejects deliveries older than minutes,
+ * so a day of memory is far more than dedupe ever needs.
+ */
+export const WEBHOOK_DELIVERY_GC_AFTER_MS = 24 * 60 * 60 * 1000;
+
 const encoder = new TextEncoder();
 
 export function toBase64Url(bytes: Uint8Array): string {
