@@ -16,7 +16,11 @@ import {
   type TokenStorageKind,
 } from "./session-client";
 import type { LogtoSessionApi } from "./session";
-import type { SessionDeviceBinding } from "./session-device";
+import {
+  SessionDeviceBindingError,
+  WebCryptoSessionDeviceBinding,
+  type SessionDeviceBinding,
+} from "./session-device";
 import {
   COOKIE_SESSION_MARKER,
   createCookieSessionMarker,
@@ -629,6 +633,22 @@ describe("signIn", () => {
     await expect(
       engine.signIn({ returnTo: "https://evil.com" }),
     ).rejects.toThrow(/same-origin path/);
+    expect(handlers.signIn).not.toHaveBeenCalled();
+  });
+
+  it("reports and rejects a device-key preparation failure", async () => {
+    const deviceBinding = new WebCryptoSessionDeviceBinding({
+      read: () => Promise.reject(new Error("IndexedDB unavailable")),
+      add: () => Promise.resolve(true),
+    });
+    const { engine, handlers, onAuthError } = makeHarness({ deviceBinding });
+
+    await expect(engine.signIn()).rejects.toBeInstanceOf(
+      SessionDeviceBindingError,
+    );
+    expect(onAuthError).toHaveBeenCalledWith(
+      expect.any(SessionDeviceBindingError),
+    );
     expect(handlers.signIn).not.toHaveBeenCalled();
   });
 });

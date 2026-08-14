@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { verifyDeviceProof } from "./component/core";
 import {
+  SessionDeviceBindingError,
   WebCryptoSessionDeviceBinding,
   createSessionDeviceBinding,
   type SessionDeviceKeyRepository,
@@ -51,9 +52,12 @@ describe("WebCryptoSessionDeviceBinding", () => {
     await expect(reloaded.getPublicKey()).resolves.toEqual(publicKey);
   });
 
-  it("fails loudly when IndexedDB is unavailable at opt-in", () => {
-    expect(() => createSessionDeviceBinding("deployment", null)).toThrow(
-      /device binding requires working IndexedDB/,
+  it("defers an unavailable IndexedDB failure until preparation", async () => {
+    expect(window).toBeDefined();
+    const binding = createSessionDeviceBinding("deployment", null);
+
+    await expect(binding.prepare()).rejects.toBeInstanceOf(
+      SessionDeviceBindingError,
     );
   });
 });

@@ -213,7 +213,6 @@ export function createSessionDeviceBinding(
     ? null
     : indexedDB,
 ): SessionDeviceBinding {
-  if (factory === null && typeof window !== "undefined") throw unavailable();
   return new WebCryptoSessionDeviceBinding(
     new IndexedDbDeviceKeyRepository(
       factory ??

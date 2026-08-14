@@ -527,7 +527,13 @@ export class SessionAuthEngine {
           `to prevent open redirects.`,
       );
     }
-    await this.options.deviceBinding?.prepare();
+    try {
+      await this.options.deviceBinding?.prepare();
+    } catch (error) {
+      const normalizedError = this.asError(error);
+      this.reportError(normalizedError);
+      throw normalizedError;
+    }
     const { url } = await this.options.transport.action(
       this.options.api.signIn,
       {
