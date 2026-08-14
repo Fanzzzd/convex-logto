@@ -208,8 +208,9 @@ server-side revocation with `assertUserHasActiveSession` — in the
 Apps with a same-site server endpoint can additionally mount
 `createLogtoSessionCookieHandler()` and pass
 `cookieTransport={{ endpoint: "/api/logto" }}` to the provider. That moves the
-rotating credential into a rolling `__Host-` HttpOnly cookie, enforces fixed
-POST + custom-header + Origin CSRF checks, and supports SSR seeding through
+rotating credential into a persistent rolling `__Host-` HttpOnly cookie whose
+190-day lifetime matches server-side idle GC. It enforces fixed POST +
+custom-header + Origin CSRF checks and supports SSR seeding through
 `handler.getInitialToken(request)`. See the session-mode guide for Next.js,
 TanStack Start, and Convex custom-domain mounts, plus the Safari device-binding
 exclusion.

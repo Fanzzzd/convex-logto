@@ -117,14 +117,17 @@ on the **same site**, the cookie transport puts that credential in a
 `__Host-convex-logto-session` cookie with fixed attributes:
 
 ```text
-HttpOnly; Secure; SameSite=Lax; Path=/
+__Host-convex-logto-session=<encoded-token>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=16416000
 ```
 
 JavaScript never receives the credential—not in a response body and not in
-storage—and every successful `/token` rotation rolls the cookie. The short-lived
-ID token still has to reach Convex from JavaScript, so this closes the long-lived
-session-token exfiltration path rather than claiming to make arbitrary XSS
-harmless.
+storage—and every successful `/token` rotation rolls the cookie and renews its
+190-day maximum age. That sliding lifetime matches the component's idle-session
+garbage collection, so cookie transport persists across browser restarts just
+like the default localStorage credential while the server session remains live.
+The short-lived ID token still has to reach Convex from JavaScript, so this
+closes the long-lived session-token exfiltration path rather than claiming to
+make arbitrary XSS harmless.
 
 The exported handler is a standard `(Request) => Promise<Response>` function
 with four routes under `/api/logto-session` by default:
@@ -251,9 +254,10 @@ only for an exact allowed origin.
 
 `handler.getInitialToken(request)` is the server-only SSR path. It reads the
 cookie, rotates it, and returns `{ initialToken, initialSessionId, headers }`.
-Always forward its `headers` to the page response—the `Set-Cookie` header is the
-next one-time credential. If your rendering hook cannot control response
-headers, let the browser use `/token` instead.
+Call it at most once per incoming document request and always forward its
+`headers` to the page response—the `Set-Cookie` header is the next one-time
+credential. If your rendering hook cannot control response headers, let the
+browser use `/token` instead.
 The seed is best-effort under concurrent renders: a request that encounters an
 in-flight refresh returns an empty seed and leaves the cookie intact for the
 client to refresh after hydration.
@@ -270,7 +274,7 @@ import { logtoCookieHandler } from "~/server/logto-cookie";
 
 const seedSession = createServerFn().handler(async () => {
   const seed = await logtoCookieHandler.getInitialToken(getRequest());
-  setResponseHeaders(seed.headers);
+  setResponseHeaders(Object.fromEntries(seed.headers));
   return {
     initialToken: seed.initialToken,
     initialSessionId: seed.initialSessionId,
@@ -375,7 +379,7 @@ destroy the grant.
 | `afterSignIn` | `"/"` | Where to land after sign-in; `signIn({ returnTo })` overrides. |
 | `navigate` | hard replace | Your router's navigate for soft post-sign-in navigation. |
 | `tokenStorage` | `"session"` | Where the ID token persists: `"session"` (per-tab, zero-round-trip reload), `"memory"` (strictest), `"local"`. |
-| `cookieTransport` | — | `{ endpoint?, deviceBinding? }`: move the rotating session token into the same-site HttpOnly cookie handler. |
+| `cookieTransport` | — | `{ endpoint?, fetch?, deviceBinding? }`: move the rotating session token into a persistent same-site HttpOnly cookie whose 190-day lifetime renews on every rotation. |
 | `initialToken` / `initialSessionId` | — | Paired values from `handler.getInitialToken(request)` for authenticated SSR/hydration. |
 | `reactiveRevocation` | `true` | Subscribe to session liveness and drop auth live on revocation. |
 | `onAuthError` | — | Recoverable sign-in failures (stale/forged callback, Logto down). |

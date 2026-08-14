@@ -106,13 +106,16 @@ as a standard `(Request) => Promise<Response>` handler. Options are:
 The four final path segments are `sign-in`, `callback`, `token`, and `sign-out`.
 Actual calls require POST, `x-convex-logto-csrf: 1`, and an allowed `Origin`;
 approved preflights receive credentialed CORS headers. The cookie is fixed to
-`__Host-convex-logto-session; HttpOnly; Secure; SameSite=Lax; Path=/` and rolls
-on every successful token rotation.
+`__Host-convex-logto-session=<encoded-token>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=16416000`
+and rolls on every successful token rotation. Each roll renews the 190-day
+maximum age, matching the component's idle-session garbage collection window.
 
 The returned handler also has `getInitialToken(request)`. It returns
-`{ initialToken, initialSessionId, headers }`; forward `headers` to the SSR
-response so the rotated `Set-Cookie` is not lost, then pass the two initial
-values to `ConvexLogtoSessionProvider`.
+`{ initialToken, initialSessionId, headers }`; call it at most once per incoming
+document request and always forward `headers` to the SSR response so the rotated
+`Set-Cookie` is not lost, then pass the two initial values to
+`ConvexLogtoSessionProvider`. Concurrent requests are best-effort: transient
+refresh contention returns an empty seed without clearing the cookie.
 
 ### `assertUserHasActiveSession(ctx, component)`
 
