@@ -25,6 +25,11 @@ browser, refresh token in `localStorage`):
 | Frontend dependencies | `@logto/react` | none beyond `convex` + `react` |
 | Logto config in the bundle | endpoint + app id | nothing |
 
+These are relative mode trade-offs, not an XSS boundary. Apply the
+[SPA security baseline](/docs/security-baseline) to either mode; it covers CSP,
+Trusted Types, third-party scripts, and scope minimization without repeating
+this token model.
+
 The default localStorage transport works on any static host/CDN — no cookie
 domain or frontend server required. Apps with a same-site server endpoint can
 optionally move the rotating session token into an HttpOnly cookie; that upgrade

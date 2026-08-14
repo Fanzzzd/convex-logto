@@ -27,7 +27,9 @@ Use [Logto](https://logto.io) (self-hosted or cloud) as the auth provider for a
   Logto SDK in the bundle.
 
 Both present the same ID token to Convex, so everything else on this site
-(identity, webhook sync, environments) applies to both.
+(identity, webhook sync, environments) applies to both. Whichever mode you
+choose, apply the [SPA security baseline](/docs/security-baseline) to the code
+that shares the browser origin with authentication.
 
 ## ID token over OIDC
 
@@ -59,6 +61,8 @@ pnpm add convex-logto @logto/react
 
 **Guides**
 
+- [SPA security baseline](/docs/security-baseline) — CSP, Trusted Types,
+  third-party script hygiene, and least-privilege scopes.
 - [Session mode](/docs/session-mode) — keep the refresh token out of the
   browser, with reactive revocation.
 - [Auth in your app](/docs/auth-in-your-app) — render and route on auth state.
