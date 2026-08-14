@@ -222,6 +222,14 @@ fails loudly without IndexedDB, and cannot be combined with cookie transport;
 key eviction causes a clean re-authentication. See the session-mode guide for
 the exact threat model and the cross-browser DBSC re-evaluation trigger.
 
+For Expo, import `ConvexLogtoSessionProvider` from
+`convex-logto/native-session` and install `expo-secure-store` plus
+`expo-web-browser`. It reuses the same component and session actions, completes
+sign-in through the system browser/deep link (no callback route), keeps the
+rotating session token and short-lived ID token in the OS keystore, and retains
+reactive revocation. Native intentionally has no cookie-transport or software
+`deviceBinding` option.
+
 [session-mode-docs]: https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/session-mode.mdx
 [session-example]: https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session
 
@@ -285,6 +293,8 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 | `useLogtoAuth()` | `convex-logto/react-session` | Same shape as the bridge hook; `signOut(opts?)` takes `{ postLogoutRedirectUri?, federated? }`. |
 | `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `configQuery` model; no callback route. |
 | `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signIn()` defaults to the provider's `redirectUri`. |
+| `ConvexLogtoSessionProvider` | `convex-logto/native-session` | Expo session mode via SecureStore + system-browser deep links; same server component and actions. |
+| `useLogtoAuth()` | `convex-logto/native-session` | Native session auth/actions; `signOut(opts?)` supports federated browser sign-out. |
 
 ### Next.js note
 
@@ -292,7 +302,7 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 
 ### React Native / Expo
 
-For Expo, import from **`convex-logto/native`** (built on [`@logto/rn`](https://github.com/logto-io/react-native)) instead of `convex-logto/react`. The backend (`logtoAuthConfig` / `logtoConfigQuery`) is identical. There's no callback route on native — `signIn` opens the system browser and resolves on the deep-link return. See the [React Native guide](https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/react-native.mdx) and the runnable [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo) app.
+For Expo bridge mode, import from **`convex-logto/native`** (built on [`@logto/rn`](https://github.com/logto-io/react-native)) instead of `convex-logto/react`. For server-held session mode, use **`convex-logto/native-session`** with `expo-secure-store` and `expo-web-browser`. Neither native entry needs a callback route — `signIn` opens the system browser and resolves on the deep-link return. See the [React Native guide](https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/react-native.mdx) and the runnable bridge-mode [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo) app; a dedicated session-mode example is tracked in [#43](https://github.com/Fanzzzd/convex-logto/issues/43).
 
 ## License
 
