@@ -205,8 +205,8 @@ export function createNativeSessionAuthFlow(
       }
       return result.url;
     },
-    async openEndSession(url) {
-      await webBrowser.openAuthSessionAsync(url, redirectUri);
+    async openEndSession(url, returnUrl) {
+      await webBrowser.openAuthSessionAsync(url, returnUrl);
     },
   };
 }

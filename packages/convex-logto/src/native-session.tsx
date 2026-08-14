@@ -168,9 +168,15 @@ export type LogtoSessionAuth = {
   isLoading: boolean;
   /** Decoded ID token claims, for display only. */
   user: Record<string, unknown> | undefined;
-  /** Open Logto in the system browser and complete the deep-link return in place. */
+  /**
+   * Open Logto in the system browser and complete the deep-link return in
+   * place. Concurrent calls share the one in-progress native browser flow.
+   */
   signIn: () => Promise<void>;
-  /** Revoke the session, clear SecureStore, and end browser SSO by default. */
+  /**
+   * Revoke the session, clear SecureStore, and end browser SSO by default.
+   * Rejects with `SessionSignOutError` if both durable cleanup and revocation fail.
+   */
   signOut: (options?: {
     postLogoutRedirectUri?: string;
     federated?: boolean;
@@ -204,3 +210,4 @@ export function useLogtoAuth(): LogtoSessionAuth {
 }
 
 export type { LogtoSessionApi } from "./session";
+export { SessionSignOutError } from "./session-client";

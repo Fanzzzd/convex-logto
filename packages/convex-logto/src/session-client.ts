@@ -58,8 +58,19 @@ export type SessionAuthFlow = {
   /** Return the successful deep-link URL, or null when the user cancels. */
   openAuthorization(url: string): Promise<string | null>;
   /** Best-effort federated sign-out in the system browser. */
-  openEndSession(url: string): Promise<void>;
+  openEndSession(url: string, returnUrl: string): Promise<void>;
 };
+
+/** Neither durable credential cleanup nor server-side revocation completed. */
+export class SessionSignOutError extends Error {
+  constructor(cause?: unknown) {
+    super(
+      "convex-logto: sign-out did not complete because SecureStore cleanup and server revocation both failed.",
+      cause === undefined ? undefined : { cause },
+    );
+    this.name = "SessionSignOutError";
+  }
+}
 
 export function decodeJwtPayload(
   token: string,
@@ -270,6 +281,7 @@ export class SessionAuthEngine {
   private serverSnapshot: SessionSnapshot;
   private listeners = new Set<() => void>();
   private started = false;
+  private inflightSignIn: Promise<void> | null = null;
   private inflightRefresh: Promise<string | null> | null = null;
   private storagePreparation: Promise<void> | null = null;
   /** The last ID token handed to Convex — a forced fetch must never re-serve it. */
@@ -571,7 +583,20 @@ export class SessionAuthEngine {
 
   // -- user actions --
 
-  async signIn(options?: { returnTo?: string }): Promise<void> {
+  signIn(options?: { returnTo?: string }): Promise<void> {
+    // Expo can only host one system-browser auth session at a time, and native
+    // storage intentionally has one OAuth transaction slot. Share the entire
+    // flow so a double-tap cannot overwrite its own login-CSRF state. The web
+    // redirect path remains independent and unchanged.
+    if (this.options.authFlow === undefined) return this.signInInner(options);
+    if (this.inflightSignIn !== null) return this.inflightSignIn;
+    this.inflightSignIn = this.signInInner(options).finally(() => {
+      this.inflightSignIn = null;
+    });
+    return this.inflightSignIn;
+  }
+
+  private async signInInner(options?: { returnTo?: string }): Promise<void> {
     const returnTo = options?.returnTo;
     if (returnTo !== undefined && !isSafeReturnTo(returnTo)) {
       throw new Error(
@@ -687,35 +712,74 @@ export class SessionAuthEngine {
     this.options.storage.clearAll();
     this.lastServed = null;
     this.setUnauthenticated();
+    let durableCleanupFailed = false;
     try {
       await this.flushStorage();
     } catch (error) {
       // Still revoke the server session when durable local cleanup fails. A
       // later cold start can only present a token the server has killed.
+      durableCleanupFailed = true;
       this.reportError(this.asError(error));
     }
-    if (session === null) return;
+    if (session === null) {
+      if (durableCleanupFailed) {
+        this.options.storage.clearAll();
+        try {
+          await this.flushStorage();
+        } catch (error) {
+          this.reportError(this.asError(error));
+        }
+      }
+      return;
+    }
+    const postLogoutRedirectUri =
+      options?.postLogoutRedirectUri ??
+      this.options.authFlow?.redirectUri ??
+      window.location.origin;
     let endSessionUrl: string | undefined;
+    let serverRevoked = false;
+    let serverRevocationError: unknown;
     try {
       ({ endSessionUrl } = await this.options.transport.action(
         this.options.api.signOut,
         {
           sessionToken: session.token,
-          postLogoutRedirectUri:
-            options?.postLogoutRedirectUri ??
-            this.options.authFlow?.redirectUri ??
-            window.location.origin,
+          postLogoutRedirectUri,
         },
       ));
-    } catch {
+      serverRevoked = true;
+    } catch (error) {
+      serverRevocationError = error;
       // Best effort: local sign-out already happened; the grant dies at its TTL.
+    }
+    if (durableCleanupFailed) {
+      // SecureStore failures can be transient (for example, a temporarily
+      // unavailable keystore). Retry once after the independent server kill.
+      this.options.storage.clearAll();
+      try {
+        await this.flushStorage();
+      } catch (error) {
+        const durableCleanupError = this.asError(error);
+        this.reportError(durableCleanupError);
+        if (!serverRevoked) {
+          const signOutError = new SessionSignOutError({
+            durableCleanupError,
+            serverRevocationError,
+          });
+          this.reportError(signOutError);
+          throw signOutError;
+        }
+      }
     }
     // Federated by default: also end Logto's SSO session so the next sign-in
     // isn't silent. The post sign-out redirect URI must be registered on the app.
     if (options?.federated !== false && endSessionUrl !== undefined) {
       if (this.options.authFlow !== undefined) {
         try {
-          await this.options.authFlow.openEndSession(endSessionUrl);
+          await this.options.authFlow.openEndSession(
+            endSessionUrl,
+            postLogoutRedirectUri,
+          );
         } catch (error) {
           this.reportError(this.asError(error));
         }

@@ -8,6 +8,7 @@ import {
 } from "./native-session-client";
 import {
   SessionAuthEngine,
+  SessionSignOutError,
   type SessionSnapshot,
   type SessionTransport,
 } from "./session-client";
@@ -207,6 +208,32 @@ describe("native session adapters", () => {
     expect(secureStore.data.size).toBe(2);
   });
 
+  it("shares one native sign-in flow across concurrent calls", async () => {
+    let finishBrowser!: (result: { type: string; url?: string }) => void;
+    const webBrowser = fakeWebBrowser();
+    webBrowser.openAuthSessionAsync.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishBrowser = resolve;
+        }),
+    );
+    const { engine, handlers } = makeHarness({ webBrowser });
+    engine.start();
+    await settled(engine);
+
+    const first = engine.signIn();
+    const second = engine.signIn();
+
+    expect(second).toBe(first);
+    await vi.waitFor(() => {
+      expect(webBrowser.openAuthSessionAsync).toHaveBeenCalledTimes(1);
+    });
+    expect(handlers.signIn).toHaveBeenCalledTimes(1);
+
+    finishBrowser({ type: "cancel" });
+    await Promise.all([first, second]);
+  });
+
   it("hydrates a cold start and rotates a stale session token", async () => {
     const secureStore = fakeSecureStore();
     await seedSession(secureStore, staleToken());
@@ -247,7 +274,7 @@ describe("native session adapters", () => {
     expect(secureStore.data.size).toBe(0);
   });
 
-  it("clears SecureStore before revoking and opens federated sign-out", async () => {
+  it("uses a custom post-logout URI for the action and browser return", async () => {
     const secureStore = fakeSecureStore();
     await seedSession(secureStore, freshToken());
     const webBrowser = fakeWebBrowser({ type: "dismiss" });
@@ -261,17 +288,64 @@ describe("native session adapters", () => {
     engine.start();
     await settled(engine);
 
-    await engine.signOut();
+    await engine.signOut({
+      postLogoutRedirectUri: "io.logto://signed-out",
+    });
 
     expect(handlers.signOut).toHaveBeenCalledWith({
       sessionToken: "session-token-old",
-      postLogoutRedirectUri: "io.logto://callback",
+      postLogoutRedirectUri: "io.logto://signed-out",
     });
     expect(webBrowser.openAuthSessionAsync).toHaveBeenCalledWith(
       "https://auth.example.com/oidc/session/end",
-      "io.logto://callback",
+      "io.logto://signed-out",
     );
     expect(engine.getSnapshot().status).toBe("unauthenticated");
+  });
+
+  it("rejects loudly when durable cleanup and server revocation both fail", async () => {
+    const secureStore = fakeSecureStore();
+    await seedSession(secureStore, freshToken());
+    secureStore.deleteItemAsync = vi
+      .fn()
+      .mockRejectedValue(new Error("keystore delete failed"));
+    const { engine, handlers, onAuthError } = makeHarness({ secureStore });
+    handlers.signOut.mockRejectedValue(new Error("network unavailable"));
+    engine.start();
+    await settled(engine);
+
+    await expect(engine.signOut()).rejects.toMatchObject({
+      name: "SessionSignOutError",
+      message: expect.stringMatching(/did not complete/),
+    });
+
+    expect(handlers.signOut).toHaveBeenCalledTimes(1);
+    expect(secureStore.deleteItemAsync).toHaveBeenCalledTimes(6);
+    expect(secureStore.data.size).toBe(2);
+    expect(onAuthError).toHaveBeenCalledWith(expect.any(SessionSignOutError));
+  });
+
+  it("returns normally when revocation succeeds despite durable cleanup failure", async () => {
+    const secureStore = fakeSecureStore();
+    await seedSession(secureStore, freshToken());
+    secureStore.deleteItemAsync = vi
+      .fn()
+      .mockRejectedValue(new Error("keystore delete failed"));
+    const { engine, handlers, onAuthError } = makeHarness({ secureStore });
+    engine.start();
+    await settled(engine);
+
+    await expect(engine.signOut({ federated: false })).resolves.toBeUndefined();
+
+    expect(handlers.signOut).toHaveBeenCalledTimes(1);
+    expect(secureStore.deleteItemAsync).toHaveBeenCalledTimes(6);
+    expect(secureStore.data.size).toBe(2);
+    expect(onAuthError).toHaveBeenCalledWith(
+      expect.any(NativeSessionStorageError),
+    );
+    expect(onAuthError).not.toHaveBeenCalledWith(
+      expect.any(SessionSignOutError),
+    );
   });
 
   it("refuses a foreign return and a replay after its state is spent", async () => {
