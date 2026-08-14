@@ -258,6 +258,58 @@ describe("mount", () => {
     expect(handlers.refresh).not.toHaveBeenCalled();
   });
 
+  it("cookie reload with an empty session id refreshes once to recover it", async () => {
+    const { engine, storage, handlers } = makeHarness({
+      storedSession: {
+        token: COOKIE_SESSION_MARKER,
+        sessionId: "",
+      },
+      storedIdToken: freshToken("alice"),
+    });
+    handlers.refresh.mockResolvedValue({
+      ...sessionResult(2, "alice"),
+      sessionToken: COOKIE_SESSION_MARKER,
+    });
+
+    engine.start();
+    const snapshot = await settled(engine);
+    expect(handlers.refresh).toHaveBeenCalledTimes(1);
+    expect(handlers.refresh).toHaveBeenCalledWith({
+      sessionToken: COOKIE_SESSION_MARKER,
+    });
+    expect(snapshot.status).toBe("authenticated");
+    expect(snapshot.sessionId).toBe("session-id-2");
+    expect(snapshot.user?.sub).toBe("alice");
+    expect(storage.readSession()).toEqual({
+      token: COOKIE_SESSION_MARKER,
+      sessionId: "session-id-2",
+    });
+  });
+
+  it("empty-id recovery falls back to a fresh cached token on transient failure", async () => {
+    const cached = freshToken("alice");
+    const { engine, storage, handlers } = makeHarness({
+      storedSession: {
+        token: COOKIE_SESSION_MARKER,
+        sessionId: "",
+      },
+      storedIdToken: cached,
+    });
+    handlers.refresh.mockRejectedValue(transientError());
+
+    engine.start();
+    const snapshot = await settled(engine);
+    expect(handlers.refresh).toHaveBeenCalledTimes(3);
+    expect(snapshot.status).toBe("authenticated");
+    expect(snapshot.sessionId).toBe("");
+    expect(snapshot.user?.sub).toBe("alice");
+    expect(storage.readIdToken()).toBe(cached);
+    expect(storage.readSession()).toEqual({
+      token: COOKIE_SESSION_MARKER,
+      sessionId: "",
+    });
+  });
+
   it("session with a stale ID token → refresh → authenticated, rotation persisted", async () => {
     const { engine, storage, handlers } = makeHarness();
     storage.writeSession({ token: "t1", sessionId: "s1" });

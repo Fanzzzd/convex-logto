@@ -388,8 +388,26 @@ export class SessionAuthEngine {
   private async restore(): Promise<void> {
     const cached = this.options.storage.readIdToken();
     if (cached !== null && this.isFresh(cached)) {
-      this.setAuthenticated(cached);
-      return;
+      const session = this.options.storage.readSession();
+      if (session?.sessionId !== "") {
+        this.setAuthenticated(cached);
+        return;
+      }
+      // Cookie mode can know that a session exists before SSR or a rotation has
+      // supplied its stable id. Recover it now instead of authenticating with
+      // reactive revocation silently disabled. Mark the cached token
+      // unacceptable so refreshIdToken actually presents the cookie.
+      const recovered = await this.refreshIdToken(cached);
+      if (recovered !== null) {
+        this.setAuthenticated(recovered);
+        return;
+      }
+      // A transient refresh keeps storage intact: use the still-fresh cached
+      // token as a degraded fallback. Terminal failures already cleared it.
+      if (this.options.storage.readSession() !== null) {
+        this.setAuthenticated(cached);
+        return;
+      }
     }
     if (this.options.storage.readSession() !== null) {
       const idToken = await this.refreshIdToken(null);

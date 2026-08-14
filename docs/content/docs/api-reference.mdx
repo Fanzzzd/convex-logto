@@ -114,8 +114,9 @@ The returned handler also has `getInitialToken(request)`. It returns
 `{ initialToken, initialSessionId, headers }`; call it at most once per incoming
 document request and always forward `headers` to the SSR response so the rotated
 `Set-Cookie` is not lost, then pass the two initial values to
-`ConvexLogtoSessionProvider`. Concurrent requests are best-effort: transient
-refresh contention returns an empty seed without clearing the cookie.
+`ConvexLogtoSessionProvider`. Concurrent requests are best-effort: every failed
+seed returns empty without changing the cookie, while the browser `/token` route
+authoritatively clears a genuinely dead session.
 
 ### `assertUserHasActiveSession(ctx, component)`
 

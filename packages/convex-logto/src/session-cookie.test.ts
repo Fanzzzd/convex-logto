@@ -338,7 +338,7 @@ describe("SSR seed", () => {
     expect(action).not.toHaveBeenCalled();
   });
 
-  it("clears the cookie and returns an empty seed after a terminal error", async () => {
+  it("leaves the cookie intact and returns an empty seed after a terminal error", async () => {
     const { handler, handlers } = makeHarness();
     handlers.refresh.mockRejectedValueOnce(
       new ConvexError({
@@ -354,8 +354,7 @@ describe("SSR seed", () => {
     );
     expect(seed.initialToken).toBeNull();
     expect(seed.initialSessionId).toBeNull();
-    expect(seed.headers.get("set-cookie")).toContain("Max-Age=0");
-    expect(seed.headers.get("set-cookie")).toContain("Path=/");
+    expect(seed.headers.get("set-cookie")).toBeNull();
   });
 
   it("leaves the cookie intact and returns an empty seed after a transient error", async () => {

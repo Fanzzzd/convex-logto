@@ -76,7 +76,8 @@ export type LogtoSessionCookieHandler = {
   /**
    * Best-effort SSR seed. Call at most once per incoming document request and
    * always forward the returned headers. Concurrent requests that contend for
-   * refresh return an empty seed while leaving the cookie intact.
+   * refresh return an empty seed. Only a successful rotation emits Set-Cookie;
+   * every failure leaves the incoming cookie untouched for browser recovery.
    */
   getInitialToken(request: Request): Promise<LogtoSessionCookieSeed>;
 };
@@ -587,11 +588,7 @@ export function createLogtoSessionCookieHandler(
           headers,
         };
       } catch (error) {
-        const data = errorData(error);
-        if (data === null) throw error;
-        if (data.kind === "terminal") {
-          headers.set("Set-Cookie", clearCookieHeader());
-        }
+        if (errorData(error) === null) throw error;
         return {
           initialToken: null,
           initialSessionId: null,

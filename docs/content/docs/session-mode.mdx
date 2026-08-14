@@ -258,9 +258,9 @@ Call it at most once per incoming document request and always forward its
 `headers` to the page response—the `Set-Cookie` header is the next one-time
 credential. If your rendering hook cannot control response headers, let the
 browser use `/token` instead.
-The seed is best-effort under concurrent renders: a request that encounters an
-in-flight refresh returns an empty seed and leaves the cookie intact for the
-client to refresh after hydration.
+The seed is best-effort under concurrent renders: every failed seed returns
+empty without changing the cookie. The client refreshes after hydration, and
+the browser `/token` route authoritatively clears a genuinely dead session.
 
 For example, a TanStack Start server function can seed the root loader:
 
