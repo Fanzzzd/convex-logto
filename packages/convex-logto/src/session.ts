@@ -110,6 +110,12 @@ export type LogtoSessionComponent = {
       { subject: string },
       number
     >;
+    killSessionsBySid: FunctionReference<
+      "mutation",
+      "internal",
+      { sid: string },
+      number
+    >;
     recordWebhookDelivery: FunctionReference<
       "mutation",
       "internal",

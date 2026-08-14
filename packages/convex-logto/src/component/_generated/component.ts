@@ -72,6 +72,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         boolean,
         Name
       >;
+      killSessionsBySid: FunctionReference<
+        "mutation",
+        "internal",
+        { sid: string },
+        number,
+        Name
+      >;
       killSubjectSessions: FunctionReference<
         "mutation",
         "internal",

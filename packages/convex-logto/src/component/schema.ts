@@ -28,9 +28,9 @@ export default defineSchema({
   // One row per browser sign-in. Owns exactly one Logto grant and one rotating
   // chain of session tokens; killed as a unit (reuse handling, sign-out,
   // webhook-driven revocation).
-  // SHA-256 hashes of processed webhook delivery bodies — exactly-once handling
-  // for Logto's retries (a delivery whose 200 got lost in transit is re-sent
-  // with the identical signed body). Swept by the GC cron after 24h.
+  // SHA-256 delivery claims — raw webhook bodies and back-channel logout jtis.
+  // Exactly-once handling absorbs a Logto retry whose 200 got lost. Swept by
+  // the GC cron after 24h.
   webhookDeliveries: defineTable({
     bodyHash: v.string(),
     seenAt: v.number(),
@@ -41,6 +41,8 @@ export default defineSchema({
   sessions: defineTable({
     /** Logto user id (the ID token's `sub`). */
     subject: v.string(),
+    /** Logto OP session id (the ID token's optional `sid`). */
+    sid: v.optional(v.string()),
     /** SHA-256 (hex) of the current session token — never the token itself. */
     tokenHash: v.string(),
     /** Hash of the immediately-previous token, accepted inside the reuse window. */
@@ -69,5 +71,6 @@ export default defineSchema({
     .index("by_tokenHash", ["tokenHash"])
     .index("by_prevTokenHash", ["prevTokenHash"])
     .index("by_subject", ["subject"])
+    .index("by_sid", ["sid"])
     .index("by_lastRefreshedAt", ["lastRefreshedAt"]),
 });

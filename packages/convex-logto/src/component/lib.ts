@@ -218,6 +218,7 @@ export const exchange = action({
       internal.lib.createSession,
       {
         subject: claims.subject,
+        sid: claims.sid,
         tokenHash: await hashToken(sessionToken),
         logtoRefreshToken: tokens.refresh_token,
         lastIdToken: tokens.id_token,
@@ -271,6 +272,7 @@ export const consumeTransaction = internalMutation({
 export const createSession = internalMutation({
   args: {
     subject: v.string(),
+    sid: v.optional(v.string()),
     tokenHash: v.string(),
     logtoRefreshToken: v.string(),
     lastIdToken: v.string(),
@@ -376,6 +378,7 @@ export const refresh = action({
           newRefreshToken: tokens.refresh_token,
           idToken: tokens.id_token,
           idTokenExp: claims.expiresAtMs,
+          sid: claims.sid,
           now: Date.now(),
         });
         return {
@@ -510,6 +513,7 @@ export const completeRefresh = internalMutation({
     newRefreshToken: v.optional(v.string()),
     idToken: v.string(),
     idTokenExp: v.number(),
+    sid: v.optional(v.string()),
     now: v.number(),
   },
   returns: v.null(),
@@ -526,6 +530,7 @@ export const completeRefresh = internalMutation({
       refreshingSince: undefined,
       lastIdToken: args.idToken,
       lastIdTokenExp: args.idTokenExp,
+      ...(args.sid === undefined ? {} : { sid: args.sid }),
       lastRefreshedAt: args.now,
       ...(args.newRefreshToken
         ? { logtoRefreshToken: args.newRefreshToken }
@@ -651,12 +656,27 @@ export const killSubjectSessions = mutation({
   },
 });
 
+/** Kill only component sessions mapped to one Logto OP session (`sid`). */
+export const killSessionsBySid = mutation({
+  args: { sid: v.string() },
+  returns: v.number(),
+  handler: async (ctx, args) => {
+    const sessions = await ctx.db
+      .query("sessions")
+      .withIndex("by_sid", (q) => q.eq("sid", args.sid))
+      .collect();
+    for (const session of sessions) {
+      await ctx.db.delete(session._id);
+    }
+    return sessions.length;
+  },
+});
+
 // --- webhook delivery dedupe -------------------------------------------------
 
 /**
- * Claim a webhook delivery by its raw-body hash. Returns `true` the first time
- * a body is seen — the caller processes it; `false` on a repeat (a Logto retry
- * whose original 200 was lost) — the caller answers 200 without reprocessing.
+ * Claim a verified Logto delivery by a SHA-256 key (webhook body or issuer+jti).
+ * Returns `true` the first time; `false` on a retry whose original 200 was lost.
  */
 export const recordWebhookDelivery = mutation({
   args: { bodyHash: v.string(), now: v.number() },
