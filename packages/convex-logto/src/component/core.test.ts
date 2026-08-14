@@ -13,6 +13,7 @@ import {
   generatePkce,
   generateToken,
   hashToken,
+  rotateTokenHashes,
   terminal,
   toBase64Url,
   transient,
@@ -193,6 +194,23 @@ describe("decideRefresh", () => {
 
   it("previous token inside the window with a fresh cached ID token → cached", () => {
     expect(decide("previous", {})).toEqual({ outcome: "cached" });
+  });
+
+  it("rotation via a previous match keeps the superseded current token valid", () => {
+    expect(decide("previous", {})).toEqual({ outcome: "cached" });
+    const rotated = rotateTokenHashes(base.tokenHash, "candidate");
+    expect(rotated).toEqual({
+      tokenHash: "candidate",
+      prevTokenHash: "current",
+    });
+    expect(
+      decideRefresh({
+        presentedHash: "current",
+        session: { ...base, ...rotated, rotatedAt: NOW },
+        now: NOW,
+        reuseWindowMs: DEFAULT_REUSE_WINDOW_MS,
+      }),
+    ).toEqual({ outcome: "cached" });
   });
 
   it("previous token inside the window but cached ID token near expiry → refresh-previous", () => {

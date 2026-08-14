@@ -12,9 +12,14 @@ import {
   SessionStorageArea,
   type SessionSnapshot,
   type SessionTransport,
+  type StoredSession,
   type TokenStorageKind,
 } from "./session-client";
 import type { LogtoSessionApi } from "./session";
+import {
+  COOKIE_SESSION_MARKER,
+  createCookieSessionMarker,
+} from "./session-cookie";
 
 // --- harness -----------------------------------------------------------------
 
@@ -70,6 +75,11 @@ type Handlers = {
 function makeHarness(options?: {
   tokenStorage?: TokenStorageKind;
   afterSignIn?: string;
+  initialToken?: string;
+  initialSession?: StoredSession;
+  storedIdToken?: string;
+  storedSession?: StoredSession;
+  cookieBootstrap?: { initialSessionId?: string | null };
 }) {
   const handlers: Handlers = {
     signIn: vi.fn(),
@@ -85,6 +95,14 @@ function makeHarness(options?: {
     "test",
     options?.tokenStorage ?? "session",
   );
+  if (options?.storedSession) storage.writeSession(options.storedSession);
+  if (options?.storedIdToken) storage.writeIdToken(options.storedIdToken);
+  const initialSession = options?.cookieBootstrap
+    ? createCookieSessionMarker(
+        storage.readSession(),
+        options.cookieBootstrap.initialSessionId,
+      )
+    : options?.initialSession;
   const navigate = vi.fn();
   const onAuthError = vi.fn();
   const engine = new SessionAuthEngine({
@@ -93,6 +111,8 @@ function makeHarness(options?: {
     storage,
     callbackPath: "/callback",
     afterSignIn: options?.afterSignIn ?? "/",
+    initialToken: options?.initialToken,
+    initialSession,
     navigate,
     onAuthError,
     sleep: () => Promise.resolve(), // skip retry backoff in tests
@@ -179,6 +199,25 @@ describe("SessionStorageArea", () => {
 // --- mount paths -------------------------------------------------------------
 
 describe("mount", () => {
+  it("SSR initialToken authenticates the server snapshot and hydrates storage", () => {
+    const token = freshToken("ssr-user");
+    const { engine, storage } = makeHarness({
+      initialToken: token,
+      initialSession: { token: "cookie-session", sessionId: "session-id-1" },
+    });
+    expect(engine.getServerSnapshot()).toEqual({
+      status: "authenticated",
+      sessionId: "session-id-1",
+      user: expect.objectContaining({ sub: "ssr-user" }),
+    });
+    expect(engine.getSnapshot()).toEqual(engine.getServerSnapshot());
+    expect(storage.readIdToken()).toBe(token);
+    expect(storage.readSession()).toEqual({
+      token: "cookie-session",
+      sessionId: "session-id-1",
+    });
+  });
+
   it("nothing stored → unauthenticated, no network", async () => {
     const { engine, handlers } = makeHarness();
     engine.start();
@@ -196,6 +235,79 @@ describe("mount", () => {
     expect(snapshot.sessionId).toBe("s1");
     expect(snapshot.user?.sub).toBe("alice");
     expect(handlers.refresh).not.toHaveBeenCalled();
+  });
+
+  it("cookie reload with a fresh cached token preserves the stored session id", async () => {
+    const { engine, storage, handlers } = makeHarness({
+      storedSession: {
+        token: "legacy-session-secret",
+        sessionId: "real-session-id",
+      },
+      storedIdToken: freshToken("alice"),
+      cookieBootstrap: {},
+    });
+    expect(storage.readSession()).toEqual({
+      token: COOKIE_SESSION_MARKER,
+      sessionId: "real-session-id",
+    });
+
+    engine.start();
+    const snapshot = await settled(engine);
+    expect(snapshot.status).toBe("authenticated");
+    expect(snapshot.sessionId).toBe("real-session-id");
+    expect(handlers.refresh).not.toHaveBeenCalled();
+  });
+
+  it("cookie reload with an empty session id refreshes once to recover it", async () => {
+    const { engine, storage, handlers } = makeHarness({
+      storedSession: {
+        token: COOKIE_SESSION_MARKER,
+        sessionId: "",
+      },
+      storedIdToken: freshToken("alice"),
+    });
+    handlers.refresh.mockResolvedValue({
+      ...sessionResult(2, "alice"),
+      sessionToken: COOKIE_SESSION_MARKER,
+    });
+
+    engine.start();
+    const snapshot = await settled(engine);
+    expect(handlers.refresh).toHaveBeenCalledTimes(1);
+    expect(handlers.refresh).toHaveBeenCalledWith({
+      sessionToken: COOKIE_SESSION_MARKER,
+    });
+    expect(snapshot.status).toBe("authenticated");
+    expect(snapshot.sessionId).toBe("session-id-2");
+    expect(snapshot.user?.sub).toBe("alice");
+    expect(storage.readSession()).toEqual({
+      token: COOKIE_SESSION_MARKER,
+      sessionId: "session-id-2",
+    });
+  });
+
+  it("empty-id recovery falls back to a fresh cached token on transient failure", async () => {
+    const cached = freshToken("alice");
+    const { engine, storage, handlers } = makeHarness({
+      storedSession: {
+        token: COOKIE_SESSION_MARKER,
+        sessionId: "",
+      },
+      storedIdToken: cached,
+    });
+    handlers.refresh.mockRejectedValue(transientError());
+
+    engine.start();
+    const snapshot = await settled(engine);
+    expect(handlers.refresh).toHaveBeenCalledTimes(3);
+    expect(snapshot.status).toBe("authenticated");
+    expect(snapshot.sessionId).toBe("");
+    expect(snapshot.user?.sub).toBe("alice");
+    expect(storage.readIdToken()).toBe(cached);
+    expect(storage.readSession()).toEqual({
+      token: COOKIE_SESSION_MARKER,
+      sessionId: "",
+    });
   });
 
   it("session with a stale ID token → refresh → authenticated, rotation persisted", async () => {

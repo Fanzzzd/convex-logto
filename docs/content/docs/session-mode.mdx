@@ -25,7 +25,10 @@ browser, refresh token in `localStorage`):
 | Frontend dependencies | `@logto/react` | none beyond `convex` + `react` |
 | Logto config in the bundle | endpoint + app id | nothing |
 
-Works on any static host/CDN — no cookie domain, no server for the frontend.
+The default localStorage transport works on any static host/CDN — no cookie
+domain or frontend server required. Apps with a same-site server endpoint can
+optionally move the rotating session token into an HttpOnly cookie; that upgrade
+is covered below.
 
 ## Setup
 
@@ -106,6 +109,203 @@ const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
 // signOut() — revokes the grant, clears every tab, ends the Logto SSO session
 ```
 
+## HttpOnly cookie transport (optional)
+
+The default one-time token is safe to rotate from `localStorage`, but an XSS bug
+can still copy it before the next rotation. If your app can serve an auth endpoint
+on the **same site**, the cookie transport puts that credential in a
+`__Host-convex-logto-session` cookie with fixed attributes:
+
+```text
+__Host-convex-logto-session=<encoded-token>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=16416000
+```
+
+JavaScript never receives the credential—not in a response body and not in
+storage—and every successful `/token` rotation rolls the cookie and renews its
+190-day maximum age. That sliding lifetime matches the component's idle-session
+garbage collection, so cookie transport persists across browser restarts just
+like the default localStorage credential while the server session remains live.
+The short-lived ID token still has to reach Convex from JavaScript, so this
+closes the long-lived session-token exfiltration path rather than claiming to
+make arbitrary XSS harmless.
+
+The exported handler is a standard `(Request) => Promise<Response>` function
+with four routes under `/api/logto-session` by default:
+
+| Route | Purpose |
+| --- | --- |
+| `sign-in` | Create the Logto authorization URL. |
+| `callback` | Exchange the authorization code and set the first cookie. |
+| `token` | Rotate the cookie and return a fresh ID token. |
+| `sign-out` | Revoke the grant and expire the cookie. |
+
+Every application request has one fixed CSRF policy: `POST`, the
+`x-convex-logto-csrf: 1` custom header, and an exact match in `allowedOrigins`.
+Cross-origin same-site mounts also get credentialed CORS responses; wildcards
+are never accepted.
+
+### Shared handler
+
+Next.js and TanStack Start can call the existing public Convex actions with
+`ConvexHttpClient`:
+
+```ts title="src/server/logto-cookie.ts"
+import { ConvexHttpClient } from "convex/browser";
+import { createLogtoSessionCookieHandler } from "convex-logto";
+import { api } from "../../convex/_generated/api";
+
+const convex = new ConvexHttpClient(process.env.CONVEX_URL!);
+
+export const logtoCookieHandler = createLogtoSessionCookieHandler({
+  sessionApi: api.auth,
+  action: (reference, args) => convex.action(reference, args),
+  allowedOrigins: [process.env.APP_ORIGIN!],
+  basePath: "/api/logto",
+});
+```
+
+`allowedOrigins` contains browser origins (`https://app.example.com`), not URL
+paths. Keep `CONVEX_URL` server-only.
+
+### Next.js App Router
+
+Mount the handler in a catch-all Route Handler:
+
+```ts title="app/api/logto/[route]/route.ts"
+import { logtoCookieHandler } from "@/server/logto-cookie";
+
+export const POST = logtoCookieHandler;
+export const OPTIONS = logtoCookieHandler;
+```
+
+Then enable the browser half on the existing provider:
+
+```tsx
+<ConvexLogtoSessionProvider
+  client={convex}
+  sessionApi={api.auth}
+  cookieTransport={{ endpoint: "/api/logto" }}
+>
+  <App />
+</ConvexLogtoSessionProvider>
+```
+
+The user-facing callback page remains `/callback`; after Logto redirects there,
+the provider POSTs the code to `/api/logto/callback`.
+
+### TanStack Start
+
+TanStack Start server routes also receive a standard `Request`:
+
+```ts title="src/routes/api/logto/$.ts"
+import { createFileRoute } from "@tanstack/react-router";
+import { logtoCookieHandler } from "~/server/logto-cookie";
+
+export const Route = createFileRoute("/api/logto/$")({
+  server: {
+    handlers: {
+      POST: ({ request }) => logtoCookieHandler(request),
+      OPTIONS: ({ request }) => logtoCookieHandler(request),
+    },
+  },
+});
+```
+
+Use the same provider configuration shown for Next.js.
+
+### Convex HTTP action on a custom domain
+
+Convex can host the standard handler directly. Use a custom domain that shares
+the frontend's site—for example `app.example.com` and `api.example.com`. A
+default `*.convex.site` endpoint is cross-site to your app and is intentionally
+not a cookie-transport deployment.
+
+```ts title="convex/http.ts"
+import { createLogtoSessionCookieHandler } from "convex-logto";
+import { httpRouter } from "convex/server";
+import { api } from "./_generated/api";
+import { httpAction } from "./_generated/server";
+
+const http = httpRouter();
+const cookieAction = httpAction(async (ctx, request) => {
+  const handler = createLogtoSessionCookieHandler({
+    sessionApi: api.auth,
+    action: (reference, args) => ctx.runAction(reference, args),
+    allowedOrigins: [process.env.APP_ORIGIN!],
+    basePath: "/api/logto",
+  });
+  return handler(request);
+});
+
+http.route({ pathPrefix: "/api/logto/", method: "POST", handler: cookieAction });
+http.route({
+  pathPrefix: "/api/logto/",
+  method: "OPTIONS",
+  handler: cookieAction,
+});
+export default http;
+```
+
+Point `cookieTransport.endpoint` at the absolute custom-domain URL. The adapter
+uses `credentials: "include"`; the handler returns a credentialed CORS response
+only for an exact allowed origin.
+
+### Authenticated first paint with `initialToken`
+
+`handler.getInitialToken(request)` is the server-only SSR path. It reads the
+cookie, rotates it, and returns `{ initialToken, initialSessionId, headers }`.
+Call it at most once per incoming document request and always forward its
+`headers` to the page response—the `Set-Cookie` header is the next one-time
+credential. If your rendering hook cannot control response headers, let the
+browser use `/token` instead.
+The seed is best-effort under concurrent renders: every failed seed returns
+empty without changing the cookie. The client refreshes after hydration, and
+the browser `/token` route authoritatively clears a genuinely dead session.
+
+For example, a TanStack Start server function can seed the root loader:
+
+```tsx
+import { createServerFn } from "@tanstack/react-start";
+import {
+  getRequest,
+  setResponseHeaders,
+} from "@tanstack/react-start/server";
+import { logtoCookieHandler } from "~/server/logto-cookie";
+
+const seedSession = createServerFn().handler(async () => {
+  const seed = await logtoCookieHandler.getInitialToken(getRequest());
+  setResponseHeaders(Object.fromEntries(seed.headers));
+  return {
+    initialToken: seed.initialToken,
+    initialSessionId: seed.initialSessionId,
+  };
+});
+
+// In the root route: loader: () => seedSession()
+const seed = Route.useLoaderData();
+<ConvexLogtoSessionProvider
+  client={convex}
+  sessionApi={api.auth}
+  cookieTransport={{ endpoint: "/api/logto" }}
+  initialToken={seed.initialToken}
+  initialSessionId={seed.initialSessionId}
+>
+  <App />
+</ConvexLogtoSessionProvider>;
+```
+
+The server and hydration snapshots start authenticated, so Convex can accept the
+seeded ID token on the first paint without a browser `/token` round-trip.
+
+### Safari and device binding
+
+Cookie transport and software device binding are mutually exclusive on Safari:
+ITP can retain the cookie while evicting its IndexedDB-held key. Pass the same
+`deviceBinding: true` flag to the handler and `cookieTransport` configuration;
+Safari throws an explicit configuration error rather than silently dropping
+either protection. Device binding itself is tracked separately and is not
+implemented by the cookie adapter.
+
 ## Reactive revocation
 
 Every session's liveness is a Convex subscription. The moment a session is
@@ -179,6 +379,8 @@ destroy the grant.
 | `afterSignIn` | `"/"` | Where to land after sign-in; `signIn({ returnTo })` overrides. |
 | `navigate` | hard replace | Your router's navigate for soft post-sign-in navigation. |
 | `tokenStorage` | `"session"` | Where the ID token persists: `"session"` (per-tab, zero-round-trip reload), `"memory"` (strictest), `"local"`. |
+| `cookieTransport` | — | `{ endpoint?, fetch?, deviceBinding? }`: move the rotating session token into a persistent same-site HttpOnly cookie whose 190-day lifetime renews on every rotation. |
+| `initialToken` / `initialSessionId` | — | Paired values from `handler.getInitialToken(request)` for authenticated SSR/hydration. |
 | `reactiveRevocation` | `true` | Subscribe to session liveness and drop auth live on revocation. |
 | `onAuthError` | — | Recoverable sign-in failures (stale/forged callback, Logto down). |
 

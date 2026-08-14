@@ -19,6 +19,7 @@ import {
   generatePkce,
   generateToken,
   hashToken,
+  rotateTokenHashes,
   terminal,
   transient,
 } from "./core.js";
@@ -429,11 +430,11 @@ export const beginRefresh = internalMutation({
         };
       }
       case "cached": {
-        // Rotate locally: presented (previous) token becomes prev again, the
-        // candidate becomes current. No Logto round-trip.
+        // Rotate locally while retaining the superseded current generation as
+        // the grace token. The presented token may itself be the older grace
+        // generation, so retaining it would orphan a concurrent response.
         await ctx.db.patch(session._id, {
-          tokenHash: args.candidateHash,
-          prevTokenHash: args.presentedHash,
+          ...rotateTokenHashes(session.tokenHash, args.candidateHash),
           rotatedAt: args.now,
         });
         return {
@@ -474,8 +475,10 @@ export const completeRefresh = internalMutation({
     const session = id && (await ctx.db.get(id));
     if (!session) return null; // killed concurrently (webhook revocation) — nothing to write
     await ctx.db.patch(session._id, {
-      tokenHash: args.candidateHash,
-      prevTokenHash: args.presentedHash,
+      // The refresh claim prevents any other rotation before completion, so
+      // this is the generation superseded by the candidate even when refresh
+      // began by presenting the previous generation.
+      ...rotateTokenHashes(session.tokenHash, args.candidateHash),
       rotatedAt: args.now,
       refreshingSince: undefined,
       lastIdToken: args.idToken,
