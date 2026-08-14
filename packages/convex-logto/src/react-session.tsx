@@ -24,6 +24,11 @@ import {
   type SessionTransport,
   type TokenStorageKind,
 } from "./session-client";
+import {
+  COOKIE_SESSION_MARKER,
+  createLogtoSessionCookieTransport,
+  type LogtoSessionCookieTransportOptions,
+} from "./session-cookie";
 import type { LogtoSessionApi } from "./session";
 
 const DEFAULT_CALLBACK_PATH = "/callback";
@@ -70,10 +75,19 @@ export type ConvexLogtoSessionProviderProps = {
    * Where the short-lived ID token persists. `"session"` (default): per-tab
    * sessionStorage — an unexpired token makes reload a zero-round-trip
    * authenticate. `"memory"`: strictest, every reload refreshes. `"local"`:
-   * shared across tabs and restarts. The session token itself always lives in
-   * localStorage — it's one-time and stored hashed server-side.
+   * shared across tabs and restarts. By default the one-time session token
+   * lives in localStorage; `cookieTransport` moves it into an HttpOnly cookie.
    */
   tokenStorage?: TokenStorageKind;
+  /**
+   * Move the rotating session token into the same-site handler's HttpOnly
+   * cookie. The browser keeps only a non-secret session marker in localStorage.
+   */
+  cookieTransport?: LogtoSessionCookieTransportOptions;
+  /** Fresh ID token returned by `handler.getInitialToken(request)` during SSR. */
+  initialToken?: string | null;
+  /** Stable session id returned alongside `initialToken`. */
+  initialSessionId?: string | null;
   /**
    * Subscribe to server-side session liveness and drop auth the moment the
    * session is revoked (sign-out elsewhere, reuse detection, webhook
@@ -109,10 +123,31 @@ export function ConvexLogtoSessionProvider({
   afterSignIn = "/",
   navigate,
   tokenStorage = "session",
+  cookieTransport,
+  initialToken,
+  initialSessionId,
   reactiveRevocation = true,
   onAuthError,
   children,
 }: ConvexLogtoSessionProviderProps) {
+  const usesCookieTransport = cookieTransport !== undefined;
+  const hasInitialToken = initialToken != null;
+  const hasInitialSessionId = initialSessionId != null;
+  if (hasInitialToken !== hasInitialSessionId) {
+    throw new Error(
+      "convex-logto: initialToken and initialSessionId must be provided together.",
+    );
+  }
+  if (hasInitialToken && !usesCookieTransport) {
+    throw new Error(
+      "convex-logto: SSR initialToken seeding requires cookieTransport.",
+    );
+  }
+
+  const cookieEndpoint = cookieTransport?.endpoint;
+  const cookieFetch = cookieTransport?.fetch;
+  const cookieDeviceBinding = cookieTransport?.deviceBinding;
+
   // The engine must survive re-renders, but `navigate`/`onAuthError` are often
   // inline arrows with a fresh identity each render — route them through refs
   // so the engine stays stable and still always calls the latest one.
@@ -127,12 +162,30 @@ export function ConvexLogtoSessionProvider({
     // Namespace storage by deployment so two dev apps on the same origin
     // (localhost) don't cross-read each other's sessions.
     const namespace = clientNamespace(client);
+    const storage = new SessionStorageArea(namespace, tokenStorage);
+    const transport = usesCookieTransport
+      ? createLogtoSessionCookieTransport(sessionApi, {
+          endpoint: cookieEndpoint,
+          fetch: cookieFetch,
+          deviceBinding: cookieDeviceBinding,
+        })
+      : (client as SessionTransport);
     return new SessionAuthEngine({
-      transport: client as SessionTransport,
+      transport,
       api: sessionApi,
-      storage: new SessionStorageArea(namespace, tokenStorage),
+      storage,
       callbackPath,
       afterSignIn,
+      initialToken: initialToken ?? undefined,
+      // Cookie mode always writes a non-secret marker. That both overwrites a
+      // legacy localStorage credential and makes reload attempt the /token
+      // route even though JavaScript cannot inspect the HttpOnly cookie.
+      initialSession: usesCookieTransport
+        ? {
+            token: COOKIE_SESSION_MARKER,
+            sessionId: initialSessionId ?? "",
+          }
+        : undefined,
       navigate: (to) => {
         const soft = navigateRef.current;
         if (soft) soft(to);
@@ -140,7 +193,19 @@ export function ConvexLogtoSessionProvider({
       },
       onAuthError: (error) => onAuthErrorRef.current?.(error),
     });
-  }, [client, sessionApi, callbackPath, tokenStorage, afterSignIn]);
+  }, [
+    client,
+    sessionApi,
+    callbackPath,
+    tokenStorage,
+    afterSignIn,
+    usesCookieTransport,
+    cookieEndpoint,
+    cookieFetch,
+    cookieDeviceBinding,
+    initialToken,
+    initialSessionId,
+  ]);
 
   useEffect(() => {
     engine.start();
@@ -288,3 +353,4 @@ export function useLogtoAuth(): LogtoSessionAuth {
 
 export type { LogtoSessionApi } from "./session";
 export type { TokenStorageKind } from "./session-client";
+export type { LogtoSessionCookieTransportOptions } from "./session-cookie";

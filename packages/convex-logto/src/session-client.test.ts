@@ -12,6 +12,7 @@ import {
   SessionStorageArea,
   type SessionSnapshot,
   type SessionTransport,
+  type StoredSession,
   type TokenStorageKind,
 } from "./session-client";
 import type { LogtoSessionApi } from "./session";
@@ -70,6 +71,8 @@ type Handlers = {
 function makeHarness(options?: {
   tokenStorage?: TokenStorageKind;
   afterSignIn?: string;
+  initialToken?: string;
+  initialSession?: StoredSession;
 }) {
   const handlers: Handlers = {
     signIn: vi.fn(),
@@ -93,6 +96,8 @@ function makeHarness(options?: {
     storage,
     callbackPath: "/callback",
     afterSignIn: options?.afterSignIn ?? "/",
+    initialToken: options?.initialToken,
+    initialSession: options?.initialSession,
     navigate,
     onAuthError,
     sleep: () => Promise.resolve(), // skip retry backoff in tests
@@ -179,6 +184,25 @@ describe("SessionStorageArea", () => {
 // --- mount paths -------------------------------------------------------------
 
 describe("mount", () => {
+  it("SSR initialToken authenticates the server snapshot and hydrates storage", () => {
+    const token = freshToken("ssr-user");
+    const { engine, storage } = makeHarness({
+      initialToken: token,
+      initialSession: { token: "cookie-session", sessionId: "session-id-1" },
+    });
+    expect(engine.getServerSnapshot()).toEqual({
+      status: "authenticated",
+      sessionId: "session-id-1",
+      user: expect.objectContaining({ sub: "ssr-user" }),
+    });
+    expect(engine.getSnapshot()).toEqual(engine.getServerSnapshot());
+    expect(storage.readIdToken()).toBe(token);
+    expect(storage.readSession()).toEqual({
+      token: "cookie-session",
+      sessionId: "session-id-1",
+    });
+  });
+
   it("nothing stored → unauthenticated, no network", async () => {
     const { engine, handlers } = makeHarness();
     engine.start();

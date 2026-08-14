@@ -60,7 +60,7 @@ export function sessionErrorKind(error: unknown): "terminal" | "transient" {
 
 // --- storage -----------------------------------------------------------------
 
-type StoredSession = { token: string; sessionId: string };
+export type StoredSession = { token: string; sessionId: string };
 type StoredTransaction = { state: string };
 
 /**
@@ -200,6 +200,10 @@ export type SessionEngineOptions = {
   storage: SessionStorageArea;
   callbackPath: string;
   afterSignIn: string;
+  /** Fresh SSR-seeded ID token. */
+  initialToken?: string;
+  /** Session marker paired with `initialToken` (cookie transport uses a sentinel). */
+  initialSession?: StoredSession;
   /** Replace-style navigation; falls back to `location.replace`. */
   navigate?: (to: string) => void;
   onAuthError?: (error: Error) => void;
@@ -228,7 +232,8 @@ const SERVER_SNAPSHOT: SessionSnapshot = {
  * Transitions are one-way per mount — no isLoading churn by construction.
  */
 export class SessionAuthEngine {
-  private snapshot: SessionSnapshot = SERVER_SNAPSHOT;
+  private snapshot: SessionSnapshot;
+  private serverSnapshot: SessionSnapshot;
   private listeners = new Set<() => void>();
   private started = false;
   private inflightRefresh: Promise<string | null> | null = null;
@@ -242,6 +247,22 @@ export class SessionAuthEngine {
     this.sleep =
       options.sleep ??
       ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    if (options.initialSession) {
+      options.storage.writeSession(options.initialSession);
+    }
+    if (options.initialToken) {
+      options.storage.writeIdToken(options.initialToken);
+      this.snapshot = {
+        status: "authenticated",
+        sessionId: options.initialSession?.sessionId ?? null,
+        user: decodeJwtPayload(options.initialToken) ?? undefined,
+      };
+    } else {
+      this.snapshot = SERVER_SNAPSHOT;
+    }
+    // React's hydration snapshot must match what the server rendered even if
+    // the live client state changes before hydration finishes.
+    this.serverSnapshot = this.snapshot;
   }
 
   /** The localStorage key cross-tab sign-outs land on — for `storage` event filtering. */
@@ -258,7 +279,7 @@ export class SessionAuthEngine {
 
   getSnapshot = (): SessionSnapshot => this.snapshot;
 
-  getServerSnapshot = (): SessionSnapshot => SERVER_SNAPSHOT;
+  getServerSnapshot = (): SessionSnapshot => this.serverSnapshot;
 
   private setSnapshot(next: SessionSnapshot): void {
     this.snapshot = next;
