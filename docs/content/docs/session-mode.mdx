@@ -75,11 +75,17 @@ issued to the Traditional Web app.
 import { logtoSessionApi } from "convex-logto";
 import { components } from "./_generated/api";
 
-export const { signIn, callback, refresh, signOut, sessionValid } =
-  logtoSessionApi(components.logto);
+export const {
+  signIn,
+  callback,
+  refresh,
+  signOut,
+  signOutEverywhere,
+  sessionValid,
+} = logtoSessionApi(components.logto);
 ```
 
-Re-export all five with these exact names — the provider looks them up on the
+Re-export all six with these exact names — the provider looks them up on the
 module you pass it.
 
 ### 5. Mount the provider
@@ -98,16 +104,67 @@ const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
 
 That's the whole frontend. No `@logto/react`, no callback component — the
 provider finishes the exchange on `/callback` and replace-navigates back into
-the app by itself. `useLogtoAuth()` from `convex-logto/react-session` has the
-same shape as the bridge hook:
+the app by itself. `useLogtoAuth()` from `convex-logto/react-session` extends
+the bridge hook with `signOutEverywhere`:
 
 ```tsx
 import { useLogtoAuth } from "convex-logto/react-session";
 
-const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
+const {
+  isAuthenticated,
+  isLoading,
+  user,
+  signIn,
+  signOut,
+  signOutEverywhere,
+} = useLogtoAuth();
 // signIn({ returnTo: "/dashboard" }) — same-origin path, lands there after sign-in
 // signOut() — revokes the grant, clears every tab, ends the Logto SSO session
 ```
+
+## Sign out everywhere
+
+`signOutEverywhere()` deletes every component session belonging to the current
+user, then completes an ordinary federated sign-out for the calling browser or
+native device:
+
+```tsx
+await signOutEverywhere({
+  postLogoutRedirectUri: window.location.origin,
+});
+```
+
+The component derives the subject **only** from the caller's presented live
+session token (the current or immediately previous rotation generation) and
+deletes all matching rows in one mutation. There is no client-supplied subject
+and no read-then-delete race. Local credentials are cleared first, using the
+same unblockable and durable-cleanup behavior as `signOut()`; other live
+devices receive `sessionValid: false` through the existing reactive
+subscription and drop authentication without new client plumbing.
+If the subject-wide server action fails, the promise rejects so the app can
+report that the everywhere operation was incomplete, even though this device
+has already cleared its local credentials.
+
+The caller's end-session URL carries its last ID token as `id_token_hint`, so
+that device's Logto browser SSO session is ended too. This is still an
+**RP-level boundary**: one device cannot erase the Logto OP cookies stored in
+other devices' browsers. A device that retains a live Logto cookie can start a
+new sign-in and may be authenticated by Logto without another credential
+prompt.
+
+Deleting a component row also deletes its server-held Logto refresh token, so
+the corresponding grant becomes unreachable by the app. The operation does
+not make one RFC 7009 request per deleted session: that loop would add a Logto
+round trip and partial-failure state for every device with negligible security
+gain. Unreachable grants expire at their configured Logto TTL; normal
+single-session `signOut()` continues to revoke its one grant eagerly.
+
+If an older `convex/auth.ts` has not re-exported `signOutEverywhere`, the
+provider rejects with an explicit upgrade message instead of exposing a
+cryptic missing-function response. Re-export the six-function set shown above
+and deploy the Convex functions.
+Listing or labeling individual devices is separate follow-up work tracked in
+[#49](https://github.com/Fanzzzd/convex-logto/issues/49).
 
 ## Device binding (optional)
 

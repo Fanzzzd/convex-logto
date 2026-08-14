@@ -182,8 +182,14 @@ export default app;
 import { logtoSessionApi } from "convex-logto";
 import { components } from "./_generated/api";
 
-export const { signIn, callback, refresh, signOut, sessionValid } =
-  logtoSessionApi(components.logto);
+export const {
+  signIn,
+  callback,
+  refresh,
+  signOut,
+  signOutEverywhere,
+  sessionValid,
+} = logtoSessionApi(components.logto);
 ```
 
 ```tsx
@@ -200,10 +206,18 @@ root.render(
 
 Config lives on the deployment (`LOGTO_ENDPOINT`, `LOGTO_APP_ID`,
 `LOGTO_CLIENT_SECRET`); `useLogtoAuth()` from `convex-logto/react-session` has
-the same shape as the bridge hook. Full guide — threat model, token dance,
-server-side revocation with `assertUserHasActiveSession` — in the
+the bridge actions plus `signOutEverywhere()`. Full guide — threat model, token
+dance, server-side revocation with `assertUserHasActiveSession` — in the
 [Session mode docs][session-mode-docs] and the runnable
 [`vite-react-session`][session-example] example.
+
+`signOutEverywhere()` atomically derives the caller subject from its rotating
+session token, deletes every matching component session, and then ends the
+calling device's Logto SSO session. Other devices drop through reactive
+revocation; their separate Logto browser cookies cannot be erased by the RP and
+can be used to start a new sign-in. Deleted refresh tokens become unreachable
+and their grants expire at Logto's TTL rather than triggering an N-request RFC
+7009 loop.
 
 Apps with a same-site server endpoint can additionally mount
 `createLogtoSessionCookieHandler()` and pass
@@ -290,18 +304,18 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 | `createLogtoBackchannelLogoutHandler(opts)` | `convex-logto` | Builds the back-channel Convex HTTP action for custom route composition. |
 | `verifyLogtoLogoutToken(token, opts?)` | `convex-logto` | Low-level RS256/PS256 Logout Token verification against Logto's JWKS. |
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
-| `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](#session-mode): builds the five public auth functions backed by the session component. |
+| `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](#session-mode): builds the six public auth functions backed by the session component. |
 | `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Session mode: throw unless the caller still has a live (unrevoked) session. |
 | `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Four-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
 | `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Static `config` or backend `configQuery`. |
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
 | default | `convex-logto/convex.config` | The session component, for `app.use(logto)`. |
 | `ConvexLogtoSessionProvider` | `convex-logto/react-session` | Session mode's provider — no Logto SDK; talks to your `logtoSessionApi` functions. |
-| `useLogtoAuth()` | `convex-logto/react-session` | Same shape as the bridge hook; `signOut(opts?)` takes `{ postLogoutRedirectUri?, federated? }`. |
+| `useLogtoAuth()` | `convex-logto/react-session` | Session auth actions, including `signOutEverywhere({ postLogoutRedirectUri? })`. |
 | `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `configQuery` model; no callback route. |
 | `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signIn()` defaults to the provider's `redirectUri`. |
 | `ConvexLogtoSessionProvider` | `convex-logto/native-session` | Expo session mode via SecureStore + system-browser deep links; same server component and actions. |
-| `useLogtoAuth()` | `convex-logto/native-session` | Native session auth/actions; `signOut(opts?)` supports federated browser sign-out. |
+| `useLogtoAuth()` | `convex-logto/native-session` | Native session auth/actions, including federated `signOutEverywhere(opts?)`. |
 
 ### Next.js note
 

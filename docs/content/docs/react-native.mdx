@@ -199,7 +199,7 @@ in both lists:
 Keep the `"scheme": "io.logto"` app configuration shown above. As with web
 session mode, set `LOGTO_ENDPOINT`, `LOGTO_APP_ID`, and
 `LOGTO_CLIENT_SECRET` on the Convex deployment, install the component, and
-export all five functions:
+export all six functions:
 
 ```ts title="convex/convex.config.ts"
 import { defineApp } from "convex/server";
@@ -214,8 +214,14 @@ export default app;
 import { logtoSessionApi } from "convex-logto";
 import { components } from "./_generated/api";
 
-export const { signIn, callback, refresh, signOut, sessionValid } =
-  logtoSessionApi(components.logto);
+export const {
+  signIn,
+  callback,
+  refresh,
+  signOut,
+  signOutEverywhere,
+  sessionValid,
+} = logtoSessionApi(components.logto);
 ```
 
 `convex/auth.config.ts` still uses `logtoAuthConfig()` so Convex validates the
@@ -262,6 +268,9 @@ Reactive revocation is on by default and uses the same `sessionValid`
 subscription as the web provider. `signOut()` clears SecureStore, revokes the
 server session, and opens Logto's end-session URL in the system browser unless
 `federated: false` is passed.
+`signOutEverywhere({ postLogoutRedirectUri? })` instead deletes every component
+session for the caller subject, lets the same subscription sign out other live
+devices, and always ends this device's Logto browser session.
 
 ### Differences from web session mode
 
