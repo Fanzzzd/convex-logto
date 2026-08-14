@@ -17,6 +17,8 @@ Two modes share the same backend identity model:
 - **Bridge mode** (the default, shown below): Logto's SPA SDK signs in the browser; the package bridges its ID token into Convex. Zero server-side state.
 - **[Session mode](#session-mode)**: a Convex component holds the Logto refresh token server-side and rotates one-time session tokens with the browser — smallest browser attack surface, live session revocation, and no Logto SDK in the bundle.
 
+Whichever mode you choose, apply the [SPA security baseline][security-baseline-docs] to the scripts and dependencies that share its browser origin.
+
 ## Install
 
 ```bash
@@ -250,6 +252,7 @@ same reactive revocation path (one `sid` session, or every session for `sub`).
 
 [session-mode-docs]: https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/session-mode.mdx
 [session-example]: https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session
+[security-baseline-docs]: https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/security-baseline.mdx
 
 ## Optional: sync Logto users into a table
 
