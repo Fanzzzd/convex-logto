@@ -35,6 +35,32 @@ export type SessionTransport = {
   ): Promise<Action["_returnType"]>;
 };
 
+/** Storage contract used by the shared web/native session state machine. */
+export type SessionStorageAdapter = {
+  /** Async stores hydrate their synchronous cache here before the engine reads it. */
+  prepare?(): Promise<void>;
+  /** Wait for queued durable writes; browser storage writes synchronously. */
+  flush?(): Promise<void>;
+  readonly sessionEventKey: string;
+  readSession(): StoredSession | null;
+  writeSession(session: StoredSession): void;
+  readIdToken(): string | null;
+  writeIdToken(idToken: string): void;
+  stashTransaction(transaction: StoredTransaction): void;
+  takeTransaction(): StoredTransaction | null;
+  clearAll(): void;
+  clearIdToken(): void;
+};
+
+/** Native system-browser seam. Absent means the existing browser redirect flow. */
+export type SessionAuthFlow = {
+  redirectUri: string;
+  /** Return the successful deep-link URL, or null when the user cancels. */
+  openAuthorization(url: string): Promise<string | null>;
+  /** Best-effort federated sign-out in the system browser. */
+  openEndSession(url: string): Promise<void>;
+};
+
 export function decodeJwtPayload(
   token: string,
 ): Record<string, unknown> | null {
@@ -201,7 +227,7 @@ export class SessionStorageArea {
 export type SessionEngineOptions = {
   transport: SessionTransport;
   api: LogtoSessionApi;
-  storage: SessionStorageArea;
+  storage: SessionStorageAdapter;
   callbackPath: string;
   afterSignIn: string;
   /** Fresh SSR-seeded ID token. */
@@ -212,6 +238,8 @@ export type SessionEngineOptions = {
   deviceBinding?: SessionDeviceBinding;
   /** Replace-style navigation; falls back to `location.replace`. */
   navigate?: (to: string) => void;
+  /** Native system-browser/deep-link flow; absent preserves the web flow. */
+  authFlow?: SessionAuthFlow;
   onAuthError?: (error: Error) => void;
   /** Injectable for tests. */
   now?: () => number;
@@ -243,6 +271,7 @@ export class SessionAuthEngine {
   private listeners = new Set<() => void>();
   private started = false;
   private inflightRefresh: Promise<string | null> | null = null;
+  private storagePreparation: Promise<void> | null = null;
   /** The last ID token handed to Convex — a forced fetch must never re-serve it. */
   private lastServed: string | null = null;
   private now: () => number;
@@ -312,17 +341,26 @@ export class SessionAuthEngine {
 
   /** Run the mount state machine. Idempotent (StrictMode double-effects). */
   start(): void {
-    if (this.started || typeof window === "undefined") return;
+    if (
+      this.started ||
+      (this.options.authFlow === undefined && typeof window === "undefined")
+    )
+      return;
     this.started = true;
     void this.startInner();
   }
 
   private async startInner(): Promise<void> {
     try {
+      await this.prepareStorage();
       await this.options.deviceBinding?.prepare();
     } catch (error) {
       this.reportError(this.asError(error));
       this.setUnauthenticated();
+      return;
+    }
+    if (this.options.authFlow !== undefined) {
+      await this.restore();
       return;
     }
     const onCallback = window.location.pathname === this.options.callbackPath;
@@ -330,7 +368,10 @@ export class SessionAuthEngine {
       ? classifySignInSearch(window.location.search)
       : ({ kind: "none" } as const);
     if (outcome.kind === "pending") {
-      await this.completeCallback();
+      await this.completeCallback(
+        new URLSearchParams(window.location.search),
+        `${window.location.origin}${this.options.callbackPath}`,
+      );
       return;
     }
     if (outcome.kind === "error") {
@@ -343,14 +384,17 @@ export class SessionAuthEngine {
     }
   }
 
-  private async completeCallback(): Promise<void> {
-    const params = new URLSearchParams(window.location.search);
+  private async completeCallback(
+    params: URLSearchParams,
+    redirectUri: string,
+  ): Promise<void> {
     const code = params.get("code") ?? "";
     const state = params.get("state") ?? "";
     // Login-CSRF binding: only the browser tab that started this sign-in holds
     // the matching stash. A foreign (attacker-initiated) or replayed callback
     // is refused without ever calling the exchange.
     const transaction = this.options.storage.takeTransaction();
+    await this.flushStorageReporting();
     if (!transaction || transaction.state !== state) {
       this.reportError(
         new Error(
@@ -369,7 +413,7 @@ export class SessionAuthEngine {
         this.options.transport.action(this.options.api.callback, {
           code,
           state,
-          redirectUri: `${window.location.origin}${this.options.callbackPath}`,
+          redirectUri,
           ...(devicePublicKey === undefined ? {} : { devicePublicKey }),
         }),
       );
@@ -378,6 +422,7 @@ export class SessionAuthEngine {
         sessionId: result.sessionId,
       });
       this.options.storage.writeIdToken(result.idToken);
+      await this.flushStorage();
       this.lastServed = null;
       this.setAuthenticated(result.idToken);
       const destination =
@@ -440,6 +485,13 @@ export class SessionAuthEngine {
 
   /** The `fetchAccessToken` half of `ConvexProviderWithAuth`'s `useAuth` contract. */
   async fetchAccessToken(forceRefreshToken: boolean): Promise<string | null> {
+    try {
+      await this.prepareStorage();
+    } catch (error) {
+      this.reportError(this.asError(error));
+      this.setUnauthenticated();
+      return null;
+    }
     const cached = this.options.storage.readIdToken();
     if (!forceRefreshToken && cached !== null && this.isFresh(cached)) {
       this.lastServed = cached;
@@ -498,6 +550,7 @@ export class SessionAuthEngine {
           sessionId: result.sessionId,
         });
         this.options.storage.writeIdToken(result.idToken);
+        await this.flushStorageReporting();
         return result.idToken;
       } catch (error) {
         if (sessionErrorKind(error) === "terminal") {
@@ -528,35 +581,119 @@ export class SessionAuthEngine {
       );
     }
     try {
+      await this.prepareStorage();
       await this.options.deviceBinding?.prepare();
     } catch (error) {
       const normalizedError = this.asError(error);
       this.reportError(normalizedError);
       throw normalizedError;
     }
+    const redirectUri =
+      this.options.authFlow?.redirectUri ??
+      `${window.location.origin}${this.options.callbackPath}`;
     const { url } = await this.options.transport.action(
       this.options.api.signIn,
       {
-        redirectUri: `${window.location.origin}${this.options.callbackPath}`,
+        redirectUri,
         returnTo,
       },
     );
     // Bind the transaction to this tab (see completeCallback).
     const state = new URL(url).searchParams.get("state");
     if (state !== null) this.options.storage.stashTransaction({ state });
-    window.location.assign(url);
+    await this.flushStorageReporting();
+    const authFlow = this.options.authFlow;
+    if (authFlow === undefined) {
+      window.location.assign(url);
+      return;
+    }
+
+    let callbackUrl: string | null;
+    try {
+      callbackUrl = await authFlow.openAuthorization(url);
+    } catch (error) {
+      this.options.storage.takeTransaction();
+      await this.flushStorageReporting();
+      const normalizedError = this.asError(error);
+      this.reportError(normalizedError);
+      throw normalizedError;
+    }
+    if (callbackUrl === null) {
+      // A cancelled browser session must not leave an OIDC state value that a
+      // later deep link could replay against.
+      this.options.storage.takeTransaction();
+      await this.flushStorageReporting();
+      return;
+    }
+    await this.completeSignIn(callbackUrl, redirectUri);
+  }
+
+  /** Complete a native system-browser return. Public for deep-link adapters/tests. */
+  async completeSignIn(
+    callbackUrl: string,
+    redirectUri: string,
+  ): Promise<void> {
+    let url: URL;
+    try {
+      url = new URL(callbackUrl);
+    } catch (error) {
+      this.options.storage.takeTransaction();
+      await this.flushStorageReporting();
+      this.reportError(
+        new Error("convex-logto: the native sign-in return URL is invalid.", {
+          cause: error,
+        }),
+      );
+      await this.restore();
+      this.navigateReplace(this.options.afterSignIn);
+      return;
+    }
+    const outcome = classifySignInSearch(url.search);
+    if (outcome.kind === "pending") {
+      await this.completeCallback(url.searchParams, redirectUri);
+      return;
+    }
+
+    // A returned browser session spends the state even when Logto returned an
+    // OAuth error or a malformed callback. This keeps the login-CSRF binding
+    // single-use on native, where there is no callback route to revisit.
+    this.options.storage.takeTransaction();
+    await this.flushStorageReporting();
+    this.reportError(
+      new Error(
+        outcome.kind === "error"
+          ? outcome.message
+          : "convex-logto: the native sign-in return did not include an authorization code and state.",
+      ),
+    );
+    await this.restore();
+    this.navigateReplace(this.options.afterSignIn);
   }
 
   async signOut(options?: {
     postLogoutRedirectUri?: string;
     federated?: boolean;
   }): Promise<void> {
+    try {
+      await this.prepareStorage();
+    } catch (error) {
+      const normalizedError = this.asError(error);
+      this.reportError(normalizedError);
+      throw normalizedError;
+    }
     const session = this.options.storage.readSession();
     // Clear before the network call: sign-out must not be blockable by a dead
     // Logto. The localStorage removal kicks other tabs via the storage event.
     this.options.storage.clearAll();
     this.lastServed = null;
     this.setUnauthenticated();
+    try {
+      await this.flushStorage();
+    } catch (error) {
+      // Still revoke the server session when durable local cleanup fails. A
+      // later cold start can only present a token the server has killed.
+      this.reportError(this.asError(error));
+    }
     if (session === null) return;
     let endSessionUrl: string | undefined;
     try {
@@ -565,7 +702,9 @@ export class SessionAuthEngine {
         {
           sessionToken: session.token,
           postLogoutRedirectUri:
-            options?.postLogoutRedirectUri ?? window.location.origin,
+            options?.postLogoutRedirectUri ??
+            this.options.authFlow?.redirectUri ??
+            window.location.origin,
         },
       ));
     } catch {
@@ -574,7 +713,15 @@ export class SessionAuthEngine {
     // Federated by default: also end Logto's SSO session so the next sign-in
     // isn't silent. The post sign-out redirect URI must be registered on the app.
     if (options?.federated !== false && endSessionUrl !== undefined) {
-      window.location.assign(endSessionUrl);
+      if (this.options.authFlow !== undefined) {
+        try {
+          await this.options.authFlow.openEndSession(endSessionUrl);
+        } catch (error) {
+          this.reportError(this.asError(error));
+        }
+      } else {
+        window.location.assign(endSessionUrl);
+      }
     }
   }
 
@@ -590,11 +737,40 @@ export class SessionAuthEngine {
   /** The reactive `sessionValid` subscription pushed `false`: the session was revoked. */
   handleRevoked(): void {
     this.options.storage.clearAll();
+    void this.flushStorage().catch((error: unknown) => {
+      this.reportError(this.asError(error));
+    });
     this.lastServed = null;
     this.setUnauthenticated();
   }
 
   // -- plumbing --
+
+  private prepareStorage(): Promise<void> {
+    if (this.storagePreparation === null) {
+      this.storagePreparation = (
+        this.options.storage.prepare?.() ?? Promise.resolve()
+      ).catch((error: unknown) => {
+        this.storagePreparation = null;
+        throw error;
+      });
+    }
+    return this.storagePreparation;
+  }
+
+  private flushStorage(): Promise<void> {
+    return this.options.storage.flush?.() ?? Promise.resolve();
+  }
+
+  private async flushStorageReporting(): Promise<void> {
+    try {
+      await this.flushStorage();
+    } catch (error) {
+      const normalizedError = this.asError(error);
+      this.reportError(normalizedError);
+      throw normalizedError;
+    }
+  }
 
   private isFresh(idToken: string): boolean {
     return idTokenExpMs(idToken) - ID_TOKEN_SKEW_MS > this.now();
