@@ -102,10 +102,10 @@ export type ConvexLogtoSessionProviderProps = {
    */
   reactiveRevocation?: boolean;
   /**
-   * Called when finishing a sign-in fails recoverably (a stale/replayed/forged
-   * callback, Logto unreachable) or opted-in device-key storage fails. The user
-   * is returned to the app logged out either way; use this to toast/telemetry
-   * the failure. Errors are also logged to the console.
+   * Called when starting or finishing sign-in fails recoverably (a failed
+   * action, stale/replayed/forged callback, or Logto unreachable), or opted-in
+   * device-key storage fails. This makes `void signIn()` safe for event
+   * handlers; errors are also logged to the console.
    */
   onAuthError?: (error: Error) => void;
   children: ReactNode;
@@ -309,7 +309,8 @@ export type LogtoSessionAuth = {
    * Start sign-in: one round-trip to mint the sign-in URL, then a full-page
    * redirect to Logto and back to the provider's `callbackPath`. `returnTo`
    * (a same-origin path starting with `/`) is where the user lands after
-   * sign-in completes; it overrides the provider's `afterSignIn`.
+   * sign-in completes; it overrides the provider's `afterSignIn`. Initiation
+   * failures reach `onAuthError` before this promise rejects.
    */
   signIn: (options?: { returnTo?: string }) => Promise<void>;
   /**

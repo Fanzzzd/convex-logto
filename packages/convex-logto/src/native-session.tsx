@@ -51,7 +51,7 @@ export type ConvexLogtoSessionProviderProps = {
   redirectUri: string;
   /** Subscribe to `sessionValid` and drop auth immediately on revocation. Default true. */
   reactiveRevocation?: boolean;
-  /** Recoverable OAuth, SecureStore, and system-browser failures. */
+  /** Sign-in initiation plus recoverable OAuth, SecureStore, and system-browser failures. */
   onAuthError?: (error: Error) => void;
   children: ReactNode;
 };
@@ -171,6 +171,7 @@ export type LogtoSessionAuth = {
   /**
    * Open Logto in the system browser and complete the deep-link return in
    * place. Concurrent calls share the one in-progress native browser flow.
+   * Initiation failures reach `onAuthError` before this promise rejects.
    */
   signIn: () => Promise<void>;
   /**

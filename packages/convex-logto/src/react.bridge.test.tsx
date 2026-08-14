@@ -76,7 +76,7 @@ function ApiProbe() {
 }
 
 let root: Root | null = null;
-async function renderProvider(
+function providerTree(
   props?: Partial<ConvexLogtoProviderProps> & { probe?: boolean },
 ) {
   const { probe, ...rest } = props ?? {};
@@ -86,13 +86,28 @@ async function renderProvider(
     Extract<ConvexLogtoProviderProps, { config: typeof config }>,
     "children"
   >;
+  return (
+    <ConvexLogtoProvider {...merged}>
+      {probe ? <ApiProbe /> : <span />}
+    </ConvexLogtoProvider>
+  );
+}
+
+async function renderProvider(
+  props?: Partial<ConvexLogtoProviderProps> & { probe?: boolean },
+) {
   root = createRoot(document.createElement("div"));
   await act(async () => {
-    root!.render(
-      <ConvexLogtoProvider {...merged}>
-        {probe ? <ApiProbe /> : <span />}
-      </ConvexLogtoProvider>,
-    );
+    root!.render(providerTree(props));
+  });
+}
+
+async function rerenderProvider(
+  props?: Partial<ConvexLogtoProviderProps> & { probe?: boolean },
+) {
+  if (root === null) throw new Error("renderProvider must run first");
+  await act(async () => {
+    root!.render(providerTree(props));
   });
 }
 
@@ -228,15 +243,96 @@ it("signIn({ returnTo }) stashes the destination and uses the callback redirect"
 });
 
 it.each(["//evil.example.com", "https://evil.example.com", "back\\slash"])(
-  "signIn rejects unsafe returnTo %s",
+  "signIn reports and rejects unsafe returnTo %s",
   async (returnTo) => {
-    await renderProvider({ probe: true });
-    await expect(capturedApi!.signIn({ returnTo })).rejects.toThrow(
-      /same-origin path/,
-    );
-    expect(mockLogto.signIn).not.toHaveBeenCalled();
+    const onAuthError = vi.fn();
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    try {
+      await renderProvider({ probe: true, onAuthError });
+      await expect(capturedApi!.signIn({ returnTo })).rejects.toThrow(
+        /same-origin path/,
+      );
+      expect(onAuthError).toHaveBeenCalledTimes(1);
+      expect(onAuthError).toHaveBeenCalledWith(expect.any(Error));
+      expect(consoleError).toHaveBeenCalledTimes(1);
+      expect(mockLogto.signIn).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
   },
 );
+
+it("reports an SDK-stored initiation error once when signIn() is discarded", async () => {
+  const failure = new Error("OIDC discovery unreachable");
+  const onAuthError = vi.fn();
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  mockLogto.signIn.mockImplementation(async () => {
+    // @logto/react's proxy catches the real rejection, stores this error in
+    // context, and resolves the public promise.
+    mockLogto.error = failure;
+  });
+  try {
+    await renderProvider({ probe: true, onAuthError });
+    await act(async () => {
+      void capturedApi!.signIn();
+      await Promise.resolve();
+    });
+    expect(onAuthError).not.toHaveBeenCalled();
+
+    // The SDK context update is what exposes the swallowed failure.
+    await rerenderProvider({ probe: true, onAuthError });
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+    expect(onAuthError).toHaveBeenCalledWith(failure);
+    expect(consoleError).toHaveBeenCalledTimes(1);
+
+    // The same SDK error object surviving another render is not a new failure.
+    await rerenderProvider({ probe: true, onAuthError });
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalledTimes(1);
+  } finally {
+    consoleError.mockRestore();
+  }
+});
+
+it("reports and rethrows a direct signIn rejection exactly once", async () => {
+  const failure = new Error("future SDK rejection");
+  const onAuthError = vi.fn();
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  mockLogto.signIn.mockRejectedValue(failure);
+  try {
+    await renderProvider({ probe: true, onAuthError });
+    await expect(capturedApi!.signIn()).rejects.toBe(failure);
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+    expect(onAuthError).toHaveBeenCalledWith(failure);
+    expect(consoleError).toHaveBeenCalledTimes(1);
+  } finally {
+    consoleError.mockRestore();
+  }
+});
+
+it("does not double-report callback errors through the initiation observer", async () => {
+  setUrl("http://localhost:3000/callback?code=c123&state=s456");
+  mockLogto.error = new Error("callback exchange failed");
+  const navigate = vi.fn();
+  const onAuthError = vi.fn();
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    await renderProvider({ probe: true, navigate, onAuthError });
+    await flush();
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+    expect(String(onAuthError.mock.calls[0]?.[0])).toMatch(/callback/i);
+    expect(consoleError).toHaveBeenCalledTimes(1);
+
+    await rerenderProvider({ probe: true, navigate, onAuthError });
+    await flush();
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalledTimes(1);
+  } finally {
+    consoleError.mockRestore();
+  }
+});
 
 it("deprecated signIn(string) passes through, warning when the path can't be handled", async () => {
   await renderProvider({ probe: true });

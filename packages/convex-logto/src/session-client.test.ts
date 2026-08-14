@@ -633,11 +633,24 @@ describe("signIn", () => {
   });
 
   it("rejects an unsafe returnTo before any network call", async () => {
-    const { engine, handlers } = makeHarness();
+    const { engine, handlers, onAuthError } = makeHarness();
     await expect(
       engine.signIn({ returnTo: "https://evil.com" }),
     ).rejects.toThrow(/same-origin path/);
+    expect(onAuthError).toHaveBeenCalledTimes(1);
     expect(handlers.signIn).not.toHaveBeenCalled();
+  });
+
+  it("reports and rejects a sign-in action failure exactly once", async () => {
+    const failure = new Error("Convex unreachable");
+    const { engine, handlers, onAuthError } = makeHarness();
+    handlers.signIn.mockRejectedValue(failure);
+
+    await expect(engine.signIn()).rejects.toBe(failure);
+
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+    expect(onAuthError).toHaveBeenCalledWith(failure);
+    expect(console.error).toHaveBeenCalledTimes(1);
   });
 
   it("reports and rejects a device-key preparation failure", async () => {
@@ -653,6 +666,7 @@ describe("signIn", () => {
     expect(onAuthError).toHaveBeenCalledWith(
       expect.any(SessionDeviceBindingError),
     );
+    expect(onAuthError).toHaveBeenCalledTimes(1);
     expect(handlers.signIn).not.toHaveBeenCalled();
   });
 });
