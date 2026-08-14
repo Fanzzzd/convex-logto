@@ -21,7 +21,9 @@ import {
   generatePkce,
   generateToken,
   hashToken,
+  isPreviousTokenWithinReuseWindow,
   rotateTokenHashes,
+  sessionReuseDetectedError,
   terminal,
   transient,
   type DevicePublicKey,
@@ -344,10 +346,7 @@ export const refresh = action({
       case "reuse": {
         // Reuse handling: the session died in beginRefresh; revoke its grant.
         await revokeGrant(args, begin.refreshToken);
-        throw terminal(
-          "session_reuse_detected",
-          "This session token was already rotated away — the session has been revoked. Sign in again.",
-        );
+        throw sessionReuseDetectedError();
       }
       case "refresh": {
         let tokens: Awaited<ReturnType<typeof tokenEndpoint>>;
@@ -643,25 +642,47 @@ export const hasActiveSessionForSubject = query({
  * grace behavior as refresh. Never accept a client-supplied subject here.
  */
 export const killSubjectSessionsByToken = mutation({
-  args: { presentedHash: v.string() },
-  returns: v.object({
-    count: v.number(),
-    subject: v.string(),
-    idTokenHint: v.string(),
-  }),
+  args: {
+    presentedHash: v.string(),
+    now: v.number(),
+    reuseWindowMs: v.number(),
+  },
+  returns: v.union(
+    v.object({
+      outcome: v.literal("signed-out"),
+      count: v.number(),
+      subject: v.string(),
+    }),
+    v.object({ outcome: v.literal("reuse") }),
+  ),
   handler: async (ctx, args) => {
     const byCurrent = await ctx.db
       .query("sessions")
       .withIndex("by_tokenHash", (q) => q.eq("tokenHash", args.presentedHash))
       .unique();
-    const caller =
-      byCurrent ??
-      (await ctx.db
+    let caller = byCurrent;
+    if (caller === null) {
+      const byPrevious = await ctx.db
         .query("sessions")
         .withIndex("by_prevTokenHash", (q) =>
           q.eq("prevTokenHash", args.presentedHash),
         )
-        .unique());
+        .unique();
+      if (
+        byPrevious !== null &&
+        !isPreviousTokenWithinReuseWindow({
+          rotatedAt: byPrevious.rotatedAt,
+          now: args.now,
+          reuseWindowMs: args.reuseWindowMs,
+        })
+      ) {
+        // Commit this theft response before the app action raises the terminal
+        // error. Throwing inside this mutation would roll the deletion back.
+        await ctx.db.delete(byPrevious._id);
+        return { outcome: "reuse" as const };
+      }
+      caller = byPrevious;
+    }
     if (!caller) {
       throw terminal(
         "session_not_found",
@@ -680,9 +701,9 @@ export const killSubjectSessionsByToken = mutation({
     // unreachable. We intentionally avoid an N-request RFC 7009 loop here;
     // those now-unusable grants expire at their own Logto TTL.
     return {
+      outcome: "signed-out" as const,
       count: sessions.length,
       subject: caller.subject,
-      idTokenHint: caller.lastIdToken,
     };
   },
 });

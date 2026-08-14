@@ -135,22 +135,26 @@ await signOutEverywhere({
 ```
 
 The component derives the subject **only** from the caller's presented live
-session token (the current or immediately previous rotation generation) and
-deletes all matching rows in one mutation. There is no client-supplied subject
-and no read-then-delete race. Local credentials are cleared first, using the
-same unblockable and durable-cleanup behavior as `signOut()`; other live
-devices receive `sessionValid: false` through the existing reactive
-subscription and drop authentication without new client plumbing.
+session token (the current generation, or the immediately previous generation
+within the configured reuse window) and deletes all matching rows in one
+mutation. A previous token outside that window is treated as theft: only its
+own session is deleted and the operation rejects, leaving the subject's other
+sessions intact. There is no client-supplied subject and no read-then-delete
+race. Local credentials are cleared first, using the same unblockable and
+durable-cleanup behavior as `signOut()`; other live devices receive
+`sessionValid: false` through the existing reactive subscription and drop
+authentication without new client plumbing.
 If the subject-wide server action fails, the promise rejects so the app can
 report that the everywhere operation was incomplete, even though this device
 has already cleared its local credentials.
 
-The caller's end-session URL carries its last ID token as `id_token_hint`, so
-that device's Logto browser SSO session is ended too. This is still an
-**RP-level boundary**: one device cannot erase the Logto OP cookies stored in
-other devices' browsers. A device that retains a live Logto cookie can start a
-new sign-in and may be authenticated by Logto without another credential
-prompt.
+The caller also follows Logto's end-session URL, ending that device's browser
+SSO session. The URL deliberately carries no ID token; Logto's client ID and
+registered post-logout redirect are sufficient, as they are for ordinary
+`signOut()`. This is still an **RP-level boundary**: one device cannot erase the
+Logto OP cookies stored in other devices' browsers. A device that retains a
+live Logto cookie can start a new sign-in and may be authenticated by Logto
+without another credential prompt.
 
 Deleting a component row also deletes its server-held Logto refresh token, so
 the corresponding grant becomes unreachable by the app. The operation does

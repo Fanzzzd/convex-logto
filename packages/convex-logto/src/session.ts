@@ -7,7 +7,12 @@ import {
   type RegisteredQuery,
 } from "convex/server";
 import { ConvexError, v } from "convex/values";
-import { buildEndSessionUrl, hashToken } from "./component/core.js";
+import {
+  DEFAULT_REUSE_WINDOW_MS,
+  buildEndSessionUrl,
+  hashToken,
+  sessionReuseDetectedError,
+} from "./component/core.js";
 import { readEndpointAndAppId } from "./config";
 
 // --- component reference typing ---------------------------------------------
@@ -114,8 +119,9 @@ export type LogtoSessionComponent = {
     killSubjectSessionsByToken: FunctionReference<
       "mutation",
       "internal",
-      { presentedHash: string },
-      { count: number; subject: string; idTokenHint: string }
+      { presentedHash: string; now: number; reuseWindowMs: number },
+      | { outcome: "signed-out"; count: number; subject: string }
+      | { outcome: "reuse" }
     >;
     killSessionsBySid: FunctionReference<
       "mutation",
@@ -388,15 +394,19 @@ export function logtoSessionApi(
         const { endpoint, appId } = readSessionConfig(options);
         const result = await ctx.runMutation(
           component.lib.killSubjectSessionsByToken,
-          { presentedHash: await hashToken(args.sessionToken) },
+          {
+            presentedHash: await hashToken(args.sessionToken),
+            now: Date.now(),
+            reuseWindowMs: options.reuseWindowMs ?? DEFAULT_REUSE_WINDOW_MS,
+          },
         );
+        if (result.outcome === "reuse") throw sessionReuseDetectedError();
         return {
           count: result.count,
           endSessionUrl: buildEndSessionUrl({
             endpoint,
             appId,
             postLogoutRedirectUri: args.postLogoutRedirectUri,
-            idTokenHint: result.idTokenHint,
           }),
         };
       },

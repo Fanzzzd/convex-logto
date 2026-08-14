@@ -62,6 +62,7 @@ type SubjectSession = {
   subject: string;
   tokenHash: string;
   prevTokenHash?: string;
+  rotatedAt?: number;
   lastIdToken: string;
 };
 
@@ -106,8 +107,11 @@ function subjectSessionHarness(initial: SubjectSession[]) {
   };
   type Handler = (
     ctx: { db: typeof db },
-    args: { presentedHash: string },
-  ) => Promise<{ count: number; subject: string; idTokenHint: string }>;
+    args: { presentedHash: string; now: number; reuseWindowMs: number },
+  ) => Promise<
+    | { outcome: "signed-out"; count: number; subject: string }
+    | { outcome: "reuse" }
+  >;
   const handler = (
     killSubjectSessionsByToken as unknown as Record<string, Handler>
   )["_handler"]!;
@@ -115,12 +119,15 @@ function subjectSessionHarness(initial: SubjectSession[]) {
 }
 
 describe("killSubjectSessionsByToken", () => {
-  const fixture = (): SubjectSession[] => [
+  const now = 1_000_000;
+  const reuseWindowMs = 10_000;
+  const fixture = (rotatedAt = now - 1_000): SubjectSession[] => [
     {
       _id: "subject-a-caller",
       subject: "subject-a",
       tokenHash: "caller-current",
       prevTokenHash: "caller-previous",
+      rotatedAt,
       lastIdToken: "caller-id-token",
     },
     {
@@ -138,32 +145,54 @@ describe("killSubjectSessionsByToken", () => {
   ];
 
   it("derives the subject from the current token and deletes all of only that subject", async () => {
-    const { db, deleted, sessions, handler } = subjectSessionHarness(fixture());
+    const { db, deleted, sessions, handler } = subjectSessionHarness(
+      fixture(now - reuseWindowMs - 1),
+    );
 
     await expect(
-      handler({ db }, { presentedHash: "caller-current" }),
+      handler({ db }, { presentedHash: "caller-current", now, reuseWindowMs }),
     ).resolves.toEqual({
+      outcome: "signed-out",
       count: 2,
       subject: "subject-a",
-      idTokenHint: "caller-id-token",
     });
     expect(deleted).toEqual(["subject-a-caller", "subject-a-other"]);
     expect(sessions.map((session) => session._id)).toEqual(["subject-b"]);
   });
 
-  it("accepts the immediately previous token hash", async () => {
-    const { db, handler } = subjectSessionHarness(fixture());
+  it("accepts the immediately previous token hash inside the reuse window", async () => {
+    const { db, deleted, handler } = subjectSessionHarness(fixture());
 
     await expect(
-      handler({ db }, { presentedHash: "caller-previous" }),
-    ).resolves.toMatchObject({ count: 2, subject: "subject-a" });
+      handler({ db }, { presentedHash: "caller-previous", now, reuseWindowMs }),
+    ).resolves.toEqual({
+      outcome: "signed-out",
+      count: 2,
+      subject: "subject-a",
+    });
+    expect(deleted).toEqual(["subject-a-caller", "subject-a-other"]);
+  });
+
+  it("contains previous-token reuse outside the window to only that session", async () => {
+    const { db, deleted, sessions, handler } = subjectSessionHarness(
+      fixture(now - reuseWindowMs),
+    );
+
+    await expect(
+      handler({ db }, { presentedHash: "caller-previous", now, reuseWindowMs }),
+    ).resolves.toEqual({ outcome: "reuse" });
+    expect(deleted).toEqual(["subject-a-caller"]);
+    expect(sessions.map((session) => session._id)).toEqual([
+      "subject-a-other",
+      "subject-b",
+    ]);
   });
 
   it("rejects an unknown token terminally", async () => {
     const { db, handler } = subjectSessionHarness(fixture());
 
     await expect(
-      handler({ db }, { presentedHash: "unknown" }),
+      handler({ db }, { presentedHash: "unknown", now, reuseWindowMs }),
     ).rejects.toMatchObject({
       data: { kind: "terminal", code: "session_not_found" },
     });

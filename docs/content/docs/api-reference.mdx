@@ -136,8 +136,11 @@ its own), `reuseWindowMs` (default 10s), and `endpoint` / `appId` /
 `signOutEverywhere({ sessionToken, postLogoutRedirectUri? })` hashes the token,
 derives its subject inside the component, atomically deletes every session for
 that subject, and returns `{ count, endSessionUrl }`. The subject is never a
-public argument. It intentionally does not issue one RFC 7009 request per
-deleted row; their now-unreachable grants expire at Logto's TTL.
+public argument. The immediately previous token is accepted only inside
+`reuseWindowMs`; presenting it later deletes only that stale session and raises
+the normal terminal reuse error. The action intentionally does not issue one
+RFC 7009 request per deleted row; their now-unreachable grants expire at
+Logto's TTL.
 
 The generated `callback` and `refresh` actions also accept optional
 device-binding fields used internally by `ConvexLogtoSessionProvider`
