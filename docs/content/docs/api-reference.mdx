@@ -218,7 +218,7 @@ to resolve it from the backend at runtime. Exactly one of the two.
 | `callbackPath` | — | The route that finishes the OIDC redirect. Default `/callback`. Must match a registered Redirect URI's path; only this exact path runs callback handling. |
 | `afterSignIn` | — | Where to go once sign-in completes. Default `/`. `signIn({ returnTo })` overrides it. |
 | `navigate` | — | Soft navigation (your router's `navigate`). Optional for plain Vite; **recommended for any router** (TanStack / Next) so post-sign-in is a soft navigation rather than a full-page reload that drops router state. Prefer a replace-style navigate. Falls back to a hard `location.replace`. |
-| `onAuthError` | — | Called on recoverable sign-in failures (stale/replayed callback, setup errors like `invalid_scope`). The user is returned to the app logged out either way; also logged to the console. |
+| `onAuthError` | — | Called on sign-in initiation failures (Logto unreachable, blocked storage, in-app browser restrictions) and recoverable callback failures (stale/replayed callback, setup errors like `invalid_scope`). Errors are also logged to the console. |
 | `discoveryCache` | — | Cache OIDC discovery + JWKS in sessionStorage. Default `true`. |
 | `scopes` / `resources` | — | Extra OIDC scopes / API resources. `openid`, `profile`, `offline_access`, and `email` are always included. |
 
@@ -241,7 +241,9 @@ const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
 completes — a same-origin path starting with `/` (anything else is rejected, to
 prevent open redirects). Without `returnTo`, the provider's `afterSignIn` is
 used. `signIn(redirectUri: string)` is **deprecated**: set `callbackPath` on the
-provider instead if your callback route isn't `/callback`.
+provider instead if your callback route isn't `/callback`. Event handlers may
+continue to use `void signIn()`: initiation failures are logged and delivered
+to `onAuthError` even though `@logto/react` catches them into SDK state.
 
 ## Session mode (`convex-logto/react-session`)
 
@@ -268,7 +270,7 @@ in the bundle — it talks to the functions from `logtoSessionApi(...)`.
 | `cookieTransport` | — | `{ endpoint?, fetch?, deviceBinding? }`; use the same-site handler instead of exposing the rotating session token to JavaScript. Its reserved `deviceBinding` flag only activates the shared incompatibility assertion. |
 | `initialToken` / `initialSessionId` | — | Paired SSR seed returned by `handler.getInitialToken(request)`. |
 | `reactiveRevocation` | — | Subscribe to session liveness; drop auth live on revocation. Default `true`. |
-| `onAuthError` | — | Recoverable sign-in failures or opted-in device-key storage failures. Also logged to the console. |
+| `onAuthError` | — | Sign-in initiation failures, recoverable callback failures, or opted-in device-key storage failures. Initiation failures are reported before `signIn()` rejects; all are logged to the console. |
 
 There is no callback component to add — the provider completes the exchange on
 `callbackPath` and replace-navigates into the app itself.
@@ -285,7 +287,9 @@ Returns `{ isAuthenticated, isLoading, user, signIn, signOut,
 signOutEverywhere }`.
 
 - `signIn({ returnTo? })` — one round-trip to mint the sign-in URL, then a
-  full-page redirect. `returnTo` must be a same-origin path.
+  full-page redirect. `returnTo` must be a same-origin path. A failed action is
+  delivered to `onAuthError` before the promise rejects, so `void signIn()`
+  remains observable.
 - `signOut({ postLogoutRedirectUri?, federated? })` — kills the session and
   revokes the Logto grant server-side, clears every tab, then (unless
   `federated: false`) ends the Logto SSO session and returns to
@@ -321,7 +325,7 @@ device-binding option.
 | `sessionApi` | yes | The module re-exporting all six `logtoSessionApi(...)` functions. |
 | `redirectUri` | yes | Custom-scheme or universal-link callback registered as both a Redirect URI and Post sign-out redirect URI in Logto. |
 | `reactiveRevocation` | — | Subscribe to `sessionValid` and clear SecureStore immediately when revoked. Default `true`. |
-| `onAuthError` | — | Receives recoverable OAuth, SecureStore, and system-browser failures; errors are also logged. |
+| `onAuthError` | — | Receives sign-in initiation failures plus recoverable OAuth, SecureStore, and system-browser failures; initiation failures are reported before `signIn()` rejects and all errors are logged. |
 
 `useLogtoAuth()` returns `{ isAuthenticated, isLoading, user, signIn,
 signOut, signOutEverywhere }`. `signIn()` opens and completes the system-browser flow in place.

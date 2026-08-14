@@ -20,6 +20,9 @@ const ID_TOKEN_SKEW_MS = 30 * 1000;
 /** Backoff between retries of a transiently-failing action call. */
 const RETRY_DELAYS_MS = [500, 2000];
 
+/** Error objects already surfaced through the public auth-error channel. */
+const REPORTED_AUTH_ERRORS = new WeakSet<Error>();
+
 export type SessionSnapshot = {
   status: "restoring" | "authenticated" | "unauthenticated";
   sessionId: string | null;
@@ -635,12 +638,25 @@ export class SessionAuthEngine {
     // storage intentionally has one OAuth transaction slot. Share the entire
     // flow so a double-tap cannot overwrite its own login-CSRF state. The web
     // redirect path remains independent and unchanged.
-    if (this.options.authFlow === undefined) return this.signInInner(options);
+    if (this.options.authFlow === undefined)
+      return this.signInReporting(options);
     if (this.inflightSignIn !== null) return this.inflightSignIn;
-    this.inflightSignIn = this.signInInner(options).finally(() => {
+    this.inflightSignIn = this.signInReporting(options).finally(() => {
       this.inflightSignIn = null;
     });
     return this.inflightSignIn;
+  }
+
+  private async signInReporting(options?: {
+    returnTo?: string;
+  }): Promise<void> {
+    try {
+      await this.signInInner(options);
+    } catch (error) {
+      const normalizedError = this.asError(error);
+      this.reportError(normalizedError);
+      throw normalizedError;
+    }
   }
 
   private async signInInner(options?: { returnTo?: string }): Promise<void> {
@@ -652,14 +668,8 @@ export class SessionAuthEngine {
           `to prevent open redirects.`,
       );
     }
-    try {
-      await this.prepareStorage();
-      await this.options.deviceBinding?.prepare();
-    } catch (error) {
-      const normalizedError = this.asError(error);
-      this.reportError(normalizedError);
-      throw normalizedError;
-    }
+    await this.prepareStorage();
+    await this.options.deviceBinding?.prepare();
     const redirectUri =
       this.options.authFlow?.redirectUri ??
       `${window.location.origin}${this.options.callbackPath}`;
@@ -676,7 +686,7 @@ export class SessionAuthEngine {
     this.options.storage.takeTransaction();
     const state = new URL(url).searchParams.get("state");
     if (state !== null) this.options.storage.stashTransaction({ state });
-    await this.flushStorageReporting();
+    await this.flushStorage();
     const authFlow = this.options.authFlow;
     if (authFlow === undefined) {
       window.location.assign(url);
@@ -688,16 +698,14 @@ export class SessionAuthEngine {
       callbackUrl = await authFlow.openAuthorization(url);
     } catch (error) {
       this.options.storage.takeTransaction();
-      await this.flushStorageReporting();
-      const normalizedError = this.asError(error);
-      this.reportError(normalizedError);
-      throw normalizedError;
+      await this.flushStorage();
+      throw error;
     }
     if (callbackUrl === null) {
       // A cancelled browser session must not leave an OIDC state value that a
       // later deep link could replay against.
       this.options.storage.takeTransaction();
-      await this.flushStorageReporting();
+      await this.flushStorage();
       return;
     }
     await this.completeSignIn(callbackUrl, redirectUri);
@@ -989,6 +997,10 @@ export class SessionAuthEngine {
   }
 
   private reportError(error: Error): void {
+    // Nested recovery helpers may report and rethrow the same Error. Preserve
+    // the rejection while routing that object through the observer only once.
+    if (REPORTED_AUTH_ERRORS.has(error)) return;
+    REPORTED_AUTH_ERRORS.add(error);
     console.error(error);
     try {
       this.options.onAuthError?.(error);
