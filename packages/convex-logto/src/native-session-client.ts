@@ -165,6 +165,10 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
 
   private write(name: StoredName, value: unknown): void {
     const raw = JSON.stringify(value);
+    // Deliberately keep the synchronous cache ahead if the durable write later
+    // fails. Rolling it back would make this live process reuse the superseded
+    // rotating token (and trigger reuse-kill after the grace window); only a
+    // cold start sees the older durable value, which cleanly re-authenticates.
     this.values.set(name, raw);
     this.enqueue(() => this.secureStore.setItemAsync(this.key(name), raw));
   }

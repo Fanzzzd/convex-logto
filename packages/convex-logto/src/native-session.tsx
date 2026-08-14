@@ -175,7 +175,8 @@ export type LogtoSessionAuth = {
   signIn: () => Promise<void>;
   /**
    * Revoke the session, clear SecureStore, and end browser SSO by default.
-   * Rejects with `SessionSignOutError` if both durable cleanup and revocation fail.
+   * Rejects with `SessionSignOutError` when durable cleanup fails twice; its
+   * `serverSessionStatus` distinguishes a successful revocation from a dual failure.
    */
   signOut: (options?: {
     postLogoutRedirectUri?: string;
@@ -210,4 +211,5 @@ export function useLogtoAuth(): LogtoSessionAuth {
 }
 
 export type { LogtoSessionApi } from "./session";
+export type { SessionSignOutServerStatus } from "./session-client";
 export { SessionSignOutError } from "./session-client";

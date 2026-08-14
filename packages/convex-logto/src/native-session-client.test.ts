@@ -11,6 +11,7 @@ import {
   SessionSignOutError,
   type SessionSnapshot,
   type SessionTransport,
+  type StoredSession,
 } from "./session-client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -80,6 +81,8 @@ type Handlers = {
 function makeHarness(options?: {
   secureStore?: FakeSecureStore;
   webBrowser?: ReturnType<typeof fakeWebBrowser>;
+  initialToken?: string;
+  initialSession?: StoredSession;
 }) {
   const secureStore = options?.secureStore ?? fakeSecureStore();
   const webBrowser = options?.webBrowser ?? fakeWebBrowser();
@@ -117,6 +120,8 @@ function makeHarness(options?: {
     storage,
     callbackPath: "",
     afterSignIn: "",
+    initialToken: options?.initialToken,
+    initialSession: options?.initialSession,
     authFlow: createNativeSessionAuthFlow("io.logto://callback", webBrowser),
     navigate,
     onAuthError,
@@ -316,6 +321,8 @@ describe("native session adapters", () => {
 
     await expect(engine.signOut()).rejects.toMatchObject({
       name: "SessionSignOutError",
+      code: "local_cleanup_and_server_revocation_failed",
+      serverSessionStatus: "revocation_failed",
       message: expect.stringMatching(/did not complete/),
     });
 
@@ -325,7 +332,36 @@ describe("native session adapters", () => {
     expect(onAuthError).toHaveBeenCalledWith(expect.any(SessionSignOutError));
   });
 
-  it("returns normally when revocation succeeds despite durable cleanup failure", async () => {
+  it("returns normally when a failed durable cleanup succeeds on retry", async () => {
+    const secureStore = fakeSecureStore();
+    await seedSession(secureStore, freshToken());
+    let firstDelete = true;
+    secureStore.deleteItemAsync = vi.fn((key: string) => {
+      if (firstDelete) {
+        firstDelete = false;
+        return Promise.reject(new Error("keystore delete failed"));
+      }
+      secureStore.data.delete(key);
+      return Promise.resolve();
+    });
+    const { engine, handlers, onAuthError } = makeHarness({ secureStore });
+    engine.start();
+    await settled(engine);
+
+    await expect(engine.signOut({ federated: false })).resolves.toBeUndefined();
+
+    expect(handlers.signOut).toHaveBeenCalledTimes(1);
+    expect(secureStore.deleteItemAsync).toHaveBeenCalledTimes(6);
+    expect(secureStore.data.size).toBe(0);
+    expect(onAuthError).toHaveBeenCalledWith(
+      expect.any(NativeSessionStorageError),
+    );
+    expect(onAuthError).not.toHaveBeenCalledWith(
+      expect.any(SessionSignOutError),
+    );
+  });
+
+  it("rejects distinctly when revocation succeeds but durable cleanup fails twice", async () => {
     const secureStore = fakeSecureStore();
     await seedSession(secureStore, freshToken());
     secureStore.deleteItemAsync = vi
@@ -335,17 +371,17 @@ describe("native session adapters", () => {
     engine.start();
     await settled(engine);
 
-    await expect(engine.signOut({ federated: false })).resolves.toBeUndefined();
+    await expect(engine.signOut({ federated: false })).rejects.toMatchObject({
+      name: "SessionSignOutError",
+      code: "local_cleanup_failed",
+      serverSessionStatus: "revoked",
+      message: expect.stringMatching(/server session was revoked/),
+    });
 
     expect(handlers.signOut).toHaveBeenCalledTimes(1);
     expect(secureStore.deleteItemAsync).toHaveBeenCalledTimes(6);
     expect(secureStore.data.size).toBe(2);
-    expect(onAuthError).toHaveBeenCalledWith(
-      expect.any(NativeSessionStorageError),
-    );
-    expect(onAuthError).not.toHaveBeenCalledWith(
-      expect.any(SessionSignOutError),
-    );
+    expect(onAuthError).toHaveBeenCalledWith(expect.any(SessionSignOutError));
   });
 
   it("refuses a foreign return and a replay after its state is spent", async () => {
@@ -394,6 +430,27 @@ describe("native session adapters", () => {
     );
   });
 
+  it("clears an abandoned state before handling an authorize URL without state", async () => {
+    const { engine, storage, handlers, onAuthError } = makeHarness();
+    engine.start();
+    await settled(engine);
+    storage.stashTransaction({ state: "state-1" });
+    await storage.flush();
+    handlers.signIn.mockResolvedValue({
+      url: "https://auth.example.com/oidc/auth",
+    });
+
+    await engine.signIn();
+
+    expect(handlers.callback).not.toHaveBeenCalled();
+    expect(storage.takeTransaction()).toBeNull();
+    expect(onAuthError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringMatching(/doesn't match/),
+      }),
+    );
+  });
+
   it("spends the state without exchanging when the system browser is cancelled", async () => {
     const webBrowser = fakeWebBrowser({ type: "cancel" });
     const { engine, storage, handlers, onAuthError } = makeHarness({
@@ -416,6 +473,31 @@ describe("native session adapters", () => {
 
     engine.start();
     expect((await settled(engine)).status).toBe("unauthenticated");
+    expect(onAuthError).toHaveBeenCalledWith(
+      expect.any(NativeSessionStorageError),
+    );
+  });
+
+  it("drops the live auth snapshot when sign-out storage preparation fails", async () => {
+    const secureStore = fakeSecureStore();
+    secureStore.isAvailableAsync = vi.fn().mockResolvedValue(false);
+    const { engine, storage, handlers, onAuthError } = makeHarness({
+      secureStore,
+      initialToken: freshToken(),
+      initialSession: {
+        token: "session-token-old",
+        sessionId: "session-id-1",
+      },
+    });
+    expect(engine.getSnapshot().status).toBe("authenticated");
+
+    await expect(engine.signOut()).rejects.toBeInstanceOf(
+      NativeSessionStorageError,
+    );
+
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+    expect(storage.readSession()).toBeNull();
+    expect(handlers.signOut).not.toHaveBeenCalled();
     expect(onAuthError).toHaveBeenCalledWith(
       expect.any(NativeSessionStorageError),
     );

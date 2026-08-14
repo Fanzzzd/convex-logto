@@ -61,14 +61,34 @@ export type SessionAuthFlow = {
   openEndSession(url: string, returnUrl: string): Promise<void>;
 };
 
-/** Neither durable credential cleanup nor server-side revocation completed. */
+export type SessionSignOutServerStatus =
+  | "revoked"
+  | "revocation_failed"
+  | "not_present";
+
+/** Durable credential cleanup failed twice during an explicit sign-out. */
 export class SessionSignOutError extends Error {
-  constructor(cause?: unknown) {
+  readonly code:
+    | "local_cleanup_failed"
+    | "local_cleanup_and_server_revocation_failed";
+
+  constructor(
+    readonly serverSessionStatus: SessionSignOutServerStatus,
+    cause?: unknown,
+  ) {
+    const revocationAlsoFailed = serverSessionStatus === "revocation_failed";
     super(
-      "convex-logto: sign-out did not complete because SecureStore cleanup and server revocation both failed.",
+      revocationAlsoFailed
+        ? "convex-logto: sign-out did not complete because SecureStore cleanup and server revocation both failed."
+        : serverSessionStatus === "revoked"
+          ? "convex-logto: the server session was revoked, but local credentials could not be wiped from SecureStore."
+          : "convex-logto: local credentials could not be wiped from SecureStore.",
       cause === undefined ? undefined : { cause },
     );
     this.name = "SessionSignOutError";
+    this.code = revocationAlsoFailed
+      ? "local_cleanup_and_server_revocation_failed"
+      : "local_cleanup_failed";
   }
 }
 
@@ -624,6 +644,9 @@ export class SessionAuthEngine {
       },
     );
     // Bind the transaction to this tab (see completeCallback).
+    // Always spend an abandoned state before considering the new authorize
+    // URL: if Logto ever omits `state`, an old deep link must not match it.
+    this.options.storage.takeTransaction();
     const state = new URL(url).searchParams.get("state");
     if (state !== null) this.options.storage.stashTransaction({ state });
     await this.flushStorageReporting();
@@ -704,6 +727,16 @@ export class SessionAuthEngine {
     } catch (error) {
       const normalizedError = this.asError(error);
       this.reportError(normalizedError);
+      // A broken async store must not trap the live React tree in an
+      // authenticated snapshot. Queue deletion where the adapter still can,
+      // then preserve the storage failure signal for the caller.
+      this.lastServed = null;
+      this.setUnauthenticated();
+      try {
+        this.options.storage.clearAll();
+      } catch (clearError) {
+        this.reportError(this.asError(clearError));
+      }
       throw normalizedError;
     }
     const session = this.options.storage.readSession();
@@ -716,42 +749,37 @@ export class SessionAuthEngine {
     try {
       await this.flushStorage();
     } catch (error) {
-      // Still revoke the server session when durable local cleanup fails. A
-      // later cold start can only present a token the server has killed.
+      // Still attempt server revocation when durable local cleanup fails; a
+      // second cleanup failure becomes a loud error after that independent try.
       durableCleanupFailed = true;
       this.reportError(this.asError(error));
     }
-    if (session === null) {
-      if (durableCleanupFailed) {
-        this.options.storage.clearAll();
-        try {
-          await this.flushStorage();
-        } catch (error) {
-          this.reportError(this.asError(error));
-        }
-      }
-      return;
-    }
-    const postLogoutRedirectUri =
-      options?.postLogoutRedirectUri ??
-      this.options.authFlow?.redirectUri ??
-      window.location.origin;
+    let postLogoutRedirectUri: string | undefined;
     let endSessionUrl: string | undefined;
-    let serverRevoked = false;
+    let serverSessionStatus: SessionSignOutServerStatus =
+      session === null ? "not_present" : "revocation_failed";
     let serverRevocationError: unknown;
-    try {
-      ({ endSessionUrl } = await this.options.transport.action(
-        this.options.api.signOut,
-        {
-          sessionToken: session.token,
-          postLogoutRedirectUri,
-        },
-      ));
-      serverRevoked = true;
-    } catch (error) {
-      serverRevocationError = error;
-      // Best effort: local sign-out already happened; the grant dies at its TTL.
+    if (session !== null) {
+      postLogoutRedirectUri =
+        options?.postLogoutRedirectUri ??
+        this.options.authFlow?.redirectUri ??
+        window.location.origin;
+      try {
+        ({ endSessionUrl } = await this.options.transport.action(
+          this.options.api.signOut,
+          {
+            sessionToken: session.token,
+            postLogoutRedirectUri,
+          },
+        ));
+        serverSessionStatus = "revoked";
+      } catch (error) {
+        serverRevocationError = error;
+        // Best effort when local cleanup succeeded; a combined failure is
+        // converted into a loud SessionSignOutError below.
+      }
     }
+    let signOutError: SessionSignOutError | undefined;
     if (durableCleanupFailed) {
       // SecureStore failures can be transient (for example, a temporarily
       // unavailable keystore). Retry once after the independent server kill.
@@ -761,20 +789,22 @@ export class SessionAuthEngine {
       } catch (error) {
         const durableCleanupError = this.asError(error);
         this.reportError(durableCleanupError);
-        if (!serverRevoked) {
-          const signOutError = new SessionSignOutError({
-            durableCleanupError,
-            serverRevocationError,
-          });
-          this.reportError(signOutError);
-          throw signOutError;
-        }
+        signOutError = new SessionSignOutError(serverSessionStatus, {
+          durableCleanupError,
+          ...(serverRevocationError === undefined
+            ? {}
+            : { serverRevocationError }),
+        });
+        this.reportError(signOutError);
       }
     }
     // Federated by default: also end Logto's SSO session so the next sign-in
     // isn't silent. The post sign-out redirect URI must be registered on the app.
     if (options?.federated !== false && endSessionUrl !== undefined) {
-      if (this.options.authFlow !== undefined) {
+      if (
+        this.options.authFlow !== undefined &&
+        postLogoutRedirectUri !== undefined
+      ) {
         try {
           await this.options.authFlow.openEndSession(
             endSessionUrl,
@@ -787,6 +817,7 @@ export class SessionAuthEngine {
         window.location.assign(endSessionUrl);
       }
     }
+    if (signOutError !== undefined) throw signOutError;
   }
 
   // -- external events --
