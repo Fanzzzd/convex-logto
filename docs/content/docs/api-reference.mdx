@@ -1,6 +1,6 @@
 ---
 title: API reference
-description: Every export from convex-logto, convex-logto/react, convex-logto/react-session, and convex-logto/native, with signatures.
+description: Every export from convex-logto and its web, native, and session-mode entries, with signatures.
 ---
 
 ## Exports
@@ -25,6 +25,8 @@ description: Every export from convex-logto, convex-logto/react, convex-logto/re
 | `useLogtoAuth()` | `convex-logto/react-session` | Same shape as the bridge hook; `signOut(opts?)` takes `{ postLogoutRedirectUri?, federated? }`. |
 | `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `config` / `configQuery` model; no callback route. |
 | `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signOut()` takes no argument. |
+| `ConvexLogtoSessionProvider` | `convex-logto/native-session` | React Native / Expo session provider using SecureStore + the system browser. |
+| `useLogtoAuth()` | `convex-logto/native-session` | Native session `{ isAuthenticated, isLoading, user, signIn, signOut }`; no device-binding surface. |
 
 ## Backend
 
@@ -237,6 +239,44 @@ Same shape as the bridge hook: `{ isAuthenticated, isLoading, user, signIn, sign
   `federated: false`) ends the Logto SSO session and returns to
   `postLogoutRedirectUri` (default: your origin, which must be a registered
   Post sign-out redirect URI).
+
+## Native session mode (`convex-logto/native-session`)
+
+The React Native / Expo adapter for the same `SessionAuthEngine` and
+`logtoSessionApi(...)` actions as web session mode. It stores the rotating
+session token, OAuth state, and short-lived ID token in deployment-namespaced
+Expo SecureStore, and completes OAuth with `expo-web-browser` plus the app's
+deep-link redirect. There is no callback route, cookie transport, or software
+device-binding option.
+
+```tsx
+<ConvexLogtoSessionProvider
+  client={convex}
+  sessionApi={api.auth}
+  redirectUri="io.logto://callback"
+>
+  <App />
+</ConvexLogtoSessionProvider>
+```
+
+| Prop | Required | Purpose |
+| --- | --- | --- |
+| `client` | yes | Your `ConvexReactClient`. |
+| `sessionApi` | yes | The module re-exporting all five `logtoSessionApi(...)` functions. |
+| `redirectUri` | yes | Custom-scheme or universal-link callback registered as both a Redirect URI and Post sign-out redirect URI in Logto. |
+| `reactiveRevocation` | — | Subscribe to `sessionValid` and clear SecureStore immediately when revoked. Default `true`. |
+| `onAuthError` | — | Receives recoverable OAuth, SecureStore, and system-browser failures; errors are also logged. |
+
+`useLogtoAuth()` returns `{ isAuthenticated, isLoading, user, signIn,
+signOut }`. `signIn()` opens and completes the system-browser flow in place.
+`signOut({ postLogoutRedirectUri?, federated? })` clears SecureStore and revokes
+the server session, then ends Logto browser SSO unless `federated: false`.
+
+The ID token is persisted in SecureStore to make a fresh cold start a
+zero-round-trip authenticate. This is the native equivalent of choosing web
+`tokenStorage="local"`, but the bearer stays inside the OS encrypted keystore.
+See [Expo (React Native)](/docs/react-native#native-session-mode) for setup and
+the web/native differences.
 
 ## Native (`convex-logto/native`)
 

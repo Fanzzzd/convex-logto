@@ -1,11 +1,20 @@
 ---
 title: Expo (React Native)
-description: Wire Logto auth into a Convex Expo app with the convex-logto/native entry.
+description: Use Logto bridge mode or server-held session mode in a Convex Expo app.
 ---
 
-The same package works in React Native through the **`convex-logto/native`** entry,
-built on [`@logto/rn`](https://github.com/logto-io/react-native). The backend is
-**identical** to the web setup — only the frontend provider differs.
+There are two React Native entries:
+
+- **`convex-logto/native`** is bridge mode, built on
+  [`@logto/rn`](https://github.com/logto-io/react-native). The Logto SDK owns the
+  refresh token.
+- **`convex-logto/native-session`** is session mode. The Convex component owns
+  the Logto refresh token; Expo SecureStore holds only a rotating one-time
+  session token and a short-lived ID token.
+
+Both use the system browser and return through an app deep link, with no
+callback route. The bridge-mode walkthrough comes first; [native session
+mode](#native-session-mode) follows below.
 
 <Callout>
 `@logto/rn` signs in through the system browser and returns via your custom
@@ -160,6 +169,116 @@ Full runnable app: [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tre
 
 Everything else — `logtoAuthConfig`, `logtoConfigQuery`, the webhook
 [user-sync](/docs/webhook-sync), and reading `ctx.auth.getUserIdentity()` — is shared.
+
+## Native session mode
+
+Use **`convex-logto/native-session`** when the Logto refresh token should remain
+inside the Convex session component. The server setup and five actions are the
+same as [web session mode](/docs/session-mode); only the storage and OAuth
+adapters differ on the device.
+
+### Install
+
+```bash
+pnpm add convex-logto
+npx expo install expo-secure-store expo-web-browser
+```
+
+This entry does not use `@logto/rn`, `expo-crypto`, or AsyncStorage.
+`expo-secure-store` and `expo-web-browser` are optional peers so bridge-mode and
+web-only apps do not install them.
+
+### Configure Logto and Convex
+
+Create a Logto **Traditional web** application, then register the app deep link
+in both lists:
+
+- **Redirect URIs** → `io.logto://callback`
+- **Post sign-out redirect URIs** → `io.logto://callback`
+
+Keep the `"scheme": "io.logto"` app configuration shown above. As with web
+session mode, set `LOGTO_ENDPOINT`, `LOGTO_APP_ID`, and
+`LOGTO_CLIENT_SECRET` on the Convex deployment, install the component, and
+export all five functions:
+
+```ts title="convex/convex.config.ts"
+import { defineApp } from "convex/server";
+import logto from "convex-logto/convex.config";
+
+const app = defineApp();
+app.use(logto);
+export default app;
+```
+
+```ts title="convex/auth.ts"
+import { logtoSessionApi } from "convex-logto";
+import { components } from "./_generated/api";
+
+export const { signIn, callback, refresh, signOut, sessionValid } =
+  logtoSessionApi(components.logto);
+```
+
+`convex/auth.config.ts` still uses `logtoAuthConfig()` so Convex validates the
+same ID token.
+
+### Mount the native session provider
+
+```tsx title="App.tsx"
+import { ConvexReactClient } from "convex/react";
+import { ConvexLogtoSessionProvider } from "convex-logto/native-session";
+import { api } from "./convex/_generated/api";
+
+const convex = new ConvexReactClient(process.env.EXPO_PUBLIC_CONVEX_URL!, {
+  unsavedChangesWarning: false,
+});
+
+export default function App() {
+  return (
+    <ConvexLogtoSessionProvider
+      client={convex}
+      sessionApi={api.auth}
+      redirectUri="io.logto://callback"
+    >
+      <Main />
+    </ConvexLogtoSessionProvider>
+  );
+}
+```
+
+`signIn()` asks the Convex action for an authorize URL, opens it with
+`WebBrowser.openAuthSessionAsync`, verifies that the returned `state` matches
+the single-use state stashed before the browser opened, and exchanges the code
+in place. There is no `/callback` screen or router integration.
+
+Native session mode keeps the rotating session token, OAuth state stash, and
+**short-lived ID token** in deployment-namespaced SecureStore. Persisting the ID
+token is a deliberate cold-start choice: while it remains fresh, the app can
+authenticate immediately without spending the one-time session token; unlike
+AsyncStorage, the bearer remains under the iOS Keychain / Android encrypted
+keystore. A stale ID token causes the normal server refresh and rolls the
+SecureStore session token before Convex receives the new ID token.
+
+Reactive revocation is on by default and uses the same `sessionValid`
+subscription as the web provider. `signOut()` clears SecureStore, revokes the
+server session, and opens Logto's end-session URL in the system browser unless
+`federated: false` is passed.
+
+### Differences from web session mode
+
+| | Web session | Native session |
+| --- | --- | --- |
+| Entry | `convex-logto/react-session` | `convex-logto/native-session` |
+| OAuth return | `/callback` route | system browser → deep link |
+| Session credential | localStorage, optional HttpOnly cookie | Expo SecureStore |
+| ID token default | sessionStorage | Expo SecureStore for fast cold starts |
+| Cross-context coordination | storage events + Web Locks | one installed app / SecureStore |
+| Cookie transport | optional, same-site only | unavailable |
+| Software device binding | optional on web | intentionally absent; SecureStore uses the OS keystore |
+
+Native session mode therefore has no `tokenStorage`, `cookieTransport`, or
+`deviceBinding` provider props. If SecureStore is unavailable or fails, auth
+fails loudly through `onAuthError`; it never falls back to AsyncStorage or an
+unbound plaintext credential.
 
 ## Expo SDK and `@logto/rn` versions
 

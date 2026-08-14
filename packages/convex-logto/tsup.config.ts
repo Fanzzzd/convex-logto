@@ -7,6 +7,8 @@ const external = [
   /^react-dom(\/.*)?$/,
   /^@logto\/react(\/.*)?$/,
   /^@logto\/rn(\/.*)?$/,
+  /^expo-secure-store(\/.*)?$/,
+  /^expo-web-browser(\/.*)?$/,
   /^react-native(\/.*)?$/,
 ];
 
@@ -37,6 +39,13 @@ export default defineConfig([
   {
     ...shared,
     entry: { native: "src/native.tsx" },
+    format: ["esm"],
+  },
+  // Session mode on Expo uses ESM-only Expo modules and the same ESM-first
+  // React Native toolchain as the bridge-mode native entry.
+  {
+    ...shared,
+    entry: { "native-session": "src/native-session.tsx" },
     format: ["esm"],
   },
   // Session mode's React entry. No Logto SDK dependency; ESM-only like the
