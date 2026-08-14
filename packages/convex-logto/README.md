@@ -124,6 +124,10 @@ function Header() {
 }
 ```
 
+The `void signIn()` handler is safe: initiation failures are logged and routed
+to the provider's `onAuthError`, even when the underlying Logto SDK catches the
+rejection into its own error state.
+
 In any Convex function, the Logto identity is already there:
 
 ```ts

@@ -507,7 +507,7 @@ destroy the grant.
 | `cookieTransport` | — | `{ endpoint?, fetch?, deviceBinding? }`: move the rotating session token into a persistent same-site HttpOnly cookie whose 190-day lifetime renews on every rotation. The reserved `deviceBinding` flag only activates the shared incompatibility assertion. |
 | `initialToken` / `initialSessionId` | — | Paired values from `handler.getInitialToken(request)` for authenticated SSR/hydration. |
 | `reactiveRevocation` | `true` | Subscribe to session liveness and drop auth live on revocation. |
-| `onAuthError` | — | Recoverable sign-in failures and opted-in device-key storage failures. |
+| `onAuthError` | — | Sign-in initiation and callback failures, plus opted-in device-key storage failures. Initiation failures are reported before `signIn()` rejects, so `void signIn()` remains observable. |
 
 `logtoSessionApi(component, opts?)` accepts `scopes`, `resources` (server-set —
 the browser can't request its own), `reuseWindowMs`, and env overrides.

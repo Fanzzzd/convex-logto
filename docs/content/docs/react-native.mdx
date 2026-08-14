@@ -286,8 +286,9 @@ devices, and always ends this device's Logto browser session.
 
 Native session mode therefore has no `tokenStorage`, `cookieTransport`, or
 `deviceBinding` provider props. If SecureStore is unavailable or fails, auth
-fails loudly through `onAuthError`; it never falls back to AsyncStorage or an
-unbound plaintext credential.
+fails loudly through `onAuthError`; a sign-in action or system-browser
+initiation failure is likewise reported before `signIn()` rejects. It never
+falls back to AsyncStorage or an unbound plaintext credential.
 
 ## Expo SDK and `@logto/rn` versions
 

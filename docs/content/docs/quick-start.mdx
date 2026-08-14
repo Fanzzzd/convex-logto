@@ -130,6 +130,12 @@ function Header() {
 }
 ```
 
+The `void signIn()` event-handler form is intentional. If starting sign-in
+fails—for example, Logto is unreachable or browser storage is blocked—the
+provider logs the failure and delivers it to `onAuthError`, even though
+`@logto/react` catches the underlying rejection into its SDK error state. Pass
+`onAuthError` to `ConvexLogtoProvider` to show a toast or send telemetry.
+
 `signOut()` ends the Logto session and returns the user to your app's origin (the
 **Post sign-out redirect URI** from step 1). Pass `signOut("https://app.com/bye")`
 to land somewhere else — just register that URI too.
