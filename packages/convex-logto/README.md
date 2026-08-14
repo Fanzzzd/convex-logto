@@ -212,8 +212,15 @@ rotating credential into a persistent rolling `__Host-` HttpOnly cookie whose
 190-day lifetime matches server-side idle GC. It enforces fixed POST +
 custom-header + Origin CSRF checks and supports SSR seeding through
 `handler.getInitialToken(request)`. See the session-mode guide for Next.js,
-TanStack Start, and Convex custom-domain mounts, plus the Safari device-binding
+TanStack Start, and Convex custom-domain mounts, plus the cookie/device-binding
 exclusion.
+
+Alternatively, opt into `deviceBinding` on the provider to require an ECDSA
+proof from a non-extractable IndexedDB-held key on every refresh, making a
+copied session token useless off-device. It is intentionally off by default,
+fails loudly without IndexedDB, and cannot be combined with cookie transport;
+key eviction causes a clean re-authentication. See the session-mode guide for
+the exact threat model and the cross-browser DBSC re-evaluation trigger.
 
 [session-mode-docs]: https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/session-mode.mdx
 [session-example]: https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session

@@ -109,6 +109,55 @@ const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
 // signOut() — revokes the grant, clears every tab, ends the Logto SSO session
 ```
 
+## Device binding (optional)
+
+Set `deviceBinding` to opt into proof of possession for the default session
+token transport:
+
+```tsx
+<ConvexLogtoSessionProvider
+  client={convex}
+  sessionApi={api.auth}
+  deviceBinding
+>
+  <App />
+</ConvexLogtoSessionProvider>
+```
+
+The browser generates an ECDSA P-256 keypair with Web Crypto and persists the
+`CryptoKeyPair` in deployment-namespaced IndexedDB. The private key is
+**non-extractable** and never reaches Convex; only its public JWK is captured
+when the callback creates the session. Every refresh signs the presented
+one-time session token, and the component verifies that signature before it
+claims or rotates the token. Because the token changes after every successful
+refresh, a captured proof cannot authorize the next generation (the existing
+10-second token-reuse grace still absorbs honest races).
+
+This protects against **off-device replay** after an attacker copies the
+JavaScript-visible session token: the token alone is no longer enough on
+another machine. It does not claim to defeat arbitrary code already executing
+on the same origin, which can ask the browser-held key to sign while that code
+is running.
+
+Binding is deliberately opt-in. If IndexedDB is unavailable, setup fails loudly
+instead of silently issuing an unbound session. If storage eviction removes the
+key while a bound session remains, the replacement key's next proof is rejected
+terminally and the client clears the session for a clean sign-in. That occasional
+re-authentication trade-off is why ordinary sessions remain unbound by default.
+
+Do not combine `deviceBinding` with `cookieTransport` on any browser. The cookie
+transport already prevents off-device replay by taking the token out of
+JavaScript, while device binding requires JavaScript to sign that exact token;
+supporting both would require weakening one of those guarantees. The shared
+compatibility assertion throws the same explicit configuration error regardless
+of which option you enable first. On Safari this also avoids the original ITP
+failure mode where IndexedDB can be evicted while the cookie survives.
+
+Re-evaluate this software fallback when
+[Device Bound Session Credentials (DBSC)](https://developer.chrome.com/docs/web-platform/device-bound-session-credentials)
+is available cross-browser. DBSC should become the preferred browser-managed
+mechanism once its interoperability and deployment support are broad enough.
+
 ## HttpOnly cookie transport (optional)
 
 The default one-time token is safe to rotate from `localStorage`, but an XSS bug
@@ -297,14 +346,14 @@ const seed = Route.useLoaderData();
 The server and hydration snapshots start authenticated, so Convex can accept the
 seeded ID token on the first paint without a browser `/token` round-trip.
 
-### Safari and device binding
+### Cookie transport versus device binding
 
-Cookie transport and software device binding are mutually exclusive on Safari:
-ITP can retain the cookie while evicting its IndexedDB-held key. Pass the same
-`deviceBinding: true` flag to the handler and `cookieTransport` configuration;
-Safari throws an explicit configuration error rather than silently dropping
-either protection. Device binding itself is tracked separately and is not
-implemented by the cookie adapter.
+Cookie transport and software device binding are alternative defenses against
+off-device session-token replay, not cumulative settings. Enabling both throws
+through `assertLogtoSessionCookieCompatibility`; the low-level handler and
+browser adapter retain a `deviceBinding` compatibility flag so non-React mounts
+fail through that same path. Safari's ITP key-eviction behavior is an additional
+reason for the exclusion, but the HttpOnly/signing conflict applies everywhere.
 
 ## Reactive revocation
 
@@ -351,11 +400,13 @@ is a 15-line version.
    forged or replayed callback is refused before any exchange.
 2. **Exchange** — the callback action redeems the code (client secret + PKCE),
    stores the refresh token in the component, and hands the browser the ID token
-   plus session token #1.
+   plus session token #1. With device binding enabled, it also stores the
+   browser's public key; the private key never leaves IndexedDB.
 3. **Refresh** — when the ID token nears expiry, the browser presents session
-   token #1; the component refreshes against Logto and answers with a fresh ID
-   token plus session token #2. Token #1's hash is kept briefly (10s) so
-   multi-tab races don't false-positive.
+   token #1 (and, for a bound session, its signature); the component verifies
+   proof before refreshing against Logto and answers with a fresh ID token plus
+   session token #2. Token #1's hash is kept briefly (10s) so multi-tab races
+   don't false-positive.
 4. **Theft detection** — if token #1 shows up *after* that window, someone has a
    copy. The component deletes the session and revokes the whole Logto grant;
    both the attacker and the victim are signed out, and the victim's next visit
@@ -379,10 +430,11 @@ destroy the grant.
 | `afterSignIn` | `"/"` | Where to land after sign-in; `signIn({ returnTo })` overrides. |
 | `navigate` | hard replace | Your router's navigate for soft post-sign-in navigation. |
 | `tokenStorage` | `"session"` | Where the ID token persists: `"session"` (per-tab, zero-round-trip reload), `"memory"` (strictest), `"local"`. |
-| `cookieTransport` | — | `{ endpoint?, fetch?, deviceBinding? }`: move the rotating session token into a persistent same-site HttpOnly cookie whose 190-day lifetime renews on every rotation. |
+| `deviceBinding` | `false` | Bind refreshes to a non-extractable IndexedDB-held ECDSA key. Cannot be combined with `cookieTransport`. |
+| `cookieTransport` | — | `{ endpoint?, fetch?, deviceBinding? }`: move the rotating session token into a persistent same-site HttpOnly cookie whose 190-day lifetime renews on every rotation. The reserved `deviceBinding` flag only activates the shared incompatibility assertion. |
 | `initialToken` / `initialSessionId` | — | Paired values from `handler.getInitialToken(request)` for authenticated SSR/hydration. |
 | `reactiveRevocation` | `true` | Subscribe to session liveness and drop auth live on revocation. |
-| `onAuthError` | — | Recoverable sign-in failures (stale/forged callback, Logto down). |
+| `onAuthError` | — | Recoverable sign-in failures and opted-in device-key storage failures. |
 
 `logtoSessionApi(component, opts?)` accepts `scopes`, `resources` (server-set —
 the browser can't request its own), `reuseWindowMs`, and env overrides.

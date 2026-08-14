@@ -58,6 +58,92 @@ export async function hashToken(token: string): Promise<string> {
   return toHex(await crypto.subtle.digest("SHA-256", encoder.encode(token)));
 }
 
+export type DevicePublicKey = {
+  kty: "EC";
+  crv: "P-256";
+  x: string;
+  y: string;
+};
+
+function fromBase64Url(value: string): Uint8Array<ArrayBuffer> | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  try {
+    const binary = atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index++) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+/** Verify an ECDSA P-256 proof over the presented rotating session token. */
+export async function verifyDeviceProof(options: {
+  publicKey: DevicePublicKey;
+  sessionToken: string;
+  proof: string;
+}): Promise<boolean> {
+  const signature = fromBase64Url(options.proof);
+  // WebCrypto ECDSA signatures use fixed-width IEEE P1363 r || s encoding.
+  if (signature?.byteLength !== 64) return false;
+  try {
+    const key = await crypto.subtle.importKey(
+      "jwk",
+      {
+        ...options.publicKey,
+        ext: true,
+        key_ops: ["verify"],
+      },
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"],
+    );
+    return await crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      key,
+      signature,
+      encoder.encode(options.sessionToken),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Enforce PoP only for sessions that opted in at exchange time. The signature
+ * covers the one-time session token itself, so it cannot be carried forward to
+ * the next rotation; token reuse retains only the existing bounded grace rule.
+ */
+export async function assertDeviceProof(options: {
+  publicKey?: DevicePublicKey;
+  sessionToken: string;
+  proof?: string;
+}): Promise<void> {
+  const publicKey = options.publicKey;
+  if (publicKey === undefined) return;
+  if (options.proof === undefined) {
+    throw terminal(
+      "device_proof_required",
+      "This session is device-bound, but its proof of possession is missing. Sign in again.",
+    );
+  }
+  if (
+    !(await verifyDeviceProof({
+      publicKey,
+      sessionToken: options.sessionToken,
+      proof: options.proof,
+    }))
+  ) {
+    throw terminal(
+      "device_proof_invalid",
+      "This session's device proof is invalid. The bound key may have been evicted; sign in again.",
+    );
+  }
+}
+
 /** PKCE S256: verifier (random) + challenge (SHA-256, base64url). */
 export async function generatePkce(): Promise<{
   verifier: string;

@@ -415,30 +415,36 @@ describe("browser transport", () => {
   });
 });
 
-describe("Safari device-binding exclusion", () => {
+describe("cookie transport and device-binding exclusion", () => {
   const safari =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15";
+  const chrome =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 
-  it("throws loudly instead of degrading either protection", () => {
-    expect(() =>
+  it("throws the same loud error regardless of browser", () => {
+    const check = (userAgent: string) =>
       assertLogtoSessionCookieCompatibility({
         deviceBinding: true,
-        userAgent: safari,
-      }),
-    ).toThrow(/cannot be enabled together on Safari/);
+        userAgent,
+      });
+    expect(() => check(safari)).toThrow(/cannot be enabled together/);
+    expect(() => check(chrome)).toThrow(/cannot be enabled together/);
   });
 
-  it("also enforces the exclusion in the fetch handler", async () => {
-    const { handler, action } = makeHarness({ deviceBinding: true });
-    await expect(
-      handler(
-        request("token", {
-          cookie: cookie("session-token-1"),
-          userAgent: safari,
-        }),
-      ),
-    ).rejects.toThrow(/cannot be enabled together on Safari/);
-    expect(action).not.toHaveBeenCalled();
+  it("rejects enabling cookie transport after binding in the browser adapter", () => {
+    expect(() =>
+      createLogtoSessionCookieTransport(api, {
+        endpoint: BASE_PATH,
+        deviceBinding: true,
+      }),
+    ).toThrow(/cannot be enabled together/);
+  });
+
+  it("rejects enabling binding after cookie transport in the fetch handler", () => {
+    expect(() => makeHarness({ deviceBinding: true })).toThrow(
+      /cannot be enabled together/,
+    );
   });
 });

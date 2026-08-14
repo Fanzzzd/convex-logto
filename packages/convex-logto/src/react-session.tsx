@@ -24,6 +24,7 @@ import {
   type SessionTransport,
   type TokenStorageKind,
 } from "./session-client";
+import { createSessionDeviceBinding } from "./session-device";
 import {
   createCookieSessionMarker,
   createLogtoSessionCookieTransport,
@@ -80,6 +81,11 @@ export type ConvexLogtoSessionProviderProps = {
    */
   tokenStorage?: TokenStorageKind;
   /**
+   * Bind refreshes to a non-extractable ECDSA key persisted in IndexedDB.
+   * Default `false`. Cannot be combined with `cookieTransport`.
+   */
+  deviceBinding?: boolean;
+  /**
    * Move the rotating session token into the same-site handler's HttpOnly
    * cookie. The browser keeps only a non-secret session marker in localStorage;
    * each rotation renews the persistent cookie's 190-day idle lifetime.
@@ -97,9 +103,9 @@ export type ConvexLogtoSessionProviderProps = {
   reactiveRevocation?: boolean;
   /**
    * Called when finishing a sign-in fails recoverably (a stale/replayed/forged
-   * callback, Logto unreachable). The user is returned to the app logged out
-   * either way; use this to toast/telemetry the failure. Errors are also logged
-   * to the console.
+   * callback, Logto unreachable) or opted-in device-key storage fails. The user
+   * is returned to the app logged out either way; use this to toast/telemetry
+   * the failure. Errors are also logged to the console.
    */
   onAuthError?: (error: Error) => void;
   children: ReactNode;
@@ -124,6 +130,7 @@ export function ConvexLogtoSessionProvider({
   afterSignIn = "/",
   navigate,
   tokenStorage = "session",
+  deviceBinding = false,
   cookieTransport,
   initialToken,
   initialSessionId,
@@ -168,7 +175,7 @@ export function ConvexLogtoSessionProvider({
       ? createLogtoSessionCookieTransport(sessionApi, {
           endpoint: cookieEndpoint,
           fetch: cookieFetch,
-          deviceBinding: cookieDeviceBinding,
+          deviceBinding: deviceBinding || cookieDeviceBinding,
         })
       : (client as SessionTransport);
     return new SessionAuthEngine({
@@ -183,6 +190,9 @@ export function ConvexLogtoSessionProvider({
       // route even though JavaScript cannot inspect the HttpOnly cookie.
       initialSession: usesCookieTransport
         ? createCookieSessionMarker(storage.readSession(), initialSessionId)
+        : undefined,
+      deviceBinding: deviceBinding
+        ? createSessionDeviceBinding(namespace)
         : undefined,
       navigate: (to) => {
         const soft = navigateRef.current;
@@ -201,6 +211,7 @@ export function ConvexLogtoSessionProvider({
     cookieEndpoint,
     cookieFetch,
     cookieDeviceBinding,
+    deviceBinding,
     initialToken,
     initialSessionId,
   ]);

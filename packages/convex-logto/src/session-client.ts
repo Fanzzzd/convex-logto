@@ -5,6 +5,10 @@
 import type { FunctionReference } from "convex/server";
 import { ConvexError } from "convex/values";
 import { classifySignInSearch, isSafeReturnTo } from "./callback";
+import {
+  SessionDeviceBindingError,
+  type SessionDeviceBinding,
+} from "./session-device";
 import type { LogtoSessionApi } from "./session";
 
 /** Where the short-lived ID token persists. The session token is always localStorage. */
@@ -204,6 +208,8 @@ export type SessionEngineOptions = {
   initialToken?: string;
   /** Session marker paired with `initialToken` (cookie transport uses a sentinel). */
   initialSession?: StoredSession;
+  /** Opt-in proof-of-possession key; absent keeps the legacy unbound flow. */
+  deviceBinding?: SessionDeviceBinding;
   /** Replace-style navigation; falls back to `location.replace`. */
   navigate?: (to: string) => void;
   onAuthError?: (error: Error) => void;
@@ -312,6 +318,13 @@ export class SessionAuthEngine {
   }
 
   private async startInner(): Promise<void> {
+    try {
+      await this.options.deviceBinding?.prepare();
+    } catch (error) {
+      this.reportError(this.asError(error));
+      this.setUnauthenticated();
+      return;
+    }
     const onCallback = window.location.pathname === this.options.callbackPath;
     const outcome = onCallback
       ? classifySignInSearch(window.location.search)
@@ -351,11 +364,13 @@ export class SessionAuthEngine {
       return;
     }
     try {
+      const devicePublicKey = await this.options.deviceBinding?.getPublicKey();
       const result = await this.retrying(() =>
         this.options.transport.action(this.options.api.callback, {
           code,
           state,
           redirectUri: `${window.location.origin}${this.options.callbackPath}`,
+          ...(devicePublicKey === undefined ? {} : { devicePublicKey }),
         }),
       );
       this.options.storage.writeSession({
@@ -464,10 +479,18 @@ export class SessionAuthEngine {
           this.setUnauthenticated();
         return null;
       }
+      let deviceProof: string | undefined;
+      try {
+        deviceProof = await this.options.deviceBinding?.sign(session.token);
+      } catch (error) {
+        this.reportError(this.asError(error));
+        return null;
+      }
       try {
         const result = await this.retrying(() =>
           this.options.transport.action(this.options.api.refresh, {
             sessionToken: session.token,
+            ...(deviceProof === undefined ? {} : { deviceProof }),
           }),
         );
         this.options.storage.writeSession({
@@ -503,6 +526,13 @@ export class SessionAuthEngine {
           `(got "${returnTo}") — full URLs and protocol-relative paths are rejected ` +
           `to prevent open redirects.`,
       );
+    }
+    try {
+      await this.options.deviceBinding?.prepare();
+    } catch (error) {
+      const normalizedError = this.asError(error);
+      this.reportError(normalizedError);
+      throw normalizedError;
     }
     const { url } = await this.options.transport.action(
       this.options.api.signIn,
@@ -605,5 +635,13 @@ export class SessionAuthEngine {
     } catch {
       // A throwing error handler must not break the auth flow.
     }
+  }
+
+  private asError(error: unknown): Error {
+    if (error instanceof Error) return error;
+    return new SessionDeviceBindingError(
+      "convex-logto: device binding failed without an Error value.",
+      { cause: error },
+    );
   }
 }

@@ -49,6 +49,15 @@ export default defineSchema({
     rotatedAt: v.optional(v.number()),
     /** Optimistic claim so concurrent refreshes can't double-hit Logto's token endpoint. */
     refreshingSince: v.optional(v.number()),
+    /** Optional ECDSA P-256 public key required to refresh a bound session. */
+    devicePublicKey: v.optional(
+      v.object({
+        kty: v.literal("EC"),
+        crv: v.literal("P-256"),
+        x: v.string(),
+        y: v.string(),
+      }),
+    ),
     /** The Logto refresh token (confidential client). Never leaves the component. */
     logtoRefreshToken: v.string(),
     /** Cached current ID token + expiry, served on the reuse-window path. */

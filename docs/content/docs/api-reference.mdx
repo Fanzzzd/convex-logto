@@ -91,6 +91,11 @@ Options: `scopes` / `resources` (server-configured — the browser can't request
 its own), `reuseWindowMs` (default 10s), and `endpoint` / `appId` /
 `clientSecret` env overrides.
 
+The generated `callback` and `refresh` actions also accept optional
+device-binding fields used internally by `ConvexLogtoSessionProvider`
+(`devicePublicKey` and `deviceProof`). Existing callers and unbound sessions do
+not send them and retain the pre-binding behavior.
+
 ### `createLogtoSessionCookieHandler(opts)`
 
 Builds the [session mode cookie transport](/docs/session-mode#httponly-cookie-transport-optional)
@@ -100,8 +105,8 @@ as a standard `(Request) => Promise<Response>` handler. Options are:
 - `action(reference, args)` — calls the referenced public Convex action;
 - `allowedOrigins` — non-empty exact browser-origin allowlist;
 - `basePath` — default `/api/logto-session`;
-- `deviceBinding` — mirrors the device-binding flag so Safari can reject the
-  incompatible combination loudly.
+- `deviceBinding` — mirrors the device-binding flag so non-React mounts reject
+  the incompatible combination through the shared loud error.
 
 The four final path segments are `sign-in`, `callback`, `token`, and `sign-out`.
 Actual calls require POST, `x-convex-logto-csrf: 1`, and an allowed `Origin`;
@@ -117,6 +122,12 @@ document request and always forward `headers` to the SSR response so the rotated
 `ConvexLogtoSessionProvider`. Concurrent requests are best-effort: every failed
 seed returns empty without changing the cookie, while the browser `/token` route
 authoritatively clears a genuinely dead session.
+
+Cookie transport and device binding cannot be combined: HttpOnly makes the
+session token unavailable to the JavaScript-held signing key, and cookie
+transport already removes the off-device token-exfiltration path. The
+compatibility error applies on every browser; Safari ITP key eviction is an
+additional reason for the same exclusion.
 
 ### `assertUserHasActiveSession(ctx, component)`
 
@@ -200,13 +211,20 @@ in the bundle — it talks to the functions from `logtoSessionApi(...)`.
 | `afterSignIn` | — | Where to land after sign-in. Default `/`. `signIn({ returnTo })` overrides it. |
 | `navigate` | — | Your router's navigate (prefer replace-style) for soft post-sign-in navigation. Falls back to a hard `location.replace`. |
 | `tokenStorage` | — | Where the ID token persists: `"session"` (default, per-tab; reload without a round-trip), `"memory"` (strictest), `"local"`. |
-| `cookieTransport` | — | `{ endpoint?, fetch?, deviceBinding? }`; use the same-site handler instead of exposing the rotating session token to JavaScript. |
+| `deviceBinding` | — | Opt into ECDSA P-256 proof of possession backed by a non-extractable IndexedDB-held key. Default `false`; cannot be combined with `cookieTransport`. |
+| `cookieTransport` | — | `{ endpoint?, fetch?, deviceBinding? }`; use the same-site handler instead of exposing the rotating session token to JavaScript. Its reserved `deviceBinding` flag only activates the shared incompatibility assertion. |
 | `initialToken` / `initialSessionId` | — | Paired SSR seed returned by `handler.getInitialToken(request)`. |
 | `reactiveRevocation` | — | Subscribe to session liveness; drop auth live on revocation. Default `true`. |
-| `onAuthError` | — | Recoverable sign-in failures (stale/forged callback, Logto unreachable). Also logged to the console. |
+| `onAuthError` | — | Recoverable sign-in failures or opted-in device-key storage failures. Also logged to the console. |
 
 There is no callback component to add — the provider completes the exchange on
 `callbackPath` and replace-navigates into the app itself.
+
+With `deviceBinding`, the provider fails loudly if IndexedDB is unavailable,
+sends only the public key during callback, and signs each rotating session token
+before refresh. Key eviction makes the next refresh terminal and causes a clean
+re-authentication; unbound sessions remain the default and are unaffected. See
+the [session-mode threat model and DBSC re-evaluation note](/docs/session-mode#device-binding-optional).
 
 ### `useLogtoAuth()` (session)
 

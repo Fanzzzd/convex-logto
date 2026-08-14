@@ -5,6 +5,7 @@ import { ConvexError } from "convex/values";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_REUSE_WINDOW_MS,
+  assertDeviceProof,
   buildAuthorizeUrl,
   buildEndSessionUrl,
   classifyTokenEndpointFailure,
@@ -17,6 +18,7 @@ import {
   terminal,
   toBase64Url,
   transient,
+  verifyDeviceProof,
 } from "./core";
 
 // --- token helpers -----------------------------------------------------------
@@ -44,6 +46,76 @@ it("generatePkce produces an S256 challenge of the verifier", async () => {
     new TextEncoder().encode(verifier),
   );
   expect(challenge).toBe(toBase64Url(new Uint8Array(digest)));
+});
+
+async function deviceProofFixture(sessionToken: string) {
+  const pair = (await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign", "verify"],
+  )) as CryptoKeyPair;
+  const jwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
+  if (jwk.kty !== "EC" || !jwk.x || !jwk.y) throw new Error("invalid JWK");
+  const publicKey = {
+    kty: "EC" as const,
+    crv: "P-256" as const,
+    x: jwk.x,
+    y: jwk.y,
+  };
+  const signature = await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    pair.privateKey,
+    new TextEncoder().encode(sessionToken),
+  );
+  return { publicKey, proof: toBase64Url(new Uint8Array(signature)) };
+}
+
+describe("device proof", () => {
+  it("signs and verifies the presented one-time session token", async () => {
+    const sessionToken = "session-token-1";
+    const { publicKey, proof } = await deviceProofFixture(sessionToken);
+    await expect(
+      verifyDeviceProof({ publicKey, sessionToken, proof }),
+    ).resolves.toBe(true);
+    await expect(
+      verifyDeviceProof({
+        publicKey,
+        sessionToken: "session-token-2",
+        proof,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      assertDeviceProof({ publicKey, sessionToken, proof }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("rejects a proof from the wrong key terminally", async () => {
+    const sessionToken = "session-token-1";
+    const [{ publicKey }, { proof }] = await Promise.all([
+      deviceProofFixture(sessionToken),
+      deviceProofFixture(sessionToken),
+    ]);
+    await expect(
+      assertDeviceProof({ publicKey, sessionToken, proof }),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "device_proof_invalid" },
+    });
+  });
+
+  it("rejects a missing proof for a bound session terminally", async () => {
+    const { publicKey } = await deviceProofFixture("session-token-1");
+    await expect(
+      assertDeviceProof({ publicKey, sessionToken: "session-token-1" }),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "device_proof_required" },
+    });
+  });
+
+  it("leaves the existing unbound refresh path unchanged", async () => {
+    await expect(
+      assertDeviceProof({ sessionToken: "session-token-1" }),
+    ).resolves.toBeUndefined();
+  });
 });
 
 // --- URL builders ------------------------------------------------------------
