@@ -282,6 +282,44 @@ describe("SSR seed", () => {
     expect(seed.headers.get("set-cookie")).toBeNull();
     expect(action).not.toHaveBeenCalled();
   });
+
+  it("clears the cookie and returns an empty seed after a terminal error", async () => {
+    const { handler, handlers } = makeHarness();
+    handlers.refresh.mockRejectedValueOnce(
+      new ConvexError({
+        kind: "terminal",
+        code: "session_not_found",
+        message: "gone",
+      }),
+    );
+    const seed = await handler.getInitialToken(
+      new Request(`${APP_ORIGIN}/dashboard`, {
+        headers: { Cookie: cookie("spent") },
+      }),
+    );
+    expect(seed.initialToken).toBeNull();
+    expect(seed.initialSessionId).toBeNull();
+    expect(seed.headers.get("set-cookie")).toContain("Max-Age=0");
+  });
+
+  it("leaves the cookie intact and returns an empty seed after a transient error", async () => {
+    const { handler, handlers } = makeHarness();
+    handlers.refresh.mockRejectedValueOnce(
+      new ConvexError({
+        kind: "transient",
+        code: "refresh_in_flight",
+        message: "retry shortly",
+      }),
+    );
+    const seed = await handler.getInitialToken(
+      new Request(`${APP_ORIGIN}/dashboard`, {
+        headers: { Cookie: cookie("still-valid") },
+      }),
+    );
+    expect(seed.initialToken).toBeNull();
+    expect(seed.initialSessionId).toBeNull();
+    expect(seed.headers.get("set-cookie")).toBeNull();
+  });
 });
 
 describe("browser transport", () => {

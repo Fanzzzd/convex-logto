@@ -1,7 +1,7 @@
 import type { FunctionReference } from "convex/server";
 import { ConvexError } from "convex/values";
 import { isSafeReturnTo } from "./callback";
-import type { SessionTransport } from "./session-client";
+import type { SessionTransport, StoredSession } from "./session-client";
 import type { LogtoSessionApi } from "./session";
 
 /** Fixed host-only cookie used by the session cookie transport. */
@@ -21,6 +21,20 @@ export const LOGTO_SESSION_COOKIE_BASE_PATH = "/api/logto-session";
  * still needs a non-secret marker so it knows a cookie-backed session exists.
  */
 export const COOKIE_SESSION_MARKER = "cookie-session";
+
+/**
+ * Replace a JavaScript-visible session credential with the cookie marker while
+ * retaining the stable id used by reactive revocation checks.
+ */
+export function createCookieSessionMarker(
+  existingSession: StoredSession | null,
+  initialSessionId?: string | null,
+): StoredSession {
+  return {
+    token: COOKIE_SESSION_MARKER,
+    sessionId: initialSessionId ?? existingSession?.sessionId ?? "",
+  };
+}
 
 type SessionAction = FunctionReference<"action">;
 
@@ -550,8 +564,11 @@ export function createLogtoSessionCookieHandler(
           headers,
         };
       } catch (error) {
-        if (errorData(error)?.kind !== "terminal") throw error;
-        headers.set("Set-Cookie", clearCookieHeader());
+        const data = errorData(error);
+        if (data === null) throw error;
+        if (data.kind === "terminal") {
+          headers.set("Set-Cookie", clearCookieHeader());
+        }
         return {
           initialToken: null,
           initialSessionId: null,

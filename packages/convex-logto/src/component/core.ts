@@ -211,6 +211,17 @@ export function decideRefresh(options: {
   return { outcome: "refresh-previous" };
 }
 
+/** Rotate while keeping the superseded current generation as the grace token. */
+export function rotateTokenHashes(
+  currentTokenHash: string,
+  candidateHash: string,
+): { tokenHash: string; prevTokenHash: string } {
+  return {
+    tokenHash: candidateHash,
+    prevTokenHash: currentTokenHash,
+  };
+}
+
 // --- error taxonomy ---------------------------------------------------------
 //
 // Terminal: the session/transaction is gone for good — the client clears its

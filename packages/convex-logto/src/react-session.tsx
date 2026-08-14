@@ -25,7 +25,7 @@ import {
   type TokenStorageKind,
 } from "./session-client";
 import {
-  COOKIE_SESSION_MARKER,
+  createCookieSessionMarker,
   createLogtoSessionCookieTransport,
   type LogtoSessionCookieTransportOptions,
 } from "./session-cookie";
@@ -181,10 +181,7 @@ export function ConvexLogtoSessionProvider({
       // legacy localStorage credential and makes reload attempt the /token
       // route even though JavaScript cannot inspect the HttpOnly cookie.
       initialSession: usesCookieTransport
-        ? {
-            token: COOKIE_SESSION_MARKER,
-            sessionId: initialSessionId ?? "",
-          }
+        ? createCookieSessionMarker(storage.readSession(), initialSessionId)
         : undefined,
       navigate: (to) => {
         const soft = navigateRef.current;

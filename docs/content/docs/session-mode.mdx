@@ -254,6 +254,9 @@ cookie, rotates it, and returns `{ initialToken, initialSessionId, headers }`.
 Always forward its `headers` to the page response—the `Set-Cookie` header is the
 next one-time credential. If your rendering hook cannot control response
 headers, let the browser use `/token` instead.
+The seed is best-effort under concurrent renders: a request that encounters an
+in-flight refresh returns an empty seed and leaves the cookie intact for the
+client to refresh after hydration.
 
 For example, a TanStack Start server function can seed the root loader:
 

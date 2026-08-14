@@ -16,6 +16,10 @@ import {
   type TokenStorageKind,
 } from "./session-client";
 import type { LogtoSessionApi } from "./session";
+import {
+  COOKIE_SESSION_MARKER,
+  createCookieSessionMarker,
+} from "./session-cookie";
 
 // --- harness -----------------------------------------------------------------
 
@@ -73,6 +77,9 @@ function makeHarness(options?: {
   afterSignIn?: string;
   initialToken?: string;
   initialSession?: StoredSession;
+  storedIdToken?: string;
+  storedSession?: StoredSession;
+  cookieBootstrap?: { initialSessionId?: string | null };
 }) {
   const handlers: Handlers = {
     signIn: vi.fn(),
@@ -88,6 +95,14 @@ function makeHarness(options?: {
     "test",
     options?.tokenStorage ?? "session",
   );
+  if (options?.storedSession) storage.writeSession(options.storedSession);
+  if (options?.storedIdToken) storage.writeIdToken(options.storedIdToken);
+  const initialSession = options?.cookieBootstrap
+    ? createCookieSessionMarker(
+        storage.readSession(),
+        options.cookieBootstrap.initialSessionId,
+      )
+    : options?.initialSession;
   const navigate = vi.fn();
   const onAuthError = vi.fn();
   const engine = new SessionAuthEngine({
@@ -97,7 +112,7 @@ function makeHarness(options?: {
     callbackPath: "/callback",
     afterSignIn: options?.afterSignIn ?? "/",
     initialToken: options?.initialToken,
-    initialSession: options?.initialSession,
+    initialSession,
     navigate,
     onAuthError,
     sleep: () => Promise.resolve(), // skip retry backoff in tests
@@ -219,6 +234,27 @@ describe("mount", () => {
     expect(snapshot.status).toBe("authenticated");
     expect(snapshot.sessionId).toBe("s1");
     expect(snapshot.user?.sub).toBe("alice");
+    expect(handlers.refresh).not.toHaveBeenCalled();
+  });
+
+  it("cookie reload with a fresh cached token preserves the stored session id", async () => {
+    const { engine, storage, handlers } = makeHarness({
+      storedSession: {
+        token: "legacy-session-secret",
+        sessionId: "real-session-id",
+      },
+      storedIdToken: freshToken("alice"),
+      cookieBootstrap: {},
+    });
+    expect(storage.readSession()).toEqual({
+      token: COOKIE_SESSION_MARKER,
+      sessionId: "real-session-id",
+    });
+
+    engine.start();
+    const snapshot = await settled(engine);
+    expect(snapshot.status).toBe("authenticated");
+    expect(snapshot.sessionId).toBe("real-session-id");
     expect(handlers.refresh).not.toHaveBeenCalled();
   });
 
