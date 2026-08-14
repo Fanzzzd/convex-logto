@@ -385,6 +385,13 @@ user in Logto Console kills their sessions within seconds — register the
 registerLogtoWebhook(http, internal.logto.sync, { sessions: components.logto });
 ```
 
+To propagate an individual Logto session ending (including sign-out from
+another app), register the verified [OIDC back-channel logout
+endpoint](/docs/backchannel-logout). It stores the ID token's optional `sid` and
+deletes only the matching component session; a token carrying only `sub` uses
+the specification's sign-out-everywhere fallback. The same existing liveness
+subscription pushes the revocation, so no client changes are required.
+
 One consequence to plan for: a reactive query gated this way starts **throwing**
 the instant the session is revoked — a beat before the client flips to
 signed-out. Wrap such data in an error boundary (ordinary Convex practice for

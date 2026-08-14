@@ -14,6 +14,7 @@
     "session-mode",
     "auth-in-your-app",
     "webhook-sync",
+    "backchannel-logout",
     "multiple-environments",
     "---Reference---",
     "api-reference",
