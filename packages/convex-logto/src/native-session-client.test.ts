@@ -260,6 +260,36 @@ describe("native session adapters", () => {
     expect(webBrowser.openAuthSessionAsync).not.toHaveBeenCalled();
   });
 
+  it("reports a callback SecureStore flush failure exactly once", async () => {
+    const secureStore = fakeSecureStore();
+    let deleteCount = 0;
+    secureStore.deleteItemAsync = vi.fn((key: string) => {
+      deleteCount += 1;
+      if (deleteCount === 2) {
+        return Promise.reject(new Error("keystore delete failed"));
+      }
+      secureStore.data.delete(key);
+      return Promise.resolve();
+    });
+    const { engine, handlers, webBrowser, onAuthError } = makeHarness({
+      secureStore,
+    });
+    engine.start();
+    await settled(engine);
+
+    await expect(engine.signIn()).rejects.toBeInstanceOf(
+      NativeSessionStorageError,
+    );
+
+    expect(webBrowser.openAuthSessionAsync).toHaveBeenCalledTimes(1);
+    expect(handlers.callback).not.toHaveBeenCalled();
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+    expect(onAuthError).toHaveBeenCalledWith(
+      expect.any(NativeSessionStorageError),
+    );
+    expect(console.error).toHaveBeenCalledTimes(1);
+  });
+
   it("hydrates a cold start and rotates a stale session token", async () => {
     const secureStore = fakeSecureStore();
     await seedSession(secureStore, staleToken());

@@ -20,6 +20,9 @@ const ID_TOKEN_SKEW_MS = 30 * 1000;
 /** Backoff between retries of a transiently-failing action call. */
 const RETRY_DELAYS_MS = [500, 2000];
 
+/** Error objects already surfaced through the public auth-error channel. */
+const REPORTED_AUTH_ERRORS = new WeakSet<Error>();
+
 export type SessionSnapshot = {
   status: "restoring" | "authenticated" | "unauthenticated";
   sessionId: string | null;
@@ -994,6 +997,10 @@ export class SessionAuthEngine {
   }
 
   private reportError(error: Error): void {
+    // Nested recovery helpers may report and rethrow the same Error. Preserve
+    // the rejection while routing that object through the observer only once.
+    if (REPORTED_AUTH_ERRORS.has(error)) return;
+    REPORTED_AUTH_ERRORS.add(error);
     console.error(error);
     try {
       this.options.onAuthError?.(error);
