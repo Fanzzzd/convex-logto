@@ -148,7 +148,7 @@ it("buildAuthorizeUrl carries PKCE, state, prompt=consent, and base scopes", () 
   expect(p.getAll("resource")).toEqual(["https://api.example.com"]);
 });
 
-it("buildEndSessionUrl includes the post-logout redirect only when given", () => {
+it("buildEndSessionUrl includes optional redirect and ID-token hint", () => {
   const bare = new URL(
     buildEndSessionUrl({ endpoint: "https://auth.example.com", appId: "app1" }),
   );
@@ -161,11 +161,13 @@ it("buildEndSessionUrl includes the post-logout redirect only when given", () =>
       endpoint: "https://auth.example.com",
       appId: "app1",
       postLogoutRedirectUri: "https://app.example.com",
+      idTokenHint: "last-id-token",
     }),
   );
   expect(withUri.searchParams.get("post_logout_redirect_uri")).toBe(
     "https://app.example.com",
   );
+  expect(withUri.searchParams.get("id_token_hint")).toBe("last-id-token");
 });
 
 // --- ID token decoding -------------------------------------------------------

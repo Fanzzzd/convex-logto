@@ -7,6 +7,7 @@ import {
   type RegisteredQuery,
 } from "convex/server";
 import { ConvexError, v } from "convex/values";
+import { buildEndSessionUrl, hashToken } from "./component/core.js";
 import { readEndpointAndAppId } from "./config";
 
 // --- component reference typing ---------------------------------------------
@@ -110,6 +111,12 @@ export type LogtoSessionComponent = {
       { subject: string },
       number
     >;
+    killSubjectSessionsByToken: FunctionReference<
+      "mutation",
+      "internal",
+      { presentedHash: string },
+      { count: number; subject: string; idTokenHint: string }
+    >;
     killSessionsBySid: FunctionReference<
       "mutation",
       "internal",
@@ -134,7 +141,7 @@ export type LogtoSessionComponent = {
 // --- public function surface -------------------------------------------------
 
 /**
- * The five public functions {@link logtoSessionApi} registers, as the frontend
+ * The six public functions {@link logtoSessionApi} registers, as the frontend
  * sees them. `ConvexLogtoSessionProvider` takes a reference to the module that
  * re-exports them (e.g. `api.auth`).
  */
@@ -172,6 +179,16 @@ export type LogtoSessionApi = {
     "public",
     { sessionToken: string; postLogoutRedirectUri?: string },
     { endSessionUrl?: string }
+  >;
+  /**
+   * Optional only for rolling upgrades: providers feature-detect an app module
+   * that has not re-exported the new action yet and report the exact fix.
+   */
+  signOutEverywhere?: FunctionReference<
+    "action",
+    "public",
+    { sessionToken: string; postLogoutRedirectUri?: string },
+    { endSessionUrl?: string; count: number }
   >;
   sessionValid: FunctionReference<
     "query",
@@ -225,15 +242,21 @@ function readSessionConfig(options: LogtoSessionApiOptions): {
  * Build the public auth functions for session mode, backed by the Logto session
  * component. Reads `LOGTO_ENDPOINT`, `LOGTO_APP_ID` and `LOGTO_CLIENT_SECRET`
  * from the deployment's env (the secret never leaves the server). Re-export all
- * five — the frontend provider expects these exact names:
+ * six — the frontend provider expects these exact names:
  *
  * @example
  * // convex/auth.ts
  * import { components } from "./_generated/api";
  * import { logtoSessionApi } from "convex-logto";
  *
- * export const { signIn, callback, refresh, signOut, sessionValid } =
- *   logtoSessionApi(components.logto);
+ * export const {
+ *   signIn,
+ *   callback,
+ *   refresh,
+ *   signOut,
+ *   signOutEverywhere,
+ *   sessionValid,
+ * } = logtoSessionApi(components.logto);
  */
 export function logtoSessionApi(
   component: LogtoSessionComponent,
@@ -268,6 +291,11 @@ export function logtoSessionApi(
     "public",
     { sessionToken: string; postLogoutRedirectUri?: string },
     Promise<{ endSessionUrl?: string }>
+  >;
+  signOutEverywhere: RegisteredAction<
+    "public",
+    { sessionToken: string; postLogoutRedirectUri?: string },
+    Promise<{ endSessionUrl?: string; count: number }>
   >;
   sessionValid: RegisteredQuery<
     "public",
@@ -345,6 +373,32 @@ export function logtoSessionApi(
           sessionToken: args.sessionToken,
           postLogoutRedirectUri: args.postLogoutRedirectUri,
         });
+      },
+    }),
+    signOutEverywhere: actionGeneric({
+      args: {
+        sessionToken: v.string(),
+        postLogoutRedirectUri: v.optional(v.string()),
+      },
+      returns: v.object({
+        endSessionUrl: v.optional(v.string()),
+        count: v.number(),
+      }),
+      handler: async (ctx, args) => {
+        const { endpoint, appId } = readSessionConfig(options);
+        const result = await ctx.runMutation(
+          component.lib.killSubjectSessionsByToken,
+          { presentedHash: await hashToken(args.sessionToken) },
+        );
+        return {
+          count: result.count,
+          endSessionUrl: buildEndSessionUrl({
+            endpoint,
+            appId,
+            postLogoutRedirectUri: args.postLogoutRedirectUri,
+            idTokenHint: result.idTokenHint,
+          }),
+        };
       },
     }),
     sessionValid: queryGeneric({

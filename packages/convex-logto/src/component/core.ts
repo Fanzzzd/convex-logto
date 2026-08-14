@@ -192,10 +192,14 @@ export function buildEndSessionUrl(options: {
   endpoint: string;
   appId: string;
   postLogoutRedirectUri?: string;
+  idTokenHint?: string;
 }): string {
   const params = new URLSearchParams({ client_id: options.appId });
   if (options.postLogoutRedirectUri) {
     params.set("post_logout_redirect_uri", options.postLogoutRedirectUri);
+  }
+  if (options.idTokenHint) {
+    params.set("id_token_hint", options.idTokenHint);
   }
   return `${options.endpoint}/oidc/session/end?${params}`;
 }

@@ -67,6 +67,7 @@ const api = {
   callback: { fn: "callback" },
   refresh: { fn: "refresh" },
   signOut: { fn: "signOut" },
+  signOutEverywhere: { fn: "signOutEverywhere" },
   sessionValid: { fn: "sessionValid" },
 } as unknown as LogtoSessionApi;
 
@@ -75,6 +76,7 @@ type Handlers = {
   callback: ReturnType<typeof vi.fn>;
   refresh: ReturnType<typeof vi.fn>;
   signOut: ReturnType<typeof vi.fn>;
+  signOutEverywhere: ReturnType<typeof vi.fn>;
 };
 
 function makeHarness(options?: {
@@ -86,12 +88,14 @@ function makeHarness(options?: {
   storedSession?: StoredSession;
   cookieBootstrap?: { initialSessionId?: string | null };
   deviceBinding?: SessionDeviceBinding;
+  sessionApi?: LogtoSessionApi;
 }) {
   const handlers: Handlers = {
     signIn: vi.fn(),
     callback: vi.fn(),
     refresh: vi.fn(),
     signOut: vi.fn(),
+    signOutEverywhere: vi.fn(),
   };
   const transport = {
     action: (ref: unknown, args: unknown) =>
@@ -113,7 +117,7 @@ function makeHarness(options?: {
   const onAuthError = vi.fn();
   const engine = new SessionAuthEngine({
     transport,
-    api,
+    api: options?.sessionApi ?? api,
     storage,
     callbackPath: "/callback",
     afterSignIn: options?.afterSignIn ?? "/",
@@ -701,6 +705,99 @@ describe("signOut", () => {
     const { engine, handlers } = makeHarness();
     await engine.signOut();
     expect(handlers.signOut).not.toHaveBeenCalled();
+  });
+});
+
+describe("signOutEverywhere", () => {
+  it("clears local state first, kills the subject sessions, then navigates to Logto", async () => {
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    storage.writeIdToken(freshToken());
+    let sessionAtCallTime: unknown = "not-called";
+    handlers.signOutEverywhere.mockImplementation((args: unknown) => {
+      sessionAtCallTime = storage.readSession();
+      expect(args).toEqual({
+        sessionToken: "t1",
+        postLogoutRedirectUri: "https://app.example.com/signed-out",
+      });
+      return Promise.resolve({
+        count: 3,
+        endSessionUrl: "https://auth.example.com/oidc/session/end?all=1",
+      });
+    });
+
+    await engine.signOutEverywhere({
+      postLogoutRedirectUri: "https://app.example.com/signed-out",
+    });
+
+    expect(sessionAtCallTime).toBeNull();
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+    expect(window.location.assign).toHaveBeenCalledWith(
+      "https://auth.example.com/oidc/session/end?all=1",
+    );
+  });
+
+  it("clears locally before reporting a legacy app module's missing action", async () => {
+    const legacyApi = {
+      signIn: api.signIn,
+      callback: api.callback,
+      refresh: api.refresh,
+      signOut: api.signOut,
+      sessionValid: api.sessionValid,
+    } as LogtoSessionApi;
+    const { engine, storage, handlers, onAuthError } = makeHarness({
+      sessionApi: legacyApi,
+    });
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+
+    await expect(engine.signOutEverywhere()).rejects.toThrow(
+      /Re-export signOutEverywhere from logtoSessionApi/,
+    );
+
+    expect(storage.readSession()).toBeNull();
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+    expect(handlers.signOutEverywhere).not.toHaveBeenCalled();
+    expect(onAuthError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringMatching(/sessionApi does not export it/),
+      }),
+    );
+  });
+
+  it("translates the generated-api proxy's missing-function response", async () => {
+    const { engine, storage, handlers, onAuthError } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    handlers.signOutEverywhere.mockRejectedValue(
+      new Error("Could not find public function auth:signOutEverywhere"),
+    );
+
+    await expect(engine.signOutEverywhere()).rejects.toThrow(
+      /Re-export signOutEverywhere from logtoSessionApi/,
+    );
+
+    expect(storage.readSession()).toBeNull();
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+    expect(onAuthError).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "Error" }),
+    );
+  });
+
+  it("rejects a server failure after completing the unblockable local clear", async () => {
+    const { engine, storage, handlers, onAuthError } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    handlers.signOutEverywhere.mockRejectedValue(
+      new Error("network unavailable"),
+    );
+
+    await expect(engine.signOutEverywhere()).rejects.toThrow(
+      "network unavailable",
+    );
+
+    expect(storage.readSession()).toBeNull();
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+    expect(onAuthError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "network unavailable" }),
+    );
   });
 });
 

@@ -247,6 +247,14 @@ function errorData(error: unknown): SessionError | null {
     : null;
 }
 
+function isMissingSignOutEverywhereAction(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("signOutEverywhere") &&
+    /(?:function.*not found|could not find.*function)/i.test(message)
+  );
+}
+
 class RequestValidationError extends Error {}
 
 function actionErrorResponse(
@@ -309,6 +317,18 @@ function optionalString(
     throw new RequestValidationError(
       `${name} must be a non-empty string when provided`,
     );
+  }
+  return value;
+}
+
+function optionalBoolean(
+  body: Record<string, unknown>,
+  name: string,
+): boolean | undefined {
+  const value = body[name];
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") {
+    throw new RequestValidationError(`${name} must be a boolean when provided`);
   }
   return value;
 }
@@ -448,16 +468,43 @@ export function createLogtoSessionCookieHandler(
             body,
             "postLogoutRedirectUri",
           );
+          const everywhere = optionalBoolean(body, "everywhere") ?? false;
           const sessionToken = readCookie(request);
           if (sessionToken === null)
             return jsonResponse({}, { headers }, origin);
           try {
-            const result = await options.action(options.sessionApi.signOut, {
-              sessionToken,
-              postLogoutRedirectUri,
-            });
+            const signOutEverywhere = options.sessionApi.signOutEverywhere;
+            if (everywhere && signOutEverywhere === undefined) {
+              throw new RequestValidationError(
+                "sessionApi must export signOutEverywhere before using this operation",
+              );
+            }
+            const result = everywhere
+              ? await options.action(signOutEverywhere!, {
+                  sessionToken,
+                  postLogoutRedirectUri,
+                })
+              : await options.action(options.sessionApi.signOut, {
+                  sessionToken,
+                  postLogoutRedirectUri,
+                });
             return jsonResponse(result, { headers }, origin);
           } catch (error) {
+            if (error instanceof RequestValidationError) throw error;
+            if (everywhere && isMissingSignOutEverywhereAction(error)) {
+              return jsonResponse(
+                {
+                  error: {
+                    kind: "terminal",
+                    code: "sign_out_everywhere_unavailable",
+                    message:
+                      "convex-logto: sessionApi must re-export signOutEverywhere from logtoSessionApi(components.logto), then deploy the Convex functions.",
+                  } satisfies SessionError,
+                },
+                { status: 409, headers },
+                origin,
+              );
+            }
             return actionErrorResponse(error, origin, headers);
           }
         }
@@ -637,6 +684,10 @@ export function createLogtoSessionCookieTransport(
     callback: getFunctionName(sessionApi.callback),
     refresh: getFunctionName(sessionApi.refresh),
     signOut: getFunctionName(sessionApi.signOut),
+    signOutEverywhere:
+      sessionApi.signOutEverywhere === undefined
+        ? undefined
+        : getFunctionName(sessionApi.signOutEverywhere),
   };
 
   const post = async (route: CookieRoute, body: unknown): Promise<unknown> => {
@@ -686,6 +737,16 @@ export function createLogtoSessionCookieTransport(
         return (await post("sign-out", {
           postLogoutRedirectUri: (args as { postLogoutRedirectUri?: string })
             .postLogoutRedirectUri,
+        })) as Action["_returnType"];
+      }
+      if (
+        actionNames.signOutEverywhere !== undefined &&
+        actionName === actionNames.signOutEverywhere
+      ) {
+        return (await post("sign-out", {
+          postLogoutRedirectUri: (args as { postLogoutRedirectUri?: string })
+            .postLogoutRedirectUri,
+          everywhere: true,
         })) as Action["_returnType"];
       }
       throw new Error(

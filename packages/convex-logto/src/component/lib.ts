@@ -636,6 +636,57 @@ export const hasActiveSessionForSubject = query({
   },
 });
 
+/**
+ * Authenticate with a live session token, derive its subject server-side, and
+ * delete every session for that subject atomically. The immediately-previous
+ * token hash is accepted so a caller racing a normal rotation keeps the same
+ * grace behavior as refresh. Never accept a client-supplied subject here.
+ */
+export const killSubjectSessionsByToken = mutation({
+  args: { presentedHash: v.string() },
+  returns: v.object({
+    count: v.number(),
+    subject: v.string(),
+    idTokenHint: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const byCurrent = await ctx.db
+      .query("sessions")
+      .withIndex("by_tokenHash", (q) => q.eq("tokenHash", args.presentedHash))
+      .unique();
+    const caller =
+      byCurrent ??
+      (await ctx.db
+        .query("sessions")
+        .withIndex("by_prevTokenHash", (q) =>
+          q.eq("prevTokenHash", args.presentedHash),
+        )
+        .unique());
+    if (!caller) {
+      throw terminal(
+        "session_not_found",
+        "No session for this token — it was signed out or revoked. Sign in again.",
+      );
+    }
+
+    const sessions = await ctx.db
+      .query("sessions")
+      .withIndex("by_subject", (q) => q.eq("subject", caller.subject))
+      .collect();
+    for (const session of sessions) {
+      await ctx.db.delete(session._id);
+    }
+    // Deleting the rows also makes every stored Logto refresh token
+    // unreachable. We intentionally avoid an N-request RFC 7009 loop here;
+    // those now-unusable grants expire at their own Logto TTL.
+    return {
+      count: sessions.length,
+      subject: caller.subject,
+      idTokenHint: caller.lastIdToken,
+    };
+  },
+});
+
 /** Kill every session of a subject — webhook revocation (User.Deleted / suspension) and "sign out everywhere". */
 export const killSubjectSessions = mutation({
   args: { subject: v.string() },
