@@ -1,6 +1,7 @@
-import type { FunctionReference } from "convex/server";
+import { getFunctionName, type FunctionReference } from "convex/server";
 import { ConvexError } from "convex/values";
 import { isSafeReturnTo } from "./callback";
+import { SESSION_GC_AFTER_MS } from "./component/core.js";
 import type { SessionTransport, StoredSession } from "./session-client";
 import type { LogtoSessionApi } from "./session";
 
@@ -65,13 +66,18 @@ export type LogtoSessionCookieSeed = {
   initialToken: string | null;
   /** Stable session id for reactive revocation. */
   initialSessionId: string | null;
-  /** Forward these headers to the SSR response so the rotated cookie lands. */
+  /** Always forward these headers to the SSR response so the rotated cookie lands. */
   headers: Headers;
 };
 
 /** A web-standard fetch handler plus a server-only SSR seeding helper. */
 export type LogtoSessionCookieHandler = {
   (request: Request): Promise<Response>;
+  /**
+   * Best-effort SSR seed. Call at most once per incoming document request and
+   * always forward the returned headers. Concurrent requests that contend for
+   * refresh return an empty seed while leaving the cookie intact.
+   */
   getInitialToken(request: Request): Promise<LogtoSessionCookieSeed>;
 };
 
@@ -156,7 +162,7 @@ function normalizeAllowedOrigins(origins: readonly string[]): Set<string> {
 function cookieHeader(sessionToken: string): string {
   return (
     `${LOGTO_SESSION_COOKIE_NAME}=${encodeURIComponent(sessionToken)}; ` +
-    "Path=/; HttpOnly; Secure; SameSite=Lax"
+    `Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_GC_AFTER_MS / 1000}`
   );
 }
 
@@ -240,6 +246,8 @@ function errorData(error: unknown): SessionError | null {
     : null;
 }
 
+class RequestValidationError extends Error {}
+
 function actionErrorResponse(
   error: unknown,
   origin: string,
@@ -285,7 +293,7 @@ async function readJsonObject(
 function requiredString(body: Record<string, unknown>, name: string): string {
   const value = body[name];
   if (typeof value !== "string" || value === "") {
-    throw new Error(`${name} must be a non-empty string`);
+    throw new RequestValidationError(`${name} must be a non-empty string`);
   }
   return value;
 }
@@ -297,15 +305,26 @@ function optionalString(
   const value = body[name];
   if (value === undefined) return undefined;
   if (typeof value !== "string" || value === "") {
-    throw new Error(`${name} must be a non-empty string when provided`);
+    throw new RequestValidationError(
+      `${name} must be a non-empty string when provided`,
+    );
   }
   return value;
 }
 
 function validateRedirectUri(value: string, requestOrigin: string): string {
-  const url = new URL(value);
-  if (url.origin !== requestOrigin || url.protocol === "javascript:") {
-    throw new Error("redirectUri must use the calling browser origin");
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new RequestValidationError(
+      "redirectUri must use the calling browser origin",
+    );
+  }
+  if (url.origin !== requestOrigin) {
+    throw new RequestValidationError(
+      "redirectUri must use the calling browser origin",
+    );
   }
   return value;
 }
@@ -427,16 +446,17 @@ export function createLogtoSessionCookieHandler(
           const headers = new Headers({
             "Set-Cookie": clearCookieHeader(),
           });
+          const postLogoutRedirectUri = optionalString(
+            body,
+            "postLogoutRedirectUri",
+          );
           const sessionToken = readCookie(request);
           if (sessionToken === null)
             return jsonResponse({}, { headers }, origin);
           try {
             const result = await options.action(options.sessionApi.signOut, {
               sessionToken,
-              postLogoutRedirectUri: optionalString(
-                body,
-                "postLogoutRedirectUri",
-              ),
+              postLogoutRedirectUri,
             });
             return jsonResponse(result, { headers }, origin);
           } catch (error) {
@@ -445,6 +465,9 @@ export function createLogtoSessionCookieHandler(
         }
       }
     } catch (error) {
+      if (error instanceof RequestValidationError) {
+        return jsonResponse({ error: error.message }, { status: 400 }, origin);
+      }
       const data = errorData(error);
       const headers =
         route === "token" && data?.kind === "terminal"
@@ -623,6 +646,12 @@ export function createLogtoSessionCookieTransport(
     options.endpoint ?? LOGTO_SESSION_COOKIE_BASE_PATH,
   );
   const fetcher = options.fetch ?? globalThis.fetch;
+  const actionNames = {
+    signIn: getFunctionName(sessionApi.signIn),
+    callback: getFunctionName(sessionApi.callback),
+    refresh: getFunctionName(sessionApi.refresh),
+    signOut: getFunctionName(sessionApi.signOut),
+  };
 
   const post = async (route: CookieRoute, body: unknown): Promise<unknown> => {
     const response = await fetcher(endpointRoute(endpoint, route), {
@@ -642,10 +671,11 @@ export function createLogtoSessionCookieTransport(
       action: Action,
       args: Action["_args"],
     ): Promise<Action["_returnType"]> => {
-      if (action === sessionApi.signIn) {
+      const actionName = getFunctionName(action);
+      if (actionName === actionNames.signIn) {
         return (await post("sign-in", args)) as Action["_returnType"];
       }
-      if (action === sessionApi.callback) {
+      if (actionName === actionNames.callback) {
         const result = (await post("callback", args)) as {
           idToken: string;
           sessionId: string;
@@ -656,7 +686,7 @@ export function createLogtoSessionCookieTransport(
           sessionToken: COOKIE_SESSION_MARKER,
         } as Action["_returnType"];
       }
-      if (action === sessionApi.refresh) {
+      if (actionName === actionNames.refresh) {
         const result = (await post("token", {})) as {
           idToken: string;
           sessionId: string;
@@ -666,7 +696,7 @@ export function createLogtoSessionCookieTransport(
           sessionToken: COOKIE_SESSION_MARKER,
         } as Action["_returnType"];
       }
-      if (action === sessionApi.signOut) {
+      if (actionName === actionNames.signOut) {
         return (await post("sign-out", {
           postLogoutRedirectUri: (args as { postLogoutRedirectUri?: string })
             .postLogoutRedirectUri,

@@ -81,7 +81,8 @@ export type ConvexLogtoSessionProviderProps = {
   tokenStorage?: TokenStorageKind;
   /**
    * Move the rotating session token into the same-site handler's HttpOnly
-   * cookie. The browser keeps only a non-secret session marker in localStorage.
+   * cookie. The browser keeps only a non-secret session marker in localStorage;
+   * each rotation renews the persistent cookie's 190-day idle lifetime.
    */
   cookieTransport?: LogtoSessionCookieTransportOptions;
   /** Fresh ID token returned by `handler.getInitialToken(request)` during SSR. */
@@ -277,13 +278,14 @@ function RevocationWatcher() {
     engine.getServerSnapshot,
   );
   const sessionId = snapshot.sessionId;
+  const hasSessionId = sessionId !== null && sessionId.length > 0;
   const valid = useQuery(
     sessionApi.sessionValid,
-    sessionId !== null ? { sessionId } : "skip",
+    hasSessionId ? { sessionId } : "skip",
   );
   useEffect(() => {
-    if (sessionId !== null && valid === false) engine.handleRevoked();
-  }, [engine, sessionId, valid]);
+    if (hasSessionId && valid === false) engine.handleRevoked();
+  }, [engine, hasSessionId, valid]);
   return null;
 }
 

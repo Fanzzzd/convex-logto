@@ -1,5 +1,7 @@
+import { anyApi, getFunctionName, type FunctionReference } from "convex/server";
 import { ConvexError } from "convex/values";
 import { describe, expect, it, vi } from "vitest";
+import { SESSION_GC_AFTER_MS } from "./component/core";
 import type { LogtoSessionApi } from "./session";
 import {
   COOKIE_SESSION_MARKER,
@@ -15,13 +17,7 @@ import {
 const APP_ORIGIN = "https://app.example.com";
 const BASE_PATH = "/api/logto";
 
-const api = {
-  signIn: { fn: "signIn" },
-  callback: { fn: "callback" },
-  refresh: { fn: "refresh" },
-  signOut: { fn: "signOut" },
-  sessionValid: { fn: "sessionValid" },
-} as unknown as LogtoSessionApi;
+const api = anyApi.auth as unknown as LogtoSessionApi;
 
 type HandlerName = "signIn" | "callback" | "refresh" | "signOut";
 type Handlers = Record<HandlerName, ReturnType<typeof vi.fn>>;
@@ -47,7 +43,9 @@ function makeHarness(options?: { deviceBinding?: boolean }) {
     }),
   };
   const action = vi.fn((reference: unknown, args: unknown) => {
-    const name = (reference as { fn: HandlerName }).fn;
+    const name = getFunctionName(
+      reference as FunctionReference<"action">,
+    ).split(":")[1] as HandlerName;
     return handlers[name](args);
   }) as unknown as LogtoSessionAction;
   const handler = createLogtoSessionCookieHandler({
@@ -62,6 +60,13 @@ function makeHarness(options?: { deviceBinding?: boolean }) {
 
 function cookie(value: string): string {
   return `${LOGTO_SESSION_COOKIE_NAME}=${encodeURIComponent(value)}`;
+}
+
+function persistentCookie(value: string): string {
+  return (
+    `${cookie(value)}; Path=/; HttpOnly; Secure; SameSite=Lax; ` +
+    `Max-Age=${SESSION_GC_AFTER_MS / 1000}`
+  );
 }
 
 function request(
@@ -147,6 +152,55 @@ describe("fixed CSRF policy", () => {
   });
 });
 
+describe("request validation", () => {
+  it("returns 400 without logging or dispatching malformed action arguments", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const { handler, action } = makeHarness();
+    const cases: Array<{
+      route: Parameters<typeof request>[0];
+      body: Record<string, unknown>;
+      cookie?: string;
+      message: string;
+    }> = [
+      {
+        route: "sign-in",
+        body: { redirectUri: 42 },
+        message: "redirectUri must be a non-empty string",
+      },
+      {
+        route: "sign-in",
+        body: { redirectUri: "not a URL" },
+        message: "redirectUri must use the calling browser origin",
+      },
+      {
+        route: "sign-out",
+        body: { postLogoutRedirectUri: 42 },
+        cookie: cookie("session-token-1"),
+        message:
+          "postLogoutRedirectUri must be a non-empty string when provided",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const response = await handler(
+        request(testCase.route, {
+          body: testCase.body,
+          cookie: testCase.cookie,
+        }),
+      );
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: testCase.message,
+      });
+    }
+    expect(action).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+});
+
 describe("cookie session flows", () => {
   it("sign-in calls the existing action without touching a cookie", async () => {
     const { handler, handlers } = makeHarness();
@@ -182,7 +236,7 @@ describe("cookie session flows", () => {
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("set-cookie")).toBe(
-      `${LOGTO_SESSION_COOKIE_NAME}=session-token-1; Path=/; HttpOnly; Secure; SameSite=Lax`,
+      persistentCookie("session-token-1"),
     );
     const body = (await response.json()) as Record<string, unknown>;
     expect(body).toEqual({
@@ -208,7 +262,7 @@ describe("cookie session flows", () => {
       sessionToken: "session-token-1",
     });
     expect(response.headers.get("set-cookie")).toBe(
-      `${LOGTO_SESSION_COOKIE_NAME}=session-token-2; Path=/; HttpOnly; Secure; SameSite=Lax`,
+      persistentCookie("session-token-2"),
     );
     await expect(response.json()).resolves.toEqual({
       idToken: "id-token-2",
@@ -251,6 +305,7 @@ describe("cookie session flows", () => {
     );
     expect(response.status).toBe(401);
     expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect(response.headers.get("set-cookie")).toContain("Path=/");
   });
 });
 
@@ -300,6 +355,7 @@ describe("SSR seed", () => {
     expect(seed.initialToken).toBeNull();
     expect(seed.initialSessionId).toBeNull();
     expect(seed.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect(seed.headers.get("set-cookie")).toContain("Path=/");
   });
 
   it("leaves the cookie intact and returns an empty seed after a transient error", async () => {
@@ -323,8 +379,9 @@ describe("SSR seed", () => {
 });
 
 describe("browser transport", () => {
-  it("sends credentials + CSRF header and exposes only a non-secret marker", async () => {
-    const fetcher = vi.fn(async (input: string | URL | Request) => {
+  it("dispatches fresh Convex proxy references by name and exposes only a non-secret marker", async () => {
+    expect(api.callback).not.toBe(api.callback);
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async (input) => {
       const url = String(input);
       if (url.endsWith("/callback")) {
         return Response.json({
@@ -334,10 +391,10 @@ describe("browser transport", () => {
         });
       }
       throw new Error(`unexpected route ${url}`);
-    }) as typeof globalThis.fetch;
+    });
     const transport = createLogtoSessionCookieTransport(api, {
       endpoint: BASE_PATH,
-      fetch: fetcher,
+      fetch: fetchMock,
     });
     const result = await transport.action(api.callback, {
       code: "code-1",
@@ -350,7 +407,7 @@ describe("browser transport", () => {
       returnTo: "/dashboard",
       sessionToken: COOKIE_SESSION_MARKER,
     });
-    const [, init] = fetcher.mock.calls[0]!;
+    const [, init] = fetchMock.mock.calls[0]!;
     expect(init?.method).toBe("POST");
     expect(init?.credentials).toBe("include");
     expect(new Headers(init?.headers).get(LOGTO_SESSION_CSRF_HEADER)).toBe(
