@@ -292,13 +292,28 @@ export function decideRefresh(options: {
   }
 
   // Not current — the caller matched it via prevTokenHash.
-  const inWindow =
-    session.rotatedAt !== undefined && now - session.rotatedAt < reuseWindowMs;
+  const inWindow = isPreviousTokenWithinReuseWindow({
+    rotatedAt: session.rotatedAt,
+    now,
+    reuseWindowMs,
+  });
   if (!inWindow) return { outcome: "reuse" };
   if (claimed) return { outcome: "in-flight" };
   if (session.lastIdTokenExp - idTokenSkewMs > now)
     return { outcome: "cached" };
   return { outcome: "refresh-previous" };
+}
+
+/** Apply the same exclusive previous-generation grace window everywhere. */
+export function isPreviousTokenWithinReuseWindow(options: {
+  rotatedAt?: number;
+  now: number;
+  reuseWindowMs: number;
+}): boolean {
+  return (
+    options.rotatedAt !== undefined &&
+    options.now - options.rotatedAt < options.reuseWindowMs
+  );
 }
 
 /** Rotate while keeping the superseded current generation as the grace token. */
@@ -336,6 +351,14 @@ export function transient(
   message: string,
 ): ConvexError<SessionErrorData> {
   return new ConvexError({ kind: "transient" as const, code, message });
+}
+
+/** The shared terminal signal for a previous token presented after its grace window. */
+export function sessionReuseDetectedError(): ConvexError<SessionErrorData> {
+  return terminal(
+    "session_reuse_detected",
+    "This session token was already rotated away — the session has been revoked. Sign in again.",
+  );
 }
 
 /** Classify a Logto token-endpoint failure: 4xx auth failures are terminal, the rest transient. */

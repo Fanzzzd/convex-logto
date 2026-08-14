@@ -15,7 +15,7 @@ description: Every export from convex-logto and its web, native, and session-mod
 | `registerLogtoBackchannelLogout(http, opts)` | `convex-logto` | Registers the verified OIDC back-channel logout route for session mode. |
 | `createLogtoBackchannelLogoutHandler(opts)` | `convex-logto` | Builds the same Convex HTTP action without registering a path. |
 | `verifyLogtoLogoutToken(token, opts?)` | `convex-logto` | Low-level Web Crypto/JWKS validation for an OIDC Logout Token. |
-| `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](/docs/session-mode): builds the five public auth functions backed by the session component. |
+| `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](/docs/session-mode): builds the six public auth functions backed by the session component. |
 | `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Session mode: throw unless the caller still has a live (unrevoked) session. |
 | `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Four-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
 | `createLogtoSessionCookieTransport(api, opts?)` | `convex-logto` | Framework-free browser adapter used by the session provider's `cookieTransport` prop. |
@@ -25,11 +25,11 @@ description: Every export from convex-logto and its web, native, and session-mod
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
 | default | `convex-logto/convex.config` | The session component, for `app.use(logto)` in `convex/convex.config.ts`. |
 | `ConvexLogtoSessionProvider` | `convex-logto/react-session` | Session mode's provider — no Logto SDK; talks to your `logtoSessionApi` functions. |
-| `useLogtoAuth()` | `convex-logto/react-session` | Same shape as the bridge hook; `signOut(opts?)` takes `{ postLogoutRedirectUri?, federated? }`. |
+| `useLogtoAuth()` | `convex-logto/react-session` | Session auth plus `signOutEverywhere({ postLogoutRedirectUri? })`. |
 | `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `config` / `configQuery` model; no callback route. |
 | `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signOut()` takes no argument. |
 | `ConvexLogtoSessionProvider` | `convex-logto/native-session` | React Native / Expo session provider using SecureStore + the system browser. |
-| `useLogtoAuth()` | `convex-logto/native-session` | Native session `{ isAuthenticated, isLoading, user, signIn, signOut }`; no device-binding surface. |
+| `useLogtoAuth()` | `convex-logto/native-session` | Native session `{ isAuthenticated, isLoading, user, signIn, signOut, signOutEverywhere }`; no device-binding surface. |
 
 ## Backend
 
@@ -112,20 +112,35 @@ tokens. It does not mutate or deduplicate sessions.
 ### `logtoSessionApi(component, opts?)`
 
 [Session mode](/docs/session-mode)'s server surface: pass `components.logto`
-(after `app.use(logto)`), re-export the five functions it returns. Reads
+(after `app.use(logto)`), re-export the six functions it returns. Reads
 `LOGTO_ENDPOINT`, `LOGTO_APP_ID`, and `LOGTO_CLIENT_SECRET`.
 
 ```ts title="convex/auth.ts"
 import { logtoSessionApi } from "convex-logto";
 import { components } from "./_generated/api";
 
-export const { signIn, callback, refresh, signOut, sessionValid } =
-  logtoSessionApi(components.logto);
+export const {
+  signIn,
+  callback,
+  refresh,
+  signOut,
+  signOutEverywhere,
+  sessionValid,
+} = logtoSessionApi(components.logto);
 ```
 
 Options: `scopes` / `resources` (server-configured — the browser can't request
 its own), `reuseWindowMs` (default 10s), and `endpoint` / `appId` /
 `clientSecret` env overrides.
+
+`signOutEverywhere({ sessionToken, postLogoutRedirectUri? })` hashes the token,
+derives its subject inside the component, atomically deletes every session for
+that subject, and returns `{ count, endSessionUrl }`. The subject is never a
+public argument. The immediately previous token is accepted only inside
+`reuseWindowMs`; presenting it later deletes only that stale session and raises
+the normal terminal reuse error. The action intentionally does not issue one
+RFC 7009 request per deleted row; their now-unreachable grants expire at
+Logto's TTL.
 
 The generated `callback` and `refresh` actions also accept optional
 device-binding fields used internally by `ConvexLogtoSessionProvider`
@@ -146,7 +161,9 @@ as a standard `(Request) => Promise<Response>` handler. Options are:
 
 The four final path segments are `sign-in`, `callback`, `token`, and `sign-out`.
 Actual calls require POST, `x-convex-logto-csrf: 1`, and an allowed `Origin`;
-approved preflights receive credentialed CORS headers. The cookie is fixed to
+approved preflights receive credentialed CORS headers. `signOutEverywhere` uses
+an internal selector on the existing `sign-out` route, so enabling it does not
+add a fifth route. The cookie is fixed to
 `__Host-convex-logto-session=<encoded-token>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=16416000`
 and rolls on every successful token rotation. Each roll renews the 190-day
 maximum age, matching the component's idle-session garbage collection window.
@@ -242,7 +259,7 @@ in the bundle — it talks to the functions from `logtoSessionApi(...)`.
 | Prop | Required | Purpose |
 | --- | --- | --- |
 | `client` | yes | Your `ConvexReactClient`. |
-| `sessionApi` | yes | The module re-exporting `logtoSessionApi(...)`'s functions, e.g. `api.auth` (exact names: `signIn` / `callback` / `refresh` / `signOut` / `sessionValid`). |
+| `sessionApi` | yes | The module re-exporting `logtoSessionApi(...)`'s functions, e.g. `api.auth` (exact names: `signIn` / `callback` / `refresh` / `signOut` / `signOutEverywhere` / `sessionValid`). |
 | `callbackPath` | — | Route that finishes the redirect. Default `/callback`; exact match against the registered Redirect URI's path. |
 | `afterSignIn` | — | Where to land after sign-in. Default `/`. `signIn({ returnTo })` overrides it. |
 | `navigate` | — | Your router's navigate (prefer replace-style) for soft post-sign-in navigation. Falls back to a hard `location.replace`. |
@@ -264,7 +281,8 @@ the [session-mode threat model and DBSC re-evaluation note](/docs/session-mode#d
 
 ### `useLogtoAuth()` (session)
 
-Same shape as the bridge hook: `{ isAuthenticated, isLoading, user, signIn, signOut }`.
+Returns `{ isAuthenticated, isLoading, user, signIn, signOut,
+signOutEverywhere }`.
 
 - `signIn({ returnTo? })` — one round-trip to mint the sign-in URL, then a
   full-page redirect. `returnTo` must be a same-origin path.
@@ -273,6 +291,10 @@ Same shape as the bridge hook: `{ isAuthenticated, isLoading, user, signIn, sign
   `federated: false`) ends the Logto SSO session and returns to
   `postLogoutRedirectUri` (default: your origin, which must be a registered
   Post sign-out redirect URI).
+- `signOutEverywhere({ postLogoutRedirectUri? })` — derives the caller subject
+  from its session token, atomically kills all of that subject's sessions, and
+  always completes federated sign-out for this device. Older app modules that
+  have not re-exported the action fail with an explicit deployment fix.
 
 ## Native session mode (`convex-logto/native-session`)
 
@@ -296,15 +318,18 @@ device-binding option.
 | Prop | Required | Purpose |
 | --- | --- | --- |
 | `client` | yes | Your `ConvexReactClient`. |
-| `sessionApi` | yes | The module re-exporting all five `logtoSessionApi(...)` functions. |
+| `sessionApi` | yes | The module re-exporting all six `logtoSessionApi(...)` functions. |
 | `redirectUri` | yes | Custom-scheme or universal-link callback registered as both a Redirect URI and Post sign-out redirect URI in Logto. |
 | `reactiveRevocation` | — | Subscribe to `sessionValid` and clear SecureStore immediately when revoked. Default `true`. |
 | `onAuthError` | — | Receives recoverable OAuth, SecureStore, and system-browser failures; errors are also logged. |
 
 `useLogtoAuth()` returns `{ isAuthenticated, isLoading, user, signIn,
-signOut }`. `signIn()` opens and completes the system-browser flow in place.
+signOut, signOutEverywhere }`. `signIn()` opens and completes the system-browser flow in place.
 `signOut({ postLogoutRedirectUri?, federated? })` clears SecureStore and revokes
 the server session, then ends Logto browser SSO unless `federated: false`.
+`signOutEverywhere({ postLogoutRedirectUri? })` clears SecureStore, kills every
+component session for the caller subject, and ends this device's Logto browser
+SSO session.
 
 The ID token is persisted in SecureStore to make a fresh cold start a
 zero-round-trip authenticate. This is the native equivalent of choosing web

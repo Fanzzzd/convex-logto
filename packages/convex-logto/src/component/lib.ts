@@ -21,7 +21,9 @@ import {
   generatePkce,
   generateToken,
   hashToken,
+  isPreviousTokenWithinReuseWindow,
   rotateTokenHashes,
+  sessionReuseDetectedError,
   terminal,
   transient,
   type DevicePublicKey,
@@ -344,10 +346,7 @@ export const refresh = action({
       case "reuse": {
         // Reuse handling: the session died in beginRefresh; revoke its grant.
         await revokeGrant(args, begin.refreshToken);
-        throw terminal(
-          "session_reuse_detected",
-          "This session token was already rotated away — the session has been revoked. Sign in again.",
-        );
+        throw sessionReuseDetectedError();
       }
       case "refresh": {
         let tokens: Awaited<ReturnType<typeof tokenEndpoint>>;
@@ -633,6 +632,79 @@ export const hasActiveSessionForSubject = query({
       .withIndex("by_subject", (q) => q.eq("subject", args.subject))
       .first();
     return session !== null;
+  },
+});
+
+/**
+ * Authenticate with a live session token, derive its subject server-side, and
+ * delete every session for that subject atomically. The immediately-previous
+ * token hash is accepted so a caller racing a normal rotation keeps the same
+ * grace behavior as refresh. Never accept a client-supplied subject here.
+ */
+export const killSubjectSessionsByToken = mutation({
+  args: {
+    presentedHash: v.string(),
+    now: v.number(),
+    reuseWindowMs: v.number(),
+  },
+  returns: v.union(
+    v.object({
+      outcome: v.literal("signed-out"),
+      count: v.number(),
+      subject: v.string(),
+    }),
+    v.object({ outcome: v.literal("reuse") }),
+  ),
+  handler: async (ctx, args) => {
+    const byCurrent = await ctx.db
+      .query("sessions")
+      .withIndex("by_tokenHash", (q) => q.eq("tokenHash", args.presentedHash))
+      .unique();
+    let caller = byCurrent;
+    if (caller === null) {
+      const byPrevious = await ctx.db
+        .query("sessions")
+        .withIndex("by_prevTokenHash", (q) =>
+          q.eq("prevTokenHash", args.presentedHash),
+        )
+        .unique();
+      if (
+        byPrevious !== null &&
+        !isPreviousTokenWithinReuseWindow({
+          rotatedAt: byPrevious.rotatedAt,
+          now: args.now,
+          reuseWindowMs: args.reuseWindowMs,
+        })
+      ) {
+        // Commit this theft response before the app action raises the terminal
+        // error. Throwing inside this mutation would roll the deletion back.
+        await ctx.db.delete(byPrevious._id);
+        return { outcome: "reuse" as const };
+      }
+      caller = byPrevious;
+    }
+    if (!caller) {
+      throw terminal(
+        "session_not_found",
+        "No session for this token — it was signed out or revoked. Sign in again.",
+      );
+    }
+
+    const sessions = await ctx.db
+      .query("sessions")
+      .withIndex("by_subject", (q) => q.eq("subject", caller.subject))
+      .collect();
+    for (const session of sessions) {
+      await ctx.db.delete(session._id);
+    }
+    // Deleting the rows also makes every stored Logto refresh token
+    // unreachable. We intentionally avoid an N-request RFC 7009 loop here;
+    // those now-unusable grants expire at their own Logto TTL.
+    return {
+      outcome: "signed-out" as const,
+      count: sessions.length,
+      subject: caller.subject,
+    };
   },
 });
 

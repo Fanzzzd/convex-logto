@@ -182,6 +182,13 @@ export type LogtoSessionAuth = {
     postLogoutRedirectUri?: string;
     federated?: boolean;
   }) => Promise<void>;
+  /**
+   * Delete every component session for the current subject, then end this
+   * device's Logto browser SSO session.
+   */
+  signOutEverywhere: (options?: {
+    postLogoutRedirectUri?: string;
+  }) => Promise<void>;
 };
 
 export function useLogtoAuth(): LogtoSessionAuth {
@@ -198,6 +205,11 @@ export function useLogtoAuth(): LogtoSessionAuth {
       engine.signOut(options),
     [engine],
   );
+  const signOutEverywhere = useCallback(
+    (options?: { postLogoutRedirectUri?: string }) =>
+      engine.signOutEverywhere(options),
+    [engine],
+  );
   return useMemo(
     () => ({
       isAuthenticated,
@@ -205,8 +217,16 @@ export function useLogtoAuth(): LogtoSessionAuth {
       user: isAuthenticated ? snapshot.user : undefined,
       signIn,
       signOut,
+      signOutEverywhere,
     }),
-    [isAuthenticated, isLoading, snapshot.user, signIn, signOut],
+    [
+      isAuthenticated,
+      isLoading,
+      snapshot.user,
+      signIn,
+      signOut,
+      signOutEverywhere,
+    ],
   );
 }
 

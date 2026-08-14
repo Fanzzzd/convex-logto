@@ -92,6 +92,33 @@ export class SessionSignOutError extends Error {
   }
 }
 
+class SessionApiUpgradeError extends Error {}
+
+function signOutEverywhereUpgradeError(
+  cause?: unknown,
+): SessionApiUpgradeError {
+  return new SessionApiUpgradeError(
+    "convex-logto: signOutEverywhere is unavailable because sessionApi does not export it. Re-export signOutEverywhere from logtoSessionApi(components.logto) in your Convex auth module, then deploy your Convex functions.",
+    cause === undefined ? undefined : { cause },
+  );
+}
+
+function isMissingSignOutEverywhereAction(error: unknown): boolean {
+  const data =
+    error instanceof ConvexError
+      ? (error.data as { code?: unknown; message?: unknown })
+      : undefined;
+  if (data?.code === "sign_out_everywhere_unavailable") return true;
+  const message = [
+    error instanceof Error ? error.message : "",
+    typeof data?.message === "string" ? data.message : "",
+  ].join(" ");
+  return (
+    message.includes("signOutEverywhere") &&
+    /(?:function.*not found|could not find.*function)/i.test(message)
+  );
+}
+
 export function decodeJwtPayload(
   token: string,
 ): Record<string, unknown> | null {
@@ -722,6 +749,56 @@ export class SessionAuthEngine {
     postLogoutRedirectUri?: string;
     federated?: boolean;
   }): Promise<void> {
+    await this.performSignOut({
+      postLogoutRedirectUri: options?.postLogoutRedirectUri,
+      federated: options?.federated !== false,
+      requireServerSuccess: false,
+      revoke: async (sessionToken, postLogoutRedirectUri) =>
+        await this.options.transport.action(this.options.api.signOut, {
+          sessionToken,
+          postLogoutRedirectUri,
+        }),
+    });
+  }
+
+  async signOutEverywhere(options?: {
+    postLogoutRedirectUri?: string;
+  }): Promise<void> {
+    const action = this.options.api.signOutEverywhere;
+    await this.performSignOut({
+      postLogoutRedirectUri: options?.postLogoutRedirectUri,
+      federated: true,
+      // A single-device sign-out is locally complete even if the network is
+      // down. "Everywhere" is not: report failure when the subject-wide
+      // mutation did not run so callers never mistake a partial result for
+      // success.
+      requireServerSuccess: true,
+      revoke: async (sessionToken, postLogoutRedirectUri) => {
+        if (action === undefined) throw signOutEverywhereUpgradeError();
+        try {
+          return await this.options.transport.action(action, {
+            sessionToken,
+            postLogoutRedirectUri,
+          });
+        } catch (error) {
+          if (isMissingSignOutEverywhereAction(error)) {
+            throw signOutEverywhereUpgradeError(error);
+          }
+          throw error;
+        }
+      },
+    });
+  }
+
+  private async performSignOut(options: {
+    postLogoutRedirectUri?: string;
+    federated: boolean;
+    requireServerSuccess: boolean;
+    revoke: (
+      sessionToken: string,
+      postLogoutRedirectUri: string,
+    ) => Promise<{ endSessionUrl?: string }>;
+  }): Promise<void> {
     try {
       await this.prepareStorage();
     } catch (error) {
@@ -759,22 +836,33 @@ export class SessionAuthEngine {
     let serverSessionStatus: SessionSignOutServerStatus =
       session === null ? "not_present" : "revocation_failed";
     let serverRevocationError: unknown;
+    let fatalServerError: Error | undefined;
     if (session !== null) {
       postLogoutRedirectUri =
-        options?.postLogoutRedirectUri ??
+        options.postLogoutRedirectUri ??
         this.options.authFlow?.redirectUri ??
         window.location.origin;
       try {
-        ({ endSessionUrl } = await this.options.transport.action(
-          this.options.api.signOut,
-          {
-            sessionToken: session.token,
-            postLogoutRedirectUri,
-          },
+        ({ endSessionUrl } = await options.revoke(
+          session.token,
+          postLogoutRedirectUri,
         ));
         serverSessionStatus = "revoked";
       } catch (error) {
         serverRevocationError = error;
+        if (
+          error instanceof SessionApiUpgradeError ||
+          options.requireServerSuccess
+        ) {
+          fatalServerError =
+            error instanceof Error
+              ? error
+              : new Error(
+                  "convex-logto: the server could not complete sign out everywhere.",
+                  { cause: error },
+                );
+          this.reportError(fatalServerError);
+        }
         // Best effort when local cleanup succeeded; a combined failure is
         // converted into a loud SessionSignOutError below.
       }
@@ -800,7 +888,7 @@ export class SessionAuthEngine {
     }
     // Federated by default: also end Logto's SSO session so the next sign-in
     // isn't silent. The post sign-out redirect URI must be registered on the app.
-    if (options?.federated !== false && endSessionUrl !== undefined) {
+    if (options.federated && endSessionUrl !== undefined) {
       if (
         this.options.authFlow !== undefined &&
         postLogoutRedirectUri !== undefined
@@ -818,6 +906,7 @@ export class SessionAuthEngine {
       }
     }
     if (signOutError !== undefined) throw signOutError;
+    if (fatalServerError !== undefined) throw fatalServerError;
   }
 
   // -- external events --

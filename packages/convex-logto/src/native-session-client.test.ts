@@ -68,6 +68,7 @@ const api = {
   callback: { fn: "callback" },
   refresh: { fn: "refresh" },
   signOut: { fn: "signOut" },
+  signOutEverywhere: { fn: "signOutEverywhere" },
   sessionValid: { fn: "sessionValid" },
 } as unknown as LogtoSessionApi;
 
@@ -76,6 +77,7 @@ type Handlers = {
   callback: ReturnType<typeof vi.fn>;
   refresh: ReturnType<typeof vi.fn>;
   signOut: ReturnType<typeof vi.fn>;
+  signOutEverywhere: ReturnType<typeof vi.fn>;
 };
 
 function makeHarness(options?: {
@@ -106,6 +108,10 @@ function makeHarness(options?: {
     }),
     signOut: vi.fn().mockResolvedValue({
       endSessionUrl: "https://auth.example.com/oidc/session/end",
+    }),
+    signOutEverywhere: vi.fn().mockResolvedValue({
+      count: 2,
+      endSessionUrl: "https://auth.example.com/oidc/session/end?all=1",
     }),
   };
   const transport = {
@@ -306,6 +312,58 @@ describe("native session adapters", () => {
       "io.logto://signed-out",
     );
     expect(engine.getSnapshot().status).toBe("unauthenticated");
+  });
+
+  it("signs out every device and completes federated logout in the native browser", async () => {
+    const secureStore = fakeSecureStore();
+    await seedSession(secureStore, freshToken());
+    const webBrowser = fakeWebBrowser({ type: "dismiss" });
+    const { engine, handlers } = makeHarness({ secureStore, webBrowser });
+    handlers.signOutEverywhere.mockImplementation(() => {
+      expect(secureStore.data.size).toBe(0);
+      return Promise.resolve({
+        count: 2,
+        endSessionUrl: "https://auth.example.com/oidc/session/end?all=1",
+      });
+    });
+    engine.start();
+    await settled(engine);
+
+    await engine.signOutEverywhere({
+      postLogoutRedirectUri: "io.logto://signed-out-everywhere",
+    });
+
+    expect(handlers.signOutEverywhere).toHaveBeenCalledWith({
+      sessionToken: "session-token-old",
+      postLogoutRedirectUri: "io.logto://signed-out-everywhere",
+    });
+    expect(webBrowser.openAuthSessionAsync).toHaveBeenCalledWith(
+      "https://auth.example.com/oidc/session/end?all=1",
+      "io.logto://signed-out-everywhere",
+    );
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+  });
+
+  it("preserves loud durable-cleanup failure semantics for sign out everywhere", async () => {
+    const secureStore = fakeSecureStore();
+    await seedSession(secureStore, freshToken());
+    secureStore.deleteItemAsync = vi
+      .fn()
+      .mockRejectedValue(new Error("keystore delete failed"));
+    const { engine, handlers, onAuthError } = makeHarness({ secureStore });
+    engine.start();
+    await settled(engine);
+
+    await expect(engine.signOutEverywhere()).rejects.toMatchObject({
+      name: "SessionSignOutError",
+      code: "local_cleanup_failed",
+      serverSessionStatus: "revoked",
+    });
+
+    expect(handlers.signOutEverywhere).toHaveBeenCalledTimes(1);
+    expect(secureStore.deleteItemAsync).toHaveBeenCalledTimes(6);
+    expect(secureStore.data.size).toBe(2);
+    expect(onAuthError).toHaveBeenCalledWith(expect.any(SessionSignOutError));
   });
 
   it("rejects loudly when durable cleanup and server revocation both fail", async () => {

@@ -86,6 +86,14 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         number,
         Name
       >;
+      killSubjectSessionsByToken: FunctionReference<
+        "mutation",
+        "internal",
+        { now: number; presentedHash: string; reuseWindowMs: number },
+        | { count: number; outcome: "signed-out"; subject: string }
+        | { outcome: "reuse" },
+        Name
+      >;
       recordWebhookDelivery: FunctionReference<
         "mutation",
         "internal",

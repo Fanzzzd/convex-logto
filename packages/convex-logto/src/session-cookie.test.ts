@@ -19,7 +19,12 @@ const BASE_PATH = "/api/logto";
 
 const api = anyApi.auth as unknown as LogtoSessionApi;
 
-type HandlerName = "signIn" | "callback" | "refresh" | "signOut";
+type HandlerName =
+  | "signIn"
+  | "callback"
+  | "refresh"
+  | "signOut"
+  | "signOutEverywhere";
 type Handlers = Record<HandlerName, ReturnType<typeof vi.fn>>;
 
 function makeHarness(options?: { deviceBinding?: boolean }) {
@@ -40,6 +45,10 @@ function makeHarness(options?: { deviceBinding?: boolean }) {
     }),
     signOut: vi.fn().mockResolvedValue({
       endSessionUrl: "https://auth.example.com/oidc/session/end",
+    }),
+    signOutEverywhere: vi.fn().mockResolvedValue({
+      count: 2,
+      endSessionUrl: "https://auth.example.com/oidc/session/end?all=1",
     }),
   };
   const action = vi.fn((reference: unknown, args: unknown) => {
@@ -291,6 +300,52 @@ describe("cookie session flows", () => {
     });
   });
 
+  it("multiplexes sign out everywhere through the existing sign-out route", async () => {
+    const { handler, handlers } = makeHarness();
+    const response = await handler(
+      request("sign-out", {
+        cookie: cookie("session-token-2"),
+        body: { postLogoutRedirectUri: APP_ORIGIN, everywhere: true },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(handlers.signOutEverywhere).toHaveBeenCalledWith({
+      sessionToken: "session-token-2",
+      postLogoutRedirectUri: APP_ORIGIN,
+    });
+    expect(handlers.signOut).not.toHaveBeenCalled();
+    expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+    await expect(response.json()).resolves.toEqual({
+      count: 2,
+      endSessionUrl: "https://auth.example.com/oidc/session/end?all=1",
+    });
+  });
+
+  it("translates a legacy app module's missing sign-out-everywhere action", async () => {
+    const { handler, handlers } = makeHarness();
+    handlers.signOutEverywhere.mockRejectedValue(
+      new Error("Function not found: auth:signOutEverywhere"),
+    );
+
+    const response = await handler(
+      request("sign-out", {
+        cookie: cookie("session-token-2"),
+        body: { everywhere: true },
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        kind: "terminal",
+        code: "sign_out_everywhere_unavailable",
+        message: expect.stringMatching(/re-export signOutEverywhere/),
+      },
+    });
+  });
+
   it("clears a terminal token cookie", async () => {
     const { handler, handlers } = makeHarness();
     handlers.refresh.mockRejectedValueOnce(
@@ -412,6 +467,31 @@ describe("browser transport", () => {
     expect(new Headers(init?.headers).get(LOGTO_SESSION_CSRF_HEADER)).toBe(
       LOGTO_SESSION_CSRF_VALUE,
     );
+  });
+
+  it("dispatches sign out everywhere through the sign-out route selector", async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      Response.json({
+        count: 2,
+        endSessionUrl: "https://auth.example.com/oidc/session/end?all=1",
+      }),
+    );
+    const transport = createLogtoSessionCookieTransport(api, {
+      endpoint: BASE_PATH,
+      fetch: fetchMock,
+    });
+
+    await transport.action(api.signOutEverywhere!, {
+      sessionToken: COOKIE_SESSION_MARKER,
+      postLogoutRedirectUri: APP_ORIGIN,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe(`${BASE_PATH}/sign-out`);
+    expect(JSON.parse(String(init?.body))).toEqual({
+      postLogoutRedirectUri: APP_ORIGIN,
+      everywhere: true,
+    });
   });
 });
 

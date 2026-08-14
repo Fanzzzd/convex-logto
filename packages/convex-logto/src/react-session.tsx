@@ -55,7 +55,7 @@ export type ConvexLogtoSessionProviderProps = {
   /**
    * The module re-exporting `logtoSessionApi(...)`'s functions, e.g. `api.auth`.
    * The provider expects the exact names `signIn` / `callback` / `refresh` /
-   * `signOut` / `sessionValid`.
+   * `signOut` / `signOutEverywhere` / `sessionValid`.
    */
   sessionApi: LogtoSessionApi;
   /**
@@ -323,6 +323,14 @@ export type LogtoSessionAuth = {
     postLogoutRedirectUri?: string;
     federated?: boolean;
   }) => Promise<void>;
+  /**
+   * Delete every component session for the current subject, then end this
+   * browser's Logto SSO session. Other live devices drop through the existing
+   * reactive revocation subscription.
+   */
+  signOutEverywhere: (options?: {
+    postLogoutRedirectUri?: string;
+  }) => Promise<void>;
 };
 
 /**
@@ -330,7 +338,8 @@ export type LogtoSessionAuth = {
  * from Convex, so they're true only once Convex has accepted the token.
  *
  * @example
- * const { isAuthenticated, user, signIn, signOut } = useLogtoAuth();
+ * const { isAuthenticated, user, signIn, signOut, signOutEverywhere } =
+ *   useLogtoAuth();
  */
 export function useLogtoAuth(): LogtoSessionAuth {
   const { engine } = useSessionContext("useLogtoAuth");
@@ -349,6 +358,11 @@ export function useLogtoAuth(): LogtoSessionAuth {
       engine.signOut(options),
     [engine],
   );
+  const signOutEverywhere = useCallback(
+    (options?: { postLogoutRedirectUri?: string }) =>
+      engine.signOutEverywhere(options),
+    [engine],
+  );
   return useMemo(
     () => ({
       isAuthenticated,
@@ -356,8 +370,16 @@ export function useLogtoAuth(): LogtoSessionAuth {
       user: isAuthenticated ? snapshot.user : undefined,
       signIn,
       signOut,
+      signOutEverywhere,
     }),
-    [isAuthenticated, isLoading, snapshot.user, signIn, signOut],
+    [
+      isAuthenticated,
+      isLoading,
+      snapshot.user,
+      signIn,
+      signOut,
+      signOutEverywhere,
+    ],
   );
 }
 
