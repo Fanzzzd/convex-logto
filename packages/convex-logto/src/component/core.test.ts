@@ -194,6 +194,21 @@ it("decodeIdToken extracts sub and exp (ms)", () => {
   });
 });
 
+it("decodeIdToken captures an optional Logto sid", () => {
+  const token = fakeIdToken({
+    iss: "https://auth.example.com/oidc",
+    aud: "app1",
+    sub: "user1",
+    sid: "logto-session-1",
+    exp: 1_700_000_000,
+  });
+  expect(decodeIdToken(token, expected)).toEqual({
+    subject: "user1",
+    sid: "logto-session-1",
+    expiresAtMs: 1_700_000_000_000,
+  });
+});
+
 it.each([
   ["malformed", "not-a-jwt"],
   [

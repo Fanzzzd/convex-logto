@@ -211,7 +211,7 @@ export function buildEndSessionUrl(options: {
 export function decodeIdToken(
   idToken: string,
   expected: { endpoint: string; appId: string },
-): { subject: string; expiresAtMs: number } {
+): { subject: string; sid?: string; expiresAtMs: number } {
   const parts = idToken.split(".");
   if (parts.length !== 3) {
     throw terminal("invalid_id_token", "Logto returned a malformed ID token.");
@@ -223,7 +223,7 @@ export function decodeIdToken(
   } catch {
     throw terminal("invalid_id_token", "Logto returned a malformed ID token.");
   }
-  const { iss, aud, sub, exp } = payload;
+  const { iss, aud, sub, sid, exp } = payload;
   if (iss !== `${expected.endpoint}/oidc` || aud !== expected.appId) {
     throw terminal(
       "id_token_mismatch",
@@ -234,7 +234,11 @@ export function decodeIdToken(
   if (typeof sub !== "string" || typeof exp !== "number") {
     throw terminal("invalid_id_token", "ID token is missing sub/exp claims.");
   }
-  return { subject: sub, expiresAtMs: exp * 1000 };
+  return {
+    subject: sub,
+    ...(typeof sid === "string" && sid.length > 0 ? { sid } : {}),
+    expiresAtMs: exp * 1000,
+  };
 }
 
 /**

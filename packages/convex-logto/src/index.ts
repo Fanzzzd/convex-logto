@@ -1,4 +1,13 @@
 export {
+  createLogtoBackchannelLogoutHandler,
+  registerLogtoBackchannelLogout,
+  verifyLogtoLogoutToken,
+  type LogtoBackchannelLogoutHandlerOptions,
+  type LogtoLogoutTokenClaims,
+  type RegisterLogtoBackchannelLogoutOptions,
+  type VerifyLogtoLogoutTokenOptions,
+} from "./backchannel-logout";
+export {
   logtoAuthConfig,
   logtoConfigQuery,
   type LogtoAuthConfigOptions,

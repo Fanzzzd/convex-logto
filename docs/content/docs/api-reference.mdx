@@ -12,6 +12,9 @@ description: Every export from convex-logto and its web, native, and session-mod
 | `logtoSync<DataModel>(handlers)` | `convex-logto` | Returns `{ sync }`, an internal mutation mapping user events to your tables. |
 | `registerLogtoWebhook(http, sync, opts?)` | `convex-logto` | Registers the verified webhook route. Reads `LOGTO_WEBHOOK_SIGNING_KEY`. |
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
+| `registerLogtoBackchannelLogout(http, opts)` | `convex-logto` | Registers the verified OIDC back-channel logout route for session mode. |
+| `createLogtoBackchannelLogoutHandler(opts)` | `convex-logto` | Builds the same Convex HTTP action without registering a path. |
+| `verifyLogtoLogoutToken(token, opts?)` | `convex-logto` | Low-level Web Crypto/JWKS validation for an OIDC Logout Token. |
 | `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](/docs/session-mode): builds the five public auth functions backed by the session component. |
 | `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Session mode: throw unless the caller still has a live (unrevoked) session. |
 | `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Four-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
@@ -74,6 +77,37 @@ registerLogtoWebhook(http, internal.logto.sync, { sessions: components.logto });
 
 Low-level signature check (HMAC-SHA256 via Web Crypto), for when you route the
 webhook yourself instead of using `registerLogtoWebhook`.
+
+### `registerLogtoBackchannelLogout(http, opts)`
+
+Registers `POST /logto/backchannel-logout` for [OIDC back-channel
+logout](/docs/backchannel-logout). Pass `sessions: components.logto`; the route
+reads `LOGTO_ENDPOINT` / `LOGTO_APP_ID` unless `endpoint` / `appId` overrides are
+provided. A custom `path` changes the registered URI.
+
+The handler verifies `RS256` / `PS256` Logout Tokens against Logto's cached
+JWKS, enforces issuer, audience, time, event, subject/session, `jti`, and
+no-`nonce` rules, then revokes by `sid` or falls back to all sessions for `sub`.
+Verified `jti` values are deduplicated for 24 hours. Success (including no
+matching session or a replay) is `200`; invalid requests are `400`, and bodies
+over 1 MB are `413`. Every response is `Cache-Control: no-store`.
+
+```ts title="convex/http.ts"
+registerLogtoBackchannelLogout(http, { sessions: components.logto });
+```
+
+### `createLogtoBackchannelLogoutHandler(opts)`
+
+Returns the same Convex HTTP action for custom router composition. It still
+enforces POST and form encoding. Options are `sessions`, optional `endpoint` /
+`appId`, and no `path` (the caller owns routing).
+
+### `verifyLogtoLogoutToken(token, opts?)`
+
+Low-level verifier used by the registered handler. Returns
+`{ issuer, subject?, sid?, jti }` after Web Crypto signature and OIDC claim
+validation; rejects invalid, encrypted, unsigned, or symmetrically signed
+tokens. It does not mutate or deduplicate sessions.
 
 ### `logtoSessionApi(component, opts?)`
 

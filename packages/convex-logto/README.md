@@ -230,6 +230,10 @@ rotating session token and short-lived ID token in the OS keystore, and retains
 reactive revocation. Native intentionally has no cookie-transport or software
 `deviceBinding` option.
 
+Register `registerLogtoBackchannelLogout(http, { sessions: components.logto })`
+to verify Logto OIDC Logout Tokens and propagate IdP-side sign-out through the
+same reactive revocation path (one `sid` session, or every session for `sub`).
+
 [session-mode-docs]: https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/session-mode.mdx
 [session-example]: https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session
 
@@ -282,6 +286,9 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 | `logtoConfigQuery()` | `convex-logto` | Public query serving `{ endpoint, appId }` to the frontend. |
 | `logtoSync<DataModel>(handlers)` | `convex-logto` | Returns `{ sync }`, an internal mutation mapping user events to your tables. |
 | `registerLogtoWebhook(http, sync, opts?)` | `convex-logto` | Registers the verified webhook route. Reads `LOGTO_WEBHOOK_SIGNING_KEY`; `sessions` option adds dedupe + session revocation. |
+| `registerLogtoBackchannelLogout(http, opts)` | `convex-logto` | Session mode: registers a verified OIDC back-channel logout route with `sid` / `sub` revocation. |
+| `createLogtoBackchannelLogoutHandler(opts)` | `convex-logto` | Builds the back-channel Convex HTTP action for custom route composition. |
+| `verifyLogtoLogoutToken(token, opts?)` | `convex-logto` | Low-level RS256/PS256 Logout Token verification against Logto's JWKS. |
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
 | `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](#session-mode): builds the five public auth functions backed by the session component. |
 | `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Session mode: throw unless the caller still has a live (unrevoked) session. |

@@ -1,0 +1,91 @@
+---
+title: Back-channel logout
+description: Revoke session-mode sessions when Logto ends an IdP session, using a verified OIDC Logout Token.
+---
+
+OIDC back-channel logout lets Logto notify your Convex deployment when its
+identity-provider session ends. In [session mode](/docs/session-mode), the
+component deletes the matching session row and the existing `sessionValid`
+subscription pushes signed-out state to every live client. There is no client
+configuration or new frontend code.
+
+This is separate from [webhook sync](/docs/webhook-sync): webhooks handle
+account-level deletion and suspension, while back-channel logout handles an
+individual Logto sign-in session.
+
+## Register the Convex endpoint
+
+Install the session component as described in the [session-mode setup](/docs/session-mode),
+then add the route to the same `convex/http.ts` router as your other HTTP actions:
+
+```ts title="convex/http.ts"
+import { httpRouter } from "convex/server";
+import { registerLogtoBackchannelLogout } from "convex-logto";
+import { components } from "./_generated/api";
+
+const http = httpRouter();
+
+registerLogtoBackchannelLogout(http, {
+  sessions: components.logto,
+}); // POST /logto/backchannel-logout
+
+export default http;
+```
+
+The route reads `LOGTO_ENDPOINT` and `LOGTO_APP_ID`, the same deployment values
+as `logtoSessionApi`. You can override either in the options, or change the route
+with `path`.
+
+## Configure Logto
+
+In Logto Console, open **Applications**, select the **Traditional web** app used
+by session mode, and find its **Backchannel logout** section. Set **Backchannel
+logout URI** to:
+
+```text
+https://<your-deployment>.convex.site/logto/backchannel-logout
+```
+
+Use the deployment's `.convex.site` **HTTP Actions** URL, not its
+`.convex.cloud` client URL. Production, staging, and development deployments
+each need their own Logto app and URI.
+
+Enable **Is session required?** for precise session-level logout. Logto then
+includes the ID token's `sid`, and the component deletes only sessions created
+from that Logto session. If Logto sends a token with `sub` but no `sid`, the
+OIDC-defined fallback deletes every component session for that subject.
+
+Existing component sessions created before this feature gain their `sid` on
+their next ID-token refresh (or immediately after signing in again). A valid
+logout for an already-absent or not-yet-mapped `sid` still returns `200`, as the
+OIDC specification requires.
+
+## Validation and replay handling
+
+The endpoint accepts only a form-encoded POST containing exactly one
+`logout_token`. Before changing state it:
+
+- verifies an `RS256` or `PS256` signature with
+  `<LOGTO_ENDPOINT>/oidc/jwks` (cached for five minutes, with bounded refresh on
+  a new key id);
+- requires the configured issuer and app audience, fresh `iat`, unexpired
+  `exp`, and a non-empty `jti`;
+- requires the OIDC back-channel logout event and either `sid` or `sub`;
+- rejects `none`, symmetric signing algorithms, malformed JWTs, and any
+  `nonce` claim;
+- caps the request body at 1 MB.
+
+Verified `jti` values are claimed for 24 hours using the component's existing
+delivery-deduplication table. A retry is answered with the same `200` without
+re-running revocation; if the revocation mutation fails, the claim is released
+so Logto can retry the work.
+
+Responses include `Cache-Control: no-store`. Success is always `200`, including
+when no session matched, so the endpoint never reveals session existence.
+Invalid or failed logout requests return `400` with an OAuth-style JSON error;
+oversized bodies return `413`.
+
+For a custom router, `createLogtoBackchannelLogoutHandler(options)` returns the
+same Convex HTTP action without registering a path. The lower-level
+`verifyLogtoLogoutToken(token, options?)` verifier is also exported for advanced
+integrations.
