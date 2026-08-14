@@ -205,6 +205,15 @@ server-side revocation with `assertUserHasActiveSession` — in the
 [Session mode docs][session-mode-docs] and the runnable
 [`vite-react-session`][session-example] example.
 
+Apps with a same-site server endpoint can additionally mount
+`createLogtoSessionCookieHandler()` and pass
+`cookieTransport={{ endpoint: "/api/logto" }}` to the provider. That moves the
+rotating credential into a rolling `__Host-` HttpOnly cookie, enforces fixed
+POST + custom-header + Origin CSRF checks, and supports SSR seeding through
+`handler.getInitialToken(request)`. See the session-mode guide for Next.js,
+TanStack Start, and Convex custom-domain mounts, plus the Safari device-binding
+exclusion.
+
 [session-mode-docs]: https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/session-mode.mdx
 [session-example]: https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session
 
@@ -260,6 +269,7 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
 | `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](#session-mode): builds the five public auth functions backed by the session component. |
 | `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Session mode: throw unless the caller still has a live (unrevoked) session. |
+| `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Four-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
 | `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Static `config` or backend `configQuery`. |
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
 | default | `convex-logto/convex.config` | The session component, for `app.use(logto)`. |

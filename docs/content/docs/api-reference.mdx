@@ -14,6 +14,10 @@ description: Every export from convex-logto, convex-logto/react, convex-logto/re
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
 | `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](/docs/session-mode): builds the five public auth functions backed by the session component. |
 | `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Session mode: throw unless the caller still has a live (unrevoked) session. |
+| `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Four-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
+| `createLogtoSessionCookieTransport(api, opts?)` | `convex-logto` | Framework-free browser adapter used by the session provider's `cookieTransport` prop. |
+| `assertLogtoSessionCookieCompatibility(opts)` | `convex-logto` | Loud Safari/device-binding compatibility guard. |
+| `LOGTO_SESSION_COOKIE_*`, `LOGTO_SESSION_CSRF_*` | `convex-logto` | Fixed cookie name/base path and CSRF header/value constants. |
 | `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Static `config` or backend `configQuery`. |
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
 | default | `convex-logto/convex.config` | The session component, for `app.use(logto)` in `convex/convex.config.ts`. |
@@ -86,6 +90,29 @@ export const { signIn, callback, refresh, signOut, sessionValid } =
 Options: `scopes` / `resources` (server-configured — the browser can't request
 its own), `reuseWindowMs` (default 10s), and `endpoint` / `appId` /
 `clientSecret` env overrides.
+
+### `createLogtoSessionCookieHandler(opts)`
+
+Builds the [session mode cookie transport](/docs/session-mode#httponly-cookie-transport-optional)
+as a standard `(Request) => Promise<Response>` handler. Options are:
+
+- `sessionApi` — the same `api.auth` module passed to the provider;
+- `action(reference, args)` — calls the referenced public Convex action;
+- `allowedOrigins` — non-empty exact browser-origin allowlist;
+- `basePath` — default `/api/logto-session`;
+- `deviceBinding` — mirrors the device-binding flag so Safari can reject the
+  incompatible combination loudly.
+
+The four final path segments are `sign-in`, `callback`, `token`, and `sign-out`.
+Actual calls require POST, `x-convex-logto-csrf: 1`, and an allowed `Origin`;
+approved preflights receive credentialed CORS headers. The cookie is fixed to
+`__Host-convex-logto-session; HttpOnly; Secure; SameSite=Lax; Path=/` and rolls
+on every successful token rotation.
+
+The returned handler also has `getInitialToken(request)`. It returns
+`{ initialToken, initialSessionId, headers }`; forward `headers` to the SSR
+response so the rotated `Set-Cookie` is not lost, then pass the two initial
+values to `ConvexLogtoSessionProvider`.
 
 ### `assertUserHasActiveSession(ctx, component)`
 
@@ -169,6 +196,8 @@ in the bundle — it talks to the functions from `logtoSessionApi(...)`.
 | `afterSignIn` | — | Where to land after sign-in. Default `/`. `signIn({ returnTo })` overrides it. |
 | `navigate` | — | Your router's navigate (prefer replace-style) for soft post-sign-in navigation. Falls back to a hard `location.replace`. |
 | `tokenStorage` | — | Where the ID token persists: `"session"` (default, per-tab; reload without a round-trip), `"memory"` (strictest), `"local"`. |
+| `cookieTransport` | — | `{ endpoint?, fetch?, deviceBinding? }`; use the same-site handler instead of exposing the rotating session token to JavaScript. |
+| `initialToken` / `initialSessionId` | — | Paired SSR seed returned by `handler.getInitialToken(request)`. |
 | `reactiveRevocation` | — | Subscribe to session liveness; drop auth live on revocation. Default `true`. |
 | `onAuthError` | — | Recoverable sign-in failures (stale/forged callback, Logto unreachable). Also logged to the console. |
 
