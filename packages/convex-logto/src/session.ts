@@ -11,6 +11,21 @@ import { readEndpointAndAppId } from "./config";
 
 // --- component reference typing ---------------------------------------------
 
+/** Public half of the browser's non-extractable ECDSA P-256 binding key. */
+export type LogtoSessionDevicePublicKey = {
+  kty: "EC";
+  crv: "P-256";
+  x: string;
+  y: string;
+};
+
+const devicePublicKeyValidator = v.object({
+  kty: v.literal("EC"),
+  crv: v.literal("P-256"),
+  x: v.string(),
+  y: v.string(),
+});
+
 /**
  * The shape of `components.logto` in an app that installed the session
  * component (`app.use(logto)` in `convex/convex.config.ts`). Hand-written so
@@ -42,6 +57,7 @@ export type LogtoSessionComponent = {
         code: string;
         state: string;
         redirectUri: string;
+        devicePublicKey?: LogtoSessionDevicePublicKey;
       },
       {
         idToken: string;
@@ -58,6 +74,7 @@ export type LogtoSessionComponent = {
         appId: string;
         clientSecret: string;
         sessionToken: string;
+        deviceProof?: string;
         reuseWindowMs?: number;
       },
       { idToken: string; sessionToken: string; sessionId: string }
@@ -125,7 +142,12 @@ export type LogtoSessionApi = {
   callback: FunctionReference<
     "action",
     "public",
-    { code: string; state: string; redirectUri: string },
+    {
+      code: string;
+      state: string;
+      redirectUri: string;
+      devicePublicKey?: LogtoSessionDevicePublicKey;
+    },
     {
       idToken: string;
       sessionToken: string;
@@ -136,7 +158,7 @@ export type LogtoSessionApi = {
   refresh: FunctionReference<
     "action",
     "public",
-    { sessionToken: string },
+    { sessionToken: string; deviceProof?: string },
     { idToken: string; sessionToken: string; sessionId: string }
   >;
   signOut: FunctionReference<
@@ -218,7 +240,12 @@ export function logtoSessionApi(
   >;
   callback: RegisteredAction<
     "public",
-    { code: string; state: string; redirectUri: string },
+    {
+      code: string;
+      state: string;
+      redirectUri: string;
+      devicePublicKey?: LogtoSessionDevicePublicKey;
+    },
     Promise<{
       idToken: string;
       sessionToken: string;
@@ -228,7 +255,7 @@ export function logtoSessionApi(
   >;
   refresh: RegisteredAction<
     "public",
-    { sessionToken: string },
+    { sessionToken: string; deviceProof?: string },
     Promise<{ idToken: string; sessionToken: string; sessionId: string }>
   >;
   signOut: RegisteredAction<
@@ -259,7 +286,12 @@ export function logtoSessionApi(
       },
     }),
     callback: actionGeneric({
-      args: { code: v.string(), state: v.string(), redirectUri: v.string() },
+      args: {
+        code: v.string(),
+        state: v.string(),
+        redirectUri: v.string(),
+        devicePublicKey: v.optional(devicePublicKeyValidator),
+      },
       returns: v.object({
         idToken: v.string(),
         sessionToken: v.string(),
@@ -272,11 +304,15 @@ export function logtoSessionApi(
           code: args.code,
           state: args.state,
           redirectUri: args.redirectUri,
+          devicePublicKey: args.devicePublicKey,
         });
       },
     }),
     refresh: actionGeneric({
-      args: { sessionToken: v.string() },
+      args: {
+        sessionToken: v.string(),
+        deviceProof: v.optional(v.string()),
+      },
       returns: v.object({
         idToken: v.string(),
         sessionToken: v.string(),
@@ -286,6 +322,7 @@ export function logtoSessionApi(
         return await ctx.runAction(component.lib.refresh, {
           ...readSessionConfig(options),
           sessionToken: args.sessionToken,
+          deviceProof: args.deviceProof,
           reuseWindowMs: options.reuseWindowMs,
         });
       },

@@ -45,6 +45,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           appId: string;
           clientSecret: string;
           code: string;
+          devicePublicKey?: { crv: "P-256"; kty: "EC"; x: string; y: string };
           endpoint: string;
           redirectUri: string;
           state: string;
@@ -91,6 +92,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           appId: string;
           clientSecret: string;
+          deviceProof?: string;
           endpoint: string;
           reuseWindowMs?: number;
           sessionToken: string;

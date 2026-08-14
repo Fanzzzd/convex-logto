@@ -16,6 +16,7 @@ import {
   type TokenStorageKind,
 } from "./session-client";
 import type { LogtoSessionApi } from "./session";
+import type { SessionDeviceBinding } from "./session-device";
 import {
   COOKIE_SESSION_MARKER,
   createCookieSessionMarker,
@@ -80,6 +81,7 @@ function makeHarness(options?: {
   storedIdToken?: string;
   storedSession?: StoredSession;
   cookieBootstrap?: { initialSessionId?: string | null };
+  deviceBinding?: SessionDeviceBinding;
 }) {
   const handlers: Handlers = {
     signIn: vi.fn(),
@@ -113,6 +115,7 @@ function makeHarness(options?: {
     afterSignIn: options?.afterSignIn ?? "/",
     initialToken: options?.initialToken,
     initialSession,
+    deviceBinding: options?.deviceBinding,
     navigate,
     onAuthError,
     sleep: () => Promise.resolve(), // skip retry backoff in tests
@@ -140,6 +143,21 @@ const sessionResult = (n: number, sub = "user1") => ({
   sessionToken: `session-token-${n}`,
   sessionId: `session-id-${n}`,
 });
+
+const devicePublicKey = {
+  kty: "EC" as const,
+  crv: "P-256" as const,
+  x: "public-x",
+  y: "public-y",
+};
+
+function fakeDeviceBinding(proof = "device-proof") {
+  return {
+    prepare: vi.fn().mockResolvedValue(undefined),
+    getPublicKey: vi.fn().mockResolvedValue(devicePublicKey),
+    sign: vi.fn().mockResolvedValue(proof),
+  } satisfies SessionDeviceBinding;
+}
 
 beforeEach(() => {
   setURL("http://localhost:5173/");
@@ -222,6 +240,24 @@ describe("mount", () => {
     const { engine, handlers } = makeHarness();
     engine.start();
     expect((await settled(engine)).status).toBe("unauthenticated");
+    expect(handlers.refresh).not.toHaveBeenCalled();
+  });
+
+  it("reports device-key initialization failure instead of degrading to unbound", async () => {
+    const deviceBinding = fakeDeviceBinding();
+    deviceBinding.prepare.mockRejectedValue(
+      new Error("convex-logto: IndexedDB unavailable"),
+    );
+    const { engine, handlers, onAuthError } = makeHarness({ deviceBinding });
+
+    engine.start();
+    expect((await settled(engine)).status).toBe("unauthenticated");
+    expect(onAuthError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "convex-logto: IndexedDB unavailable",
+      }),
+    );
+    expect(handlers.callback).not.toHaveBeenCalled();
     expect(handlers.refresh).not.toHaveBeenCalled();
   });
 
@@ -324,6 +360,23 @@ describe("mount", () => {
     });
   });
 
+  it("bound refresh signs the presented token and sends the PoP once", async () => {
+    const deviceBinding = fakeDeviceBinding("proof-for-t1");
+    const { engine, storage, handlers } = makeHarness({ deviceBinding });
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    storage.writeIdToken(staleToken());
+    handlers.refresh.mockResolvedValue(sessionResult(2));
+
+    engine.start();
+    expect((await settled(engine)).status).toBe("authenticated");
+    expect(deviceBinding.prepare).toHaveBeenCalledTimes(1);
+    expect(deviceBinding.sign).toHaveBeenCalledWith("t1");
+    expect(handlers.refresh).toHaveBeenCalledWith({
+      sessionToken: "t1",
+      deviceProof: "proof-for-t1",
+    });
+  });
+
   it("terminal refresh on restore → storage cleared, unauthenticated", async () => {
     const { engine, storage, handlers } = makeHarness();
     storage.writeSession({ token: "t1", sessionId: "s1" });
@@ -380,6 +433,24 @@ describe("callback", () => {
     });
     await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith("/dash"));
     expect(storage.takeTransaction()).toBeNull(); // stash consumed
+  });
+
+  it("bound callback captures the device public key in the new session", async () => {
+    const deviceBinding = fakeDeviceBinding();
+    const { engine, storage, handlers } = makeHarness({ deviceBinding });
+    setURL("http://localhost:5173/callback?code=c1&state=s1");
+    storage.stashTransaction({ state: "s1" });
+    handlers.callback.mockResolvedValue(sessionResult(1));
+
+    engine.start();
+    expect((await settled(engine)).status).toBe("authenticated");
+    expect(deviceBinding.getPublicKey).toHaveBeenCalledTimes(1);
+    expect(handlers.callback).toHaveBeenCalledWith({
+      code: "c1",
+      state: "s1",
+      redirectUri: "http://localhost:5173/callback",
+      devicePublicKey,
+    });
   });
 
   it("an unsafe server returnTo falls back to afterSignIn", async () => {

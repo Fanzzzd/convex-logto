@@ -2,6 +2,7 @@ import { ConvexError, v } from "convex/values";
 import {
   action,
   internalMutation,
+  internalQuery,
   mutation,
   query,
 } from "./_generated/server.js";
@@ -11,6 +12,7 @@ import {
   SESSION_GC_AFTER_MS,
   TRANSACTION_TTL_MS,
   WEBHOOK_DELIVERY_GC_AFTER_MS,
+  assertDeviceProof,
   buildAuthorizeUrl,
   buildEndSessionUrl,
   classifyTokenEndpointFailure,
@@ -22,6 +24,7 @@ import {
   rotateTokenHashes,
   terminal,
   transient,
+  type DevicePublicKey,
 } from "./core.js";
 
 // The confidential-client config every OIDC-touching call needs. The values are
@@ -33,6 +36,13 @@ const oidcArgs = {
   appId: v.string(),
   clientSecret: v.string(),
 };
+
+const devicePublicKeyValidator = v.object({
+  kty: v.literal("EC"),
+  crv: v.literal("P-256"),
+  x: v.string(),
+  y: v.string(),
+});
 
 type OidcConfig = { endpoint: string; appId: string; clientSecret: string };
 
@@ -171,6 +181,7 @@ export const exchange = action({
     code: v.string(),
     state: v.string(),
     redirectUri: v.string(),
+    devicePublicKey: v.optional(devicePublicKeyValidator),
   },
   returns: v.object({
     idToken: v.string(),
@@ -211,6 +222,7 @@ export const exchange = action({
         logtoRefreshToken: tokens.refresh_token,
         lastIdToken: tokens.id_token,
         lastIdTokenExp: claims.expiresAtMs,
+        devicePublicKey: args.devicePublicKey,
         now,
       },
     );
@@ -263,6 +275,7 @@ export const createSession = internalMutation({
     logtoRefreshToken: v.string(),
     lastIdToken: v.string(),
     lastIdTokenExp: v.number(),
+    devicePublicKey: v.optional(devicePublicKeyValidator),
     now: v.number(),
   },
   returns: v.string(),
@@ -282,6 +295,7 @@ export const refresh = action({
   args: {
     ...oidcArgs,
     sessionToken: v.string(),
+    deviceProof: v.optional(v.string()),
     reuseWindowMs: v.optional(v.number()),
   },
   returns: v.object({
@@ -294,6 +308,15 @@ export const refresh = action({
     args,
   ): Promise<{ idToken: string; sessionToken: string; sessionId: string }> => {
     const presentedHash = await hashToken(args.sessionToken);
+    const devicePublicKey: DevicePublicKey | null = await ctx.runQuery(
+      internal.lib.devicePublicKeyForToken,
+      { presentedHash },
+    );
+    await assertDeviceProof({
+      publicKey: devicePublicKey ?? undefined,
+      sessionToken: args.sessionToken,
+      proof: args.deviceProof,
+    });
     // The next token is generated in the action (mutations have deterministic
     // randomness); the mutation adopts it only where rotation happens.
     const candidate = generateToken();
@@ -362,6 +385,26 @@ export const refresh = action({
         };
       }
     }
+  },
+});
+
+export const devicePublicKeyForToken = internalQuery({
+  args: { presentedHash: v.string() },
+  returns: v.union(devicePublicKeyValidator, v.null()),
+  handler: async (ctx, args) => {
+    const byCurrent = await ctx.db
+      .query("sessions")
+      .withIndex("by_tokenHash", (q) => q.eq("tokenHash", args.presentedHash))
+      .unique();
+    const session =
+      byCurrent ??
+      (await ctx.db
+        .query("sessions")
+        .withIndex("by_prevTokenHash", (q) =>
+          q.eq("prevTokenHash", args.presentedHash),
+        )
+        .unique());
+    return session?.devicePublicKey ?? null;
   },
 });
 

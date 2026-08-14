@@ -55,8 +55,8 @@ export type LogtoSessionCookieHandlerOptions = {
   /** Mount point containing `sign-in`, `callback`, `token`, and `sign-out`. */
   basePath?: string;
   /**
-   * Mirror the session provider's future device-binding flag. Safari cannot
-   * safely combine its ITP storage behavior with this cookie transport.
+   * Mirror the session provider's device-binding flag so incompatible
+   * non-React configurations fail through the same assertion.
    */
   deviceBinding?: boolean;
 };
@@ -330,26 +330,20 @@ function validateRedirectUri(value: string, requestOrigin: string): string {
   return value;
 }
 
-function isSafari(userAgent: string): boolean {
-  return (
-    /Safari\//.test(userAgent) &&
-    !/(?:Chrome|Chromium|CriOS|Edg|EdgiOS|OPR|OPiOS|FxiOS|Firefox)\//.test(
-      userAgent,
-    )
-  );
-}
-
 /**
- * Throw when Safari would combine cookie transport with software device
- * binding. Exported so future non-React adapters can enforce the same rule.
+ * Throw when cookie transport would combine with software device binding.
+ * HttpOnly deliberately makes the token unavailable to the JavaScript key
+ * that must sign it, so the guarantees cannot be composed without weakening
+ * one. Exported so non-React adapters enforce the same rule.
  */
 export function assertLogtoSessionCookieCompatibility(options: {
   deviceBinding?: boolean;
+  /** Retained for source compatibility; the exclusion now applies everywhere. */
   userAgent?: string | null;
 }): void {
-  if (options.deviceBinding && isSafari(options.userAgent ?? "")) {
+  if (options.deviceBinding) {
     throw new Error(
-      "convex-logto: session cookie transport and device binding cannot be enabled together on Safari because ITP can evict the bound key while retaining the cookie. Disable one of them; silent fallback is not allowed.",
+      "convex-logto: session cookie transport and device binding cannot be enabled together. Cookie transport already keeps the session token out of JavaScript, while device binding requires JavaScript to sign that token. Disable one of them; silent fallback is not allowed. On Safari this also avoids ITP retaining the cookie after evicting its IndexedDB key.",
     );
   }
 }
@@ -362,6 +356,9 @@ export function assertLogtoSessionCookieCompatibility(options: {
 export function createLogtoSessionCookieHandler(
   options: LogtoSessionCookieHandlerOptions,
 ): LogtoSessionCookieHandler {
+  assertLogtoSessionCookieCompatibility({
+    deviceBinding: options.deviceBinding,
+  });
   const basePath = normalizeBasePath(
     options.basePath ?? LOGTO_SESSION_COOKIE_BASE_PATH,
   );
@@ -556,10 +553,6 @@ export function createLogtoSessionCookieHandler(
         origin,
       );
     }
-    assertLogtoSessionCookieCompatibility({
-      deviceBinding: options.deviceBinding,
-      userAgent: request.headers.get("user-agent"),
-    });
     return await handleRoute(route, request, origin);
   };
 
@@ -567,10 +560,6 @@ export function createLogtoSessionCookieHandler(
     getInitialToken: async (
       request: Request,
     ): Promise<LogtoSessionCookieSeed> => {
-      assertLogtoSessionCookieCompatibility({
-        deviceBinding: options.deviceBinding,
-        userAgent: request.headers.get("user-agent"),
-      });
       const headers = new Headers(NO_STORE_HEADERS);
       if (readCookie(request) === null) {
         return {
