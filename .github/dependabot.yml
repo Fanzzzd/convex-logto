@@ -11,6 +11,24 @@ updates:
         update-types:
           - minor
           - patch
+      # React and React DOM must be the exact same version — React throws
+      # "Incompatible React versions" at runtime otherwise — so they can only
+      # move together.
+      react:
+        patterns:
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
+    ignore:
+      # Expo SDK modules are versioned in lockstep with the SDK: `expo@56`
+      # bundles `expo-crypto@~56.0.4`, and a module from another SDK breaks the
+      # native build while still typechecking, so CI cannot catch it. Upgrade
+      # the whole SDK with `npx expo install --fix` instead.
+      - dependency-name: expo
+      - dependency-name: expo-*
+      - dependency-name: react-native
+      - dependency-name: "@expo/*"
 
   - package-ecosystem: github-actions
     directory: /
