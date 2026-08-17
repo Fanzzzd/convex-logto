@@ -9,9 +9,9 @@ that receives `{ phase, elapsedMs, source?, errorKind? }` for the auth bootstrap
 the first authenticated query can run — plus `refresh_started` /
 `refresh_succeeded` / `refresh_failed`, `revoked` and `signed_out`.
 
-Bridge mode emits `bootstrap_start`, `config_loaded`, and `convex_authenticated`
-— the Logto SDK owns the credential lifecycle there, so the rest are session
-mode's.
+Bridge mode emits `bootstrap_start`, `convex_authenticated`, and — in
+`configQuery` mode, the only mode with a fetch to time — `config_loaded`. The
+Logto SDK owns the credential lifecycle there, so the rest are session mode's.
 
 `elapsedMs` counts from `bootstrap_start` on a monotonic clock. `source` tells a
 zero-round-trip cache restore apart from an SSR hand-off, a refresh, or a

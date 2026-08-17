@@ -400,9 +400,10 @@ type CommonProviderProps = {
   fallback?: ReactNode;
   /**
    * Opt-in phase timings for the auth bootstrap: `bootstrap_start`,
-   * `config_loaded` (this mode's one fetch), and `convex_authenticated` — the
-   * point where the first authenticated query can run. Absent means nothing is
-   * measured. Events carry no token and no user identity.
+   * `convex_authenticated` — the point where the first authenticated query can
+   * run — and, in `configQuery` mode only, `config_loaded` for that one fetch.
+   * Absent means nothing is measured. Events carry no token and no user
+   * identity.
    */
   onAuthEvent?: LogtoAuthEventHandler;
   children: ReactNode;
