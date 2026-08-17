@@ -2,18 +2,19 @@
 // Everything here runs in Convex's V8 runtime: Web APIs only.
 
 import { ConvexError } from "convex/values";
+import { buildLogtoEndpointUrl } from "./endpoint.js";
 
 /** Default lifetime of a sign-in transaction (state + PKCE verifier). */
 export const TRANSACTION_TTL_MS = 10 * 60 * 1000;
 
 /**
- * Default reuse window: re-presenting the immediately-previous session token
- * inside this window rotates again instead of killing the session — tolerating
- * multi-tab races and network retries the client-side Web Lock can't cover.
- * Matches @convex-dev/auth's concurrency window. Logto itself has NO grace
- * window (reuse destroys the whole grant), so this layer is the only tolerance.
+ * Default reuse window for a recently superseded session-token generation.
+ * Presentations inside the window absorb multi-tab races and network retries
+ * the client-side Web Lock cannot cover.
  */
 export const DEFAULT_REUSE_WINDOW_MS = 10 * 1000;
+/** Maximum out-of-order successful session-token responses retained per session. */
+export const SESSION_TOKEN_GENERATION_LIMIT = 8;
 
 /**
  * GC horizon for dead sessions: Logto's grant chain has a hard 180-day cap, so
@@ -114,7 +115,7 @@ export async function verifyDeviceProof(options: {
 
 /**
  * Enforce PoP only for sessions that opted in at exchange time. The signature
- * covers the one-time session token itself, so it cannot be carried forward to
+ * covers the presented session-token generation, so it cannot be carried forward to
  * the next rotation; token reuse retains only the existing bounded grace rule.
  */
 export async function assertDeviceProof(options: {
@@ -185,7 +186,7 @@ export function buildAuthorizeUrl(options: {
   for (const resource of options.resources ?? []) {
     params.append("resource", resource);
   }
-  return `${options.endpoint}/oidc/auth?${params}`;
+  return buildLogtoEndpointUrl(options.endpoint, "auth", params);
 }
 
 export function buildEndSessionUrl(options: {
@@ -197,7 +198,11 @@ export function buildEndSessionUrl(options: {
   if (options.postLogoutRedirectUri) {
     params.set("post_logout_redirect_uri", options.postLogoutRedirectUri);
   }
-  return `${options.endpoint}/oidc/session/end?${params}`;
+  return buildLogtoEndpointUrl(options.endpoint, "session/end", params);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -216,15 +221,25 @@ export function decodeIdToken(
   if (parts.length !== 3) {
     throw terminal("invalid_id_token", "Logto returned a malformed ID token.");
   }
-  let payload: Record<string, unknown>;
+  const payloadSegment = parts[1];
+  if (payloadSegment === undefined) {
+    throw terminal("invalid_id_token", "Logto returned a malformed ID token.");
+  }
+  let payload: unknown;
   try {
-    const base64 = parts[1]!.replace(/-/g, "+").replace(/_/g, "/");
-    payload = JSON.parse(atob(base64)) as Record<string, unknown>;
+    const base64 = payloadSegment.replace(/-/g, "+").replace(/_/g, "/");
+    payload = JSON.parse(atob(base64));
   } catch {
     throw terminal("invalid_id_token", "Logto returned a malformed ID token.");
   }
+  if (!isRecord(payload)) {
+    throw terminal("invalid_id_token", "Logto returned a malformed ID token.");
+  }
   const { iss, aud, sub, sid, exp } = payload;
-  if (iss !== `${expected.endpoint}/oidc` || aud !== expected.appId) {
+  if (
+    iss !== buildLogtoEndpointUrl(expected.endpoint, "") ||
+    aud !== expected.appId
+  ) {
     throw terminal(
       "id_token_mismatch",
       `ID token iss/aud (${String(iss)} / ${String(aud)}) don't match the configured ` +
@@ -243,8 +258,8 @@ export function decodeIdToken(
 
 /**
  * The rotation decision — the heart of reuse handling, pure so it's testable.
- * `presentedHash` was found on `session` either as the current or the previous
- * token hash; decide what the refresh should do.
+ * `presentedHash` was found either as the current or a recently superseded
+ * Session-token generation; decide what the refresh should do.
  */
 export function decideRefresh(options: {
   presentedHash: string;
@@ -257,30 +272,44 @@ export function decideRefresh(options: {
   };
   now: number;
   reuseWindowMs: number;
+  /** Exact expiry for a match from the indexed token-generation history. */
+  presentedTokenExpiresAt?: number;
   /** Don't serve a cached ID token with less than this much life left. */
   idTokenSkewMs?: number;
   /** How long a refresh claim blocks competitors before it's considered stale. */
   claimTimeoutMs?: number;
 }):
   | { outcome: "refresh" } // presented the current token: rotate + hit Logto
-  | { outcome: "cached" } // previous token inside the window, cached ID token fresh: rotate locally
-  | { outcome: "refresh-previous" } // previous token inside the window, cache stale: rotate + hit Logto
+  | { outcome: "cached" } // superseded generation inside the window, cached ID token fresh: rotate locally
+  | { outcome: "refresh-superseded" } // superseded generation inside the window, cache stale: rotate + hit Logto
   | { outcome: "in-flight" } // a concurrent refresh holds the claim: transient, retry
+  | { outcome: "claim-expired" } // remote outcome unknown: kill locally, require reauthentication
   | {
       outcome: "reuse";
-    } /* previous token OUTSIDE the window: kill the session */ {
+    } /* superseded generation OUTSIDE the window: kill the Session */ {
   const {
     presentedHash,
     session,
     now,
     reuseWindowMs,
+    presentedTokenExpiresAt,
     idTokenSkewMs = 60 * 1000,
     claimTimeoutMs = 15 * 1000,
   } = options;
 
-  const claimed =
-    session.refreshingSince !== undefined &&
-    now - session.refreshingSince < claimTimeoutMs;
+  const claimAge =
+    session.refreshingSince === undefined
+      ? undefined
+      : now - session.refreshingSince;
+  const claimed = claimAge !== undefined && claimAge < claimTimeoutMs;
+
+  // Once a claim times out, the action may still have reached Logto and
+  // rotated the refresh token. Reusing the stored token would risk a second
+  // spend and Logto grant revocation, so the only safe recovery is to abandon
+  // this local session and require a new authorization flow.
+  if (claimAge !== undefined && claimAge >= claimTimeoutMs) {
+    return { outcome: "claim-expired" };
+  }
 
   if (presentedHash === session.tokenHash) {
     // Current token. If another refresh is mid-flight (same token double-fired
@@ -291,20 +320,24 @@ export function decideRefresh(options: {
     return { outcome: "refresh" };
   }
 
-  // Not current — the caller matched it via prevTokenHash.
-  const inWindow = isPreviousTokenWithinReuseWindow({
-    rotatedAt: session.rotatedAt,
-    now,
-    reuseWindowMs,
-  });
+  // Not current — resolution matched a retained superseded generation (or the
+  // legacy prevTokenHash adapter).
+  const inWindow =
+    presentedTokenExpiresAt === undefined
+      ? isPreviousTokenWithinReuseWindow({
+          rotatedAt: session.rotatedAt,
+          now,
+          reuseWindowMs,
+        })
+      : now < presentedTokenExpiresAt;
   if (!inWindow) return { outcome: "reuse" };
   if (claimed) return { outcome: "in-flight" };
   if (session.lastIdTokenExp - idTokenSkewMs > now)
     return { outcome: "cached" };
-  return { outcome: "refresh-previous" };
+  return { outcome: "refresh-superseded" };
 }
 
-/** Apply the same exclusive previous-generation grace window everywhere. */
+/** Apply the exclusive grace window for a legacy previous-generation field. */
 export function isPreviousTokenWithinReuseWindow(options: {
   rotatedAt?: number;
   now: number;
@@ -353,7 +386,7 @@ export function transient(
   return new ConvexError({ kind: "transient" as const, code, message });
 }
 
-/** The shared terminal signal for a previous token presented after its grace window. */
+/** Terminal signal for a superseded generation presented after its Reuse window. */
 export function sessionReuseDetectedError(): ConvexError<SessionErrorData> {
   return terminal(
     "session_reuse_detected",

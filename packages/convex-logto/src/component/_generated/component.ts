@@ -73,23 +73,28 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Name
       >;
       killSessionsBySid: FunctionReference<
-        "mutation",
+        "action",
         "internal",
         { sid: string },
         number,
         Name
       >;
       killSubjectSessions: FunctionReference<
-        "mutation",
+        "action",
         "internal",
         { subject: string },
         number,
         Name
       >;
       killSubjectSessionsByToken: FunctionReference<
-        "mutation",
+        "action",
         "internal",
-        { now: number; presentedHash: string; reuseWindowMs: number },
+        {
+          deviceProof?: string;
+          now: number;
+          reuseWindowMs: number;
+          sessionToken: string;
+        },
         | { count: number; outcome: "signed-out"; subject: string }
         | { outcome: "reuse" },
         Name
@@ -128,9 +133,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           appId: string;
           clientSecret: string;
+          deviceProof?: string;
           endpoint: string;
           federated?: boolean;
           postLogoutRedirectUri?: string;
+          reuseWindowMs?: number;
           sessionToken: string;
         },
         { endSessionUrl?: string },

@@ -1,42 +1,95 @@
 import { describe, expect, it, vi } from "vitest";
-import { hashToken } from "./component/core";
-import { logtoSessionApi, type LogtoSessionComponent } from "./session";
+import {
+  assertSubjectHasActiveSession,
+  assertUserHasActiveSession,
+  logtoSessionApi,
+  type LogtoSessionComponent,
+} from "./session";
+
+it("keeps the legacy assertion name as a deprecated compatibility alias", () => {
+  expect(assertUserHasActiveSession).toBe(assertSubjectHasActiveSession);
+});
+
+describe("assertSubjectHasActiveSession", () => {
+  it("allows a bearer when another active session remains for its subject", async () => {
+    const query = { fn: "hasActiveSessionForSubject" };
+    const component = {
+      lib: { hasActiveSessionForSubject: query },
+    } as unknown as LogtoSessionComponent;
+    const runQuery = vi.fn().mockResolvedValue(true);
+    const ctx = {
+      auth: {
+        getUserIdentity: vi.fn().mockResolvedValue({ subject: "user-1" }),
+      },
+      runQuery,
+    };
+
+    await expect(
+      assertSubjectHasActiveSession(ctx, component),
+    ).resolves.toBeUndefined();
+    expect(runQuery).toHaveBeenCalledWith(query, { subject: "user-1" });
+  });
+
+  it("rejects when no active session remains for the subject", async () => {
+    const component = {
+      lib: { hasActiveSessionForSubject: { fn: "active" } },
+    } as unknown as LogtoSessionComponent;
+    const ctx = {
+      auth: {
+        getUserIdentity: vi.fn().mockResolvedValue({ subject: "user-1" }),
+      },
+      runQuery: vi.fn().mockResolvedValue(false),
+    };
+
+    await expect(
+      assertSubjectHasActiveSession(ctx, component),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "session_revoked" },
+    });
+  });
+});
 
 describe("logtoSessionApi signOutEverywhere", () => {
   it("passes the default reuse policy and builds logout without an ID-token hint", async () => {
-    const mutation = { fn: "killSubjectSessionsByToken" };
+    const action = { fn: "killSubjectSessionsByToken" };
     const component = {
-      lib: { killSubjectSessionsByToken: mutation },
+      lib: { killSubjectSessionsByToken: action },
     } as unknown as LogtoSessionComponent;
     const api = logtoSessionApi(component, {
       endpoint: "https://auth.example.com",
       appId: "app-1",
       clientSecret: "secret",
     });
-    const runMutation = vi.fn().mockResolvedValue({
+    const runAction = vi.fn().mockResolvedValue({
       outcome: "signed-out",
       count: 3,
       subject: "subject-from-session",
     });
     const now = vi.spyOn(Date, "now").mockReturnValue(1_234_567);
     type Handler = (
-      ctx: { runMutation: typeof runMutation },
-      args: { sessionToken: string; postLogoutRedirectUri?: string },
+      ctx: { runAction: typeof runAction },
+      args: {
+        sessionToken: string;
+        deviceProof?: string;
+        postLogoutRedirectUri?: string;
+      },
     ) => Promise<{ endSessionUrl?: string; count: number }>;
     const handler = (
       api.signOutEverywhere as unknown as Record<string, Handler>
     )["_handler"]!;
 
     const result = await handler(
-      { runMutation },
+      { runAction },
       {
         sessionToken: "caller-session-token",
+        deviceProof: "device-proof",
         postLogoutRedirectUri: "https://app.example.com/signed-out",
       },
     );
 
-    expect(runMutation).toHaveBeenCalledWith(mutation, {
-      presentedHash: await hashToken("caller-session-token"),
+    expect(runAction).toHaveBeenCalledWith(action, {
+      sessionToken: "caller-session-token",
+      deviceProof: "device-proof",
       now: 1_234_567,
       reuseWindowMs: 10_000,
     });
@@ -53,9 +106,9 @@ describe("logtoSessionApi signOutEverywhere", () => {
   });
 
   it("turns committed stale-token containment into the terminal reuse error", async () => {
-    const mutation = { fn: "killSubjectSessionsByToken" };
+    const action = { fn: "killSubjectSessionsByToken" };
     const component = {
-      lib: { killSubjectSessionsByToken: mutation },
+      lib: { killSubjectSessionsByToken: action },
     } as unknown as LogtoSessionComponent;
     const api = logtoSessionApi(component, {
       endpoint: "https://auth.example.com",
@@ -63,9 +116,9 @@ describe("logtoSessionApi signOutEverywhere", () => {
       clientSecret: "secret",
       reuseWindowMs: 321,
     });
-    const runMutation = vi.fn().mockResolvedValue({ outcome: "reuse" });
+    const runAction = vi.fn().mockResolvedValue({ outcome: "reuse" });
     type Handler = (
-      ctx: { runMutation: typeof runMutation },
+      ctx: { runAction: typeof runAction },
       args: { sessionToken: string },
     ) => Promise<{ endSessionUrl?: string; count: number }>;
     const handler = (
@@ -73,16 +126,55 @@ describe("logtoSessionApi signOutEverywhere", () => {
     )["_handler"]!;
 
     await expect(
-      handler({ runMutation }, { sessionToken: "stale-token" }),
+      handler({ runAction }, { sessionToken: "stale-token" }),
     ).rejects.toMatchObject({
       data: {
         kind: "terminal",
         code: "session_reuse_detected",
       },
     });
-    expect(runMutation).toHaveBeenCalledWith(mutation, {
-      presentedHash: await hashToken("stale-token"),
+    expect(runAction).toHaveBeenCalledWith(action, {
+      sessionToken: "stale-token",
+      deviceProof: undefined,
       now: expect.any(Number),
+      reuseWindowMs: 321,
+    });
+  });
+});
+
+describe("logtoSessionApi signOut", () => {
+  it("passes the configured legacy reuse window to the component", async () => {
+    const action = { fn: "signOut" };
+    const component = {
+      lib: { signOut: action },
+    } as unknown as LogtoSessionComponent;
+    const api = logtoSessionApi(component, {
+      endpoint: "https://auth.example.com",
+      appId: "app-1",
+      clientSecret: "secret",
+      reuseWindowMs: 321,
+    });
+    const runAction = vi.fn().mockResolvedValue({});
+    type Handler = (
+      ctx: { runAction: typeof runAction },
+      args: { sessionToken: string; deviceProof?: string },
+    ) => Promise<{ endSessionUrl?: string }>;
+    const handler = (api.signOut as unknown as Record<string, Handler>)[
+      "_handler"
+    ]!;
+
+    await handler(
+      { runAction },
+      { sessionToken: "session-token", deviceProof: "device-proof" },
+    );
+
+    expect(runAction).toHaveBeenCalledWith(action, {
+      endpoint: "https://auth.example.com",
+      appId: "app-1",
+      clientSecret: "secret",
+      sessionToken: "session-token",
+      deviceProof: "device-proof",
+      postLogoutRedirectUri: undefined,
       reuseWindowMs: 321,
     });
   });

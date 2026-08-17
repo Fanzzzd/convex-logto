@@ -16,6 +16,7 @@ export {
   type LogtoPublicConfig,
 } from "./config";
 export {
+  assertSubjectHasActiveSession,
   assertUserHasActiveSession,
   logtoSessionApi,
   type LogtoSessionApi,
