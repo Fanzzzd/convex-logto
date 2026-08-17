@@ -42,3 +42,42 @@ full pattern (with the `isLoading`-first check that avoids bouncing a just-retur
 user) is in [Auth in your app → Route guards](/docs/auth-in-your-app#route-guards-tanstack-router).
 
 Full app: [`examples/tanstack-router-spa`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-router-spa).
+
+## Session mode
+
+[Session mode](/docs/session-mode) changes the provider and drops `configQuery`
+(no Logto config reaches the bundle); the router wiring is unchanged.
+
+```tsx title="src/main.tsx"
+import { ConvexLogtoSessionProvider } from "convex-logto/react-session";
+
+root.render(
+  <ConvexLogtoSessionProvider
+    client={convex}
+    sessionApi={api.auth}
+    navigate={(to) => void router.navigate({ to, replace: true })}
+  >
+    <RouterProvider router={router} />
+  </ConvexLogtoSessionProvider>,
+);
+```
+
+Keep the `/callback` route. The provider completes the exchange and then calls
+your `navigate`, but the router still renders that path first — without a route
+for it the user sees a 404 for the length of one round-trip. `replace: true`
+keeps the code-bearing URL out of history.
+
+Route guards work exactly as above: `useLogtoAuth()` from
+`convex-logto/react-session` has the same `isAuthenticated` / `isLoading` pair
+(both come from Convex, so they flip only once Convex has accepted the token),
+and it adds `signOutEverywhere()` plus the `listSessions()` /
+`renameSession()` / `revokeSession()` device list.
+
+A router-level guard is not an authorization boundary in either mode — it decides
+what to render, and the Convex function still has to check the identity itself.
+Session mode adds `assertSubjectHasActiveSession(ctx, components.logto)` for
+functions that must also fail the moment a session is revoked, rather than when
+the ID token expires.
+
+Full app: [`examples/vite-react-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session)
+(the session-mode wiring is router-independent).
