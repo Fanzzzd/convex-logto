@@ -390,6 +390,7 @@ analytics backend as-is.
 | `convex_authenticated` | Convex accepted the token — the first authenticated query can run. Emitted once per mount, even if Convex later reconnects. |
 | `refresh_started` / `refresh_succeeded` | A token refresh, including silent ones long after mount. |
 | `refresh_failed` | With `errorKind`: `terminal` (the session is gone) or `transient` (retryable). |
+| `refresh_abandoned` | A sign-out or revocation landed while the refresh was in flight, so its result was discarded. Exactly one of the three end phases follows every `refresh_started`, so a paired span never stays open. |
 | `revoked` | The reactive `sessionValid` subscription reported the session dead. |
 | `signed_out` | This client signed out, or another tab did (`source: "cross-tab"`). |
 

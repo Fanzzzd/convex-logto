@@ -11,6 +11,7 @@ import {
   classifyTokenEndpointFailure,
   decideRefresh,
   decodeIdToken,
+  decodeJwtSegment,
   generatePkce,
   generateToken,
   hashToken,
@@ -213,15 +214,34 @@ it("URL builders reject an endpoint that bypassed public config validation", () 
 // --- ID token decoding -------------------------------------------------------
 
 function fakeIdToken(payload: Record<string, unknown>): string {
-  const enc = (o: unknown) =>
-    btoa(JSON.stringify(o))
+  const enc = (o: unknown) => {
+    // A real payload is base64url over UTF-8 bytes; `btoa` alone cannot even
+    // represent a non-ASCII claim.
+    let binary = "";
+    for (const byte of new TextEncoder().encode(JSON.stringify(o)))
+      binary += String.fromCharCode(byte);
+    return btoa(binary)
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
       .replace(/=+$/, "");
+  };
   return `${enc({ alg: "ES384" })}.${enc(payload)}.sig`;
 }
 
 const expected = { endpoint: "https://auth.example.com", appId: "app1" };
+
+it("decodeJwtSegment reads a segment as UTF-8, not one char per byte", () => {
+  // `atob` alone turns a `name` of 王小明 into ç\u008e\u008bå°\u008fæ\u0098\u008e.
+  const claims = { name: "王小明", family_name: "Müller", emoji: "🔐" };
+  const segment = fakeIdToken(claims).split(".")[1]!;
+
+  expect(decodeJwtSegment(segment)).toEqual(claims);
+});
+
+it("decodeJwtSegment refuses a segment it cannot decode", () => {
+  expect(decodeJwtSegment("not base64url!")).toBeUndefined();
+  expect(decodeJwtSegment("bm90IGpzb24")).toBeUndefined();
+});
 
 it("decodeIdToken extracts sub and exp (ms)", () => {
   const token = fakeIdToken({
