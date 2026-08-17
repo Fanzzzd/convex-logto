@@ -21,6 +21,7 @@ import {
 } from "react";
 import { useNativeAuthState } from "./auth-loading";
 import type { LogtoConfigQueryRef, LogtoPublicConfig } from "./config";
+import { normalizeLogtoPublicConfig } from "./component/endpoint";
 
 /**
  * Bridges Logto's ID token into the `useAuth` shape `ConvexProviderWithAuth`
@@ -108,10 +109,10 @@ export type ConvexLogtoProviderProps = {
 } & (
   | {
       /**
-       * Your Logto public config, statically: `{ endpoint, appId }`. Both are
-       * public values (the OAuth client id is not a secret) — pass them from
-       * build-time env (e.g. `EXPO_PUBLIC_…`). This is the default, fastest
-       * path: no config round-trip before sign-in is interactive.
+       * Your Logto public config, statically: `{ endpoint, appId,
+       * allowInsecureHttp? }`. Both OAuth values are public (the client id is
+       * not a secret). Non-loopback HTTP requires that explicit opt-in; HTTPS
+       * is the default. This is the fastest path: no config round-trip.
        */
       config: LogtoPublicConfig;
       configQuery?: never;
@@ -168,7 +169,7 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
   const [fetched, setFetched] = useState<ConfigState>({ status: "loading" });
 
   useEffect(() => {
-    if (!configQuery) return;
+    if (!configQuery) return undefined;
     let active = true;
     client
       .query(configQuery)
@@ -183,8 +184,12 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
     };
   }, [client, configQuery]);
 
-  const resolved: LogtoPublicConfig | undefined =
+  const unresolved: LogtoPublicConfig | undefined =
     staticConfig ?? (fetched.status === "ready" ? fetched.config : undefined);
+  const resolved =
+    unresolved === undefined
+      ? undefined
+      : normalizeLogtoPublicConfig(unresolved);
 
   // Key the memo on array contents, not identity, so a fresh `scopes`/`resources`
   // array each render doesn't rebuild the LogtoClient.

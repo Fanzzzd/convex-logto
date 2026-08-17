@@ -5,6 +5,7 @@
 import type { FunctionReference } from "convex/server";
 import { ConvexError } from "convex/values";
 import { classifySignInSearch, isSafeReturnTo } from "./callback";
+import { normalizeHttpNavigationUrl } from "./component/endpoint";
 import {
   SessionDeviceBindingError,
   type SessionDeviceBinding,
@@ -42,7 +43,7 @@ export type SessionTransport = {
 export type SessionStorageAdapter = {
   /** Async stores hydrate their synchronous cache here before the engine reads it. */
   prepare?(): Promise<void>;
-  /** Wait for queued durable writes; browser storage writes synchronously. */
+  /** Wait for queued writes or surface a failed durable credential removal. */
   flush?(): Promise<void>;
   readonly sessionEventKey: string;
   readSession(): StoredSession | null;
@@ -82,10 +83,10 @@ export class SessionSignOutError extends Error {
     const revocationAlsoFailed = serverSessionStatus === "revocation_failed";
     super(
       revocationAlsoFailed
-        ? "convex-logto: sign-out did not complete because SecureStore cleanup and server revocation both failed."
+        ? "convex-logto: sign-out did not complete because local credential cleanup and server revocation both failed."
         : serverSessionStatus === "revoked"
-          ? "convex-logto: the server session was revoked, but local credentials could not be wiped from SecureStore."
-          : "convex-logto: local credentials could not be wiped from SecureStore.",
+          ? "convex-logto: the server session was revoked, but local credentials could not be durably wiped."
+          : "convex-logto: local credentials could not be durably wiped.",
       cause === undefined ? undefined : { cause },
     );
     this.name = "SessionSignOutError";
@@ -96,6 +97,7 @@ export class SessionSignOutError extends Error {
 }
 
 class SessionApiUpgradeError extends Error {}
+class BrowserSessionStorageError extends Error {}
 
 function signOutEverywhereUpgradeError(
   cause?: unknown,
@@ -107,10 +109,9 @@ function signOutEverywhereUpgradeError(
 }
 
 function isMissingSignOutEverywhereAction(error: unknown): boolean {
-  const data =
-    error instanceof ConvexError
-      ? (error.data as { code?: unknown; message?: unknown })
-      : undefined;
+  const errorData: unknown =
+    error instanceof ConvexError ? error.data : undefined;
+  const data = isRecord(errorData) ? errorData : undefined;
   if (data?.code === "sign_out_everywhere_unavailable") return true;
   const message = [
     error instanceof Error ? error.message : "",
@@ -127,9 +128,12 @@ export function decodeJwtPayload(
 ): Record<string, unknown> | null {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
+  const payload = parts[1];
+  if (payload === undefined) return null;
   try {
-    const base64 = parts[1]!.replace(/-/g, "+").replace(/_/g, "/");
-    return JSON.parse(atob(base64)) as Record<string, unknown>;
+    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded: unknown = JSON.parse(atob(base64));
+    return isRecord(decoded) ? decoded : null;
   } catch {
     return null;
   }
@@ -143,8 +147,8 @@ function idTokenExpMs(token: string): number {
 /** Terminal ends the session on the client; anything else is retried and never treated as a sign-out. */
 export function sessionErrorKind(error: unknown): "terminal" | "transient" {
   if (error instanceof ConvexError) {
-    const kind = (error.data as { kind?: unknown } | undefined | null)?.kind;
-    if (kind === "terminal") return "terminal";
+    const data: unknown = error.data;
+    if (isRecord(data) && data.kind === "terminal") return "terminal";
   }
   return "transient";
 }
@@ -153,6 +157,15 @@ export function sessionErrorKind(error: unknown): "terminal" | "transient" {
 
 export type StoredSession = { token: string; sessionId: string };
 type StoredTransaction = { state: string };
+type StorageKind = "local" | "session" | "memory";
+type StoredValue =
+  | { status: "missing" }
+  | { status: "invalid" }
+  | { status: "value"; value: unknown };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 /**
  * Namespaced browser storage for the three session-mode artifacts:
@@ -167,10 +180,14 @@ type StoredTransaction = { state: string };
  *   refused client-side.
  *
  * Falls back to per-instance memory when storage throws (private mode, quota),
- * keeping the flow alive within the tab.
+ * keeping the flow alive within the tab. Failed removals remain pending until
+ * a retry reaches browser storage; `flush()` makes explicit sign-out fail loud
+ * instead of claiming success while durable credentials survive a reload.
  */
 export class SessionStorageArea {
   private memory = new Map<string, string>();
+  private failedBrowserAreas = new Set<Exclude<StorageKind, "memory">>();
+  private pendingRemovals = new Map<string, unknown>();
 
   constructor(
     private namespace: string,
@@ -181,10 +198,34 @@ export class SessionStorageArea {
     return `convex-logto:${this.namespace}:${name}`;
   }
 
+  private memoryArea(): Pick<Storage, "getItem" | "setItem" | "removeItem"> {
+    const memory = this.memory;
+    return {
+      getItem: (key) => memory.get(key) ?? null,
+      setItem: (key, value) => void memory.set(key, value),
+      removeItem: (key) => void memory.delete(key),
+    };
+  }
+
+  private fallBack(kind: StorageKind): void {
+    if (kind !== "memory") this.failedBrowserAreas.add(kind);
+  }
+
+  private pendingRemovalKey(
+    kind: Exclude<StorageKind, "memory">,
+    key: string,
+  ): string {
+    return `${kind}:${key}`;
+  }
+
   private area(
-    kind: "local" | "session" | "memory",
+    kind: StorageKind,
   ): Pick<Storage, "getItem" | "setItem" | "removeItem"> {
-    if (kind !== "memory" && typeof window !== "undefined") {
+    if (
+      kind !== "memory" &&
+      !this.failedBrowserAreas.has(kind) &&
+      typeof window !== "undefined"
+    ) {
       try {
         const area =
           kind === "local" ? window.localStorage : window.sessionStorage;
@@ -192,47 +233,68 @@ export class SessionStorageArea {
         area.getItem(this.key("probe"));
         return area;
       } catch {
-        // fall through to memory
+        this.fallBack(kind);
       }
     }
-    const memory = this.memory;
-    return {
-      getItem: (k) => memory.get(k) ?? null,
-      setItem: (k, value) => void memory.set(k, value),
-      removeItem: (k) => void memory.delete(k),
-    };
+    return this.memoryArea();
   }
 
-  private read<T>(
-    kind: "local" | "session" | "memory",
-    name: string,
-  ): T | null {
+  private read(kind: StorageKind, name: string): StoredValue {
+    const key = this.key(name);
+    let raw: string | null;
     try {
-      const raw = this.area(kind).getItem(this.key(name));
-      return raw === null ? null : (JSON.parse(raw) as T);
+      raw = this.area(kind).getItem(key);
     } catch {
-      return null;
+      // The probe can succeed even when reading the actual key is denied.
+      // Trip the circuit breaker and retry against this instance's memory so
+      // subsequent operations never return to the known-broken browser area.
+      this.fallBack(kind);
+      raw = this.memoryArea().getItem(key);
+    }
+    if (raw === null) return { status: "missing" };
+    try {
+      const value: unknown = JSON.parse(raw);
+      return { status: "value", value };
+    } catch {
+      // Bad stored content is key-local, not an area failure. Keep the browser
+      // area active so the public reader can remove the corrupt value.
+      return { status: "invalid" };
     }
   }
 
-  private write(
-    kind: "local" | "session" | "memory",
-    name: string,
-    value: unknown,
-  ): void {
+  private write(kind: StorageKind, name: string, value: unknown): void {
     try {
       this.area(kind).setItem(this.key(name), JSON.stringify(value));
     } catch {
-      // Quota/private mode: memory fallback handled by area(); a throwing set is dropped.
+      this.fallBack(kind);
+      this.memoryArea().setItem(this.key(name), JSON.stringify(value));
     }
   }
 
-  private remove(kind: "local" | "session" | "memory", name: string): void {
+  private remove(kind: StorageKind, name: string): void {
+    const key = this.key(name);
+    this.memoryArea().removeItem(key);
+    if (kind === "memory" || typeof window === "undefined") return;
+    const pendingKey = this.pendingRemovalKey(kind, key);
     try {
-      this.area(kind).removeItem(this.key(name));
-    } catch {
-      // ignore
+      const area =
+        kind === "local" ? window.localStorage : window.sessionStorage;
+      area.removeItem(key);
+      this.pendingRemovals.delete(pendingKey);
+    } catch (error) {
+      this.fallBack(kind);
+      this.pendingRemovals.set(pendingKey, error);
     }
+  }
+
+  flush(): Promise<void> {
+    if (this.pendingRemovals.size === 0) return Promise.resolve();
+    return Promise.reject(
+      new BrowserSessionStorageError(
+        "convex-logto: browser storage could not durably remove session credentials.",
+        { cause: [...this.pendingRemovals.values()] },
+      ),
+    );
   }
 
   /** The localStorage key session writes land on — for `storage` event filtering. */
@@ -241,12 +303,20 @@ export class SessionStorageArea {
   }
 
   readSession(): StoredSession | null {
-    const value = this.read<StoredSession>("local", "session");
-    return value &&
-      typeof value.token === "string" &&
-      typeof value.sessionId === "string"
-      ? value
-      : null;
+    const stored = this.read("local", "session");
+    if (
+      stored.status === "value" &&
+      isRecord(stored.value) &&
+      typeof stored.value.token === "string" &&
+      typeof stored.value.sessionId === "string"
+    ) {
+      return {
+        token: stored.value.token,
+        sessionId: stored.value.sessionId,
+      };
+    }
+    if (stored.status !== "missing") this.remove("local", "session");
+    return null;
   }
 
   writeSession(session: StoredSession): void {
@@ -254,7 +324,14 @@ export class SessionStorageArea {
   }
 
   readIdToken(): string | null {
-    return this.read<string>(this.tokenStorage, "idToken");
+    const stored = this.read(this.tokenStorage, "idToken");
+    if (stored.status === "value" && typeof stored.value === "string") {
+      return stored.value;
+    }
+    if (stored.status !== "missing") {
+      this.remove(this.tokenStorage, "idToken");
+    }
+    return null;
   }
 
   writeIdToken(idToken: string): void {
@@ -266,9 +343,13 @@ export class SessionStorageArea {
   }
 
   takeTransaction(): StoredTransaction | null {
-    const value = this.read<StoredTransaction>("session", "txn");
+    const stored = this.read("session", "txn");
     this.remove("session", "txn");
-    return value && typeof value.state === "string" ? value : null;
+    return stored.status === "value" &&
+      isRecord(stored.value) &&
+      typeof stored.value.state === "string"
+      ? { state: stored.value.state }
+      : null;
   }
 
   clearAll(): void {
@@ -334,6 +415,8 @@ export class SessionAuthEngine {
   private inflightSignIn: Promise<void> | null = null;
   private inflightRefresh: Promise<string | null> | null = null;
   private storagePreparation: Promise<void> | null = null;
+  /** Invalidates async credential work that started before a local sign-out. */
+  private authGeneration = 0;
   /** The last ID token handed to Convex — a forced fetch must never re-serve it. */
   private lastServed: string | null = null;
   private now: () => number;
@@ -344,14 +427,17 @@ export class SessionAuthEngine {
     this.sleep =
       options.sleep ??
       ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-    if (options.initialSession) {
+    if (options.initialSession !== undefined) {
       options.storage.writeSession(options.initialSession);
     }
-    if (options.initialToken) {
+    if (
+      options.initialToken !== undefined &&
+      options.initialSession !== undefined
+    ) {
       options.storage.writeIdToken(options.initialToken);
       this.snapshot = {
         status: "authenticated",
-        sessionId: options.initialSession?.sessionId ?? null,
+        sessionId: options.initialSession.sessionId,
         user: decodeJwtPayload(options.initialToken) ?? undefined,
       };
     } else {
@@ -409,7 +495,10 @@ export class SessionAuthEngine {
     )
       return;
     this.started = true;
-    void this.startInner();
+    void this.startInner().catch((error: unknown) => {
+      this.reportError(this.asError(error));
+      this.setUnauthenticated();
+    });
   }
 
   private async startInner(): Promise<void> {
@@ -511,8 +600,15 @@ export class SessionAuthEngine {
     const cached = this.options.storage.readIdToken();
     if (cached !== null && this.isFresh(cached)) {
       const session = this.options.storage.readSession();
-      if (session?.sessionId !== "") {
+      if (session !== null && session.sessionId !== "") {
         this.setAuthenticated(cached);
+        return;
+      }
+      if (session === null) {
+        // A bearer without its session credential has lost the revocation and
+        // rotation anchor. Treat it as orphaned even while its JWT is fresh.
+        this.options.storage.clearIdToken();
+        this.setUnauthenticated();
         return;
       }
       // Cookie mode can know that a session exists before SSR or a rotation has
@@ -555,6 +651,14 @@ export class SessionAuthEngine {
       return null;
     }
     const cached = this.options.storage.readIdToken();
+    if (cached !== null && this.options.storage.readSession() === null) {
+      // A short bearer is usable only while its rotating session credential
+      // exists. Otherwise revocation cannot be observed or recovered.
+      this.options.storage.clearIdToken();
+      this.lastServed = null;
+      this.setUnauthenticated();
+      return null;
+    }
     if (!forceRefreshToken && cached !== null && this.isFresh(cached)) {
       this.lastServed = cached;
       return cached;
@@ -581,7 +685,9 @@ export class SessionAuthEngine {
    */
   private refreshIdToken(unacceptable: string | null): Promise<string | null> {
     if (this.inflightRefresh) return this.inflightRefresh;
+    const generation = this.authGeneration;
     const run = async (): Promise<string | null> => {
+      if (generation !== this.authGeneration) return null;
       // Re-read inside the lock: another tab may have rotated while we queued.
       const cached = this.options.storage.readIdToken();
       if (cached !== null && this.isFresh(cached) && cached !== unacceptable) {
@@ -597,9 +703,11 @@ export class SessionAuthEngine {
       try {
         deviceProof = await this.options.deviceBinding?.sign(session.token);
       } catch (error) {
+        if (generation !== this.authGeneration) return null;
         this.reportError(this.asError(error));
         return null;
       }
+      if (generation !== this.authGeneration) return null;
       try {
         const result = await this.retrying(() =>
           this.options.transport.action(this.options.api.refresh, {
@@ -607,14 +715,17 @@ export class SessionAuthEngine {
             ...(deviceProof === undefined ? {} : { deviceProof }),
           }),
         );
+        if (generation !== this.authGeneration) return null;
         this.options.storage.writeSession({
           token: result.sessionToken,
           sessionId: result.sessionId,
         });
         this.options.storage.writeIdToken(result.idToken);
         await this.flushStorageReporting();
+        if (generation !== this.authGeneration) return null;
         return result.idToken;
       } catch (error) {
+        if (generation !== this.authGeneration) return null;
         if (sessionErrorKind(error) === "terminal") {
           // Signed out / revoked / reuse-killed: the session is gone for good.
           this.options.storage.clearAll();
@@ -684,18 +795,27 @@ export class SessionAuthEngine {
     // Always spend an abandoned state before considering the new authorize
     // URL: if Logto ever omits `state`, an old deep link must not match it.
     this.options.storage.takeTransaction();
-    const state = new URL(url).searchParams.get("state");
+    let authorizationUrl: string;
+    try {
+      authorizationUrl = normalizeHttpNavigationUrl(url, "authorization");
+    } catch (error) {
+      // Persist the abandoned-state deletion even though navigation is
+      // refused. Native storage queues deletes until flush().
+      await this.flushStorage();
+      throw error;
+    }
+    const state = new URL(authorizationUrl).searchParams.get("state");
     if (state !== null) this.options.storage.stashTransaction({ state });
     await this.flushStorage();
     const authFlow = this.options.authFlow;
     if (authFlow === undefined) {
-      window.location.assign(url);
+      window.location.assign(authorizationUrl);
       return;
     }
 
     let callbackUrl: string | null;
     try {
-      callbackUrl = await authFlow.openAuthorization(url);
+      callbackUrl = await authFlow.openAuthorization(authorizationUrl);
     } catch (error) {
       this.options.storage.takeTransaction();
       await this.flushStorage();
@@ -761,9 +881,10 @@ export class SessionAuthEngine {
       postLogoutRedirectUri: options?.postLogoutRedirectUri,
       federated: options?.federated !== false,
       requireServerSuccess: false,
-      revoke: async (sessionToken, postLogoutRedirectUri) =>
+      revoke: async (sessionToken, deviceProof, postLogoutRedirectUri) =>
         await this.options.transport.action(this.options.api.signOut, {
           sessionToken,
+          ...(deviceProof === undefined ? {} : { deviceProof }),
           postLogoutRedirectUri,
         }),
     });
@@ -781,11 +902,12 @@ export class SessionAuthEngine {
       // mutation did not run so callers never mistake a partial result for
       // success.
       requireServerSuccess: true,
-      revoke: async (sessionToken, postLogoutRedirectUri) => {
+      revoke: async (sessionToken, deviceProof, postLogoutRedirectUri) => {
         if (action === undefined) throw signOutEverywhereUpgradeError();
         try {
           return await this.options.transport.action(action, {
             sessionToken,
+            ...(deviceProof === undefined ? {} : { deviceProof }),
             postLogoutRedirectUri,
           });
         } catch (error) {
@@ -804,9 +926,13 @@ export class SessionAuthEngine {
     requireServerSuccess: boolean;
     revoke: (
       sessionToken: string,
+      deviceProof: string | undefined,
       postLogoutRedirectUri: string,
     ) => Promise<{ endSessionUrl?: string }>;
   }): Promise<void> {
+    // Fence immediately, before any async storage preparation or network work:
+    // a refresh that began in the previous generation must never resurrect it.
+    this.authGeneration += 1;
     try {
       await this.prepareStorage();
     } catch (error) {
@@ -825,19 +951,26 @@ export class SessionAuthEngine {
       throw normalizedError;
     }
     const session = this.options.storage.readSession();
+    let deviceProof: string | undefined;
+    let deviceProofError: Error | undefined;
+    if (session !== null && this.options.deviceBinding !== undefined) {
+      try {
+        deviceProof = await this.options.deviceBinding.sign(session.token);
+      } catch (error) {
+        deviceProofError = this.asError(error);
+      }
+    }
     // Clear before the network call: sign-out must not be blockable by a dead
     // Logto. The localStorage removal kicks other tabs via the storage event.
-    this.options.storage.clearAll();
+    let cleanupError = this.clearStorageLocally();
     this.lastServed = null;
     this.setUnauthenticated();
-    let durableCleanupFailed = false;
-    try {
-      await this.flushStorage();
-    } catch (error) {
+    cleanupError = await this.finishStorageCleanup(cleanupError);
+    const durableCleanupFailed = cleanupError !== undefined;
+    if (cleanupError !== undefined) {
       // Still attempt server revocation when durable local cleanup fails; a
       // second cleanup failure becomes a loud error after that independent try.
-      durableCleanupFailed = true;
-      this.reportError(this.asError(error));
+      this.reportError(cleanupError);
     }
     let postLogoutRedirectUri: string | undefined;
     let endSessionUrl: string | undefined;
@@ -850,40 +983,46 @@ export class SessionAuthEngine {
         options.postLogoutRedirectUri ??
         this.options.authFlow?.redirectUri ??
         window.location.origin;
-      try {
-        ({ endSessionUrl } = await options.revoke(
-          session.token,
-          postLogoutRedirectUri,
-        ));
-        serverSessionStatus = "revoked";
-      } catch (error) {
-        serverRevocationError = error;
-        if (
-          error instanceof SessionApiUpgradeError ||
-          options.requireServerSuccess
-        ) {
-          fatalServerError =
-            error instanceof Error
-              ? error
-              : new Error(
-                  "convex-logto: the server could not complete sign out everywhere.",
-                  { cause: error },
-                );
-          this.reportError(fatalServerError);
+      if (deviceProofError !== undefined) {
+        serverRevocationError = deviceProofError;
+        this.reportError(deviceProofError);
+        if (options.requireServerSuccess) fatalServerError = deviceProofError;
+      } else {
+        try {
+          ({ endSessionUrl } = await options.revoke(
+            session.token,
+            deviceProof,
+            postLogoutRedirectUri,
+          ));
+          serverSessionStatus = "revoked";
+        } catch (error) {
+          serverRevocationError = error;
+          if (
+            error instanceof SessionApiUpgradeError ||
+            options.requireServerSuccess
+          ) {
+            fatalServerError =
+              error instanceof Error
+                ? error
+                : new Error(
+                    "convex-logto: the server could not complete sign out everywhere.",
+                    { cause: error },
+                  );
+            this.reportError(fatalServerError);
+          }
+          // Best effort when local cleanup succeeded; a combined failure is
+          // converted into a loud SessionSignOutError below.
         }
-        // Best effort when local cleanup succeeded; a combined failure is
-        // converted into a loud SessionSignOutError below.
       }
     }
     let signOutError: SessionSignOutError | undefined;
     if (durableCleanupFailed) {
-      // SecureStore failures can be transient (for example, a temporarily
-      // unavailable keystore). Retry once after the independent server kill.
-      this.options.storage.clearAll();
-      try {
-        await this.flushStorage();
-      } catch (error) {
-        const durableCleanupError = this.asError(error);
+      // Storage failures can be transient. Retry once after the independent
+      // server kill, bypassing any adapter read fallback through clearAll().
+      let durableCleanupError = this.clearStorageLocally();
+      durableCleanupError =
+        await this.finishStorageCleanup(durableCleanupError);
+      if (durableCleanupError !== undefined) {
         this.reportError(durableCleanupError);
         signOutError = new SessionSignOutError(serverSessionStatus, {
           durableCleanupError,
@@ -896,31 +1035,45 @@ export class SessionAuthEngine {
     }
     // Federated by default: also end Logto's SSO session so the next sign-in
     // isn't silent. The post sign-out redirect URI must be registered on the app.
+    let navigationError: Error | undefined;
     if (options.federated && endSessionUrl !== undefined) {
+      let navigationUrl: string | undefined;
+      try {
+        navigationUrl = normalizeHttpNavigationUrl(
+          endSessionUrl,
+          "end-session",
+        );
+      } catch (error) {
+        navigationError = this.asError(error);
+        this.reportError(navigationError);
+      }
       if (
+        navigationUrl !== undefined &&
         this.options.authFlow !== undefined &&
         postLogoutRedirectUri !== undefined
       ) {
         try {
           await this.options.authFlow.openEndSession(
-            endSessionUrl,
+            navigationUrl,
             postLogoutRedirectUri,
           );
         } catch (error) {
           this.reportError(this.asError(error));
         }
-      } else {
-        window.location.assign(endSessionUrl);
+      } else if (navigationUrl !== undefined) {
+        window.location.assign(navigationUrl);
       }
     }
     if (signOutError !== undefined) throw signOutError;
     if (fatalServerError !== undefined) throw fatalServerError;
+    if (navigationError !== undefined) throw navigationError;
   }
 
   // -- external events --
 
   /** Another tab signed out (our localStorage session key was removed). */
   handleExternalSignOut(): void {
+    this.authGeneration += 1;
     this.options.storage.clearIdToken();
     this.lastServed = null;
     this.setUnauthenticated();
@@ -928,6 +1081,7 @@ export class SessionAuthEngine {
 
   /** The reactive `sessionValid` subscription pushed `false`: the session was revoked. */
   handleRevoked(): void {
+    this.authGeneration += 1;
     this.options.storage.clearAll();
     void this.flushStorage().catch((error: unknown) => {
       this.reportError(this.asError(error));
@@ -954,6 +1108,32 @@ export class SessionAuthEngine {
     return this.options.storage.flush?.() ?? Promise.resolve();
   }
 
+  private clearStorageLocally(): Error | undefined {
+    try {
+      this.options.storage.clearAll();
+      return undefined;
+    } catch (error) {
+      return this.asError(error);
+    }
+  }
+
+  private async finishStorageCleanup(
+    clearError: Error | undefined,
+  ): Promise<Error | undefined> {
+    try {
+      await this.flushStorage();
+      return clearError;
+    } catch (error) {
+      const flushError = this.asError(error);
+      return clearError === undefined
+        ? flushError
+        : new Error(
+            "convex-logto: clearing and flushing local session credentials both failed.",
+            { cause: { clearError, flushError } },
+          );
+    }
+  }
+
   private async flushStorageReporting(): Promise<void> {
     try {
       await this.flushStorage();
@@ -973,13 +1153,14 @@ export class SessionAuthEngine {
       try {
         return await fn();
       } catch (error) {
+        const retryDelay = RETRY_DELAYS_MS[attempt];
         if (
           sessionErrorKind(error) === "terminal" ||
-          attempt >= RETRY_DELAYS_MS.length
+          retryDelay === undefined
         ) {
           throw error;
         }
-        await this.sleep(RETRY_DELAYS_MS[attempt]!);
+        await this.sleep(retryDelay);
       }
     }
   }

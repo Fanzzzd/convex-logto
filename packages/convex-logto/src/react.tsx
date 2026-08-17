@@ -29,6 +29,7 @@ import {
   isSafeReturnTo,
 } from "./callback";
 import type { LogtoConfigQueryRef, LogtoPublicConfig } from "./config";
+import { normalizeLogtoPublicConfig } from "./component/endpoint";
 
 const DEFAULT_CALLBACK_PATH = "/callback";
 
@@ -289,7 +290,7 @@ function CodeExchange({
   // re-arms the timer, so a slow-but-legit sign-in is never abandoned mid-exchange.
   const [timedOut, setTimedOut] = useState(false);
   useEffect(() => {
-    if (isAuthenticated || isLoading) return;
+    if (isAuthenticated || isLoading) return undefined;
     const timer = setTimeout(
       () => setTimedOut(true),
       STALE_CALLBACK_TIMEOUT_MS,
@@ -384,10 +385,10 @@ export type ConvexLogtoProviderProps = CommonProviderProps &
   (
     | {
         /**
-         * Your Logto public config, statically: `{ endpoint, appId }`. Both are
-         * public values (the OAuth client id is not a secret) — pass them from
-         * build-time env (`VITE_…` / `NEXT_PUBLIC_…`). This is the default,
-         * fastest path: no config round-trip before sign-in is interactive.
+         * Your Logto public config, statically: `{ endpoint, appId,
+         * allowInsecureHttp? }`. Both OAuth values are public (the client id is
+         * not a secret). Non-loopback HTTP requires that explicit opt-in; HTTPS
+         * is the default. This is the fastest path: no config round-trip.
          */
         config: LogtoPublicConfig;
         configQuery?: never;
@@ -451,7 +452,7 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
   const [fetched, setFetched] = useState<ConfigState>({ status: "loading" });
 
   useEffect(() => {
-    if (!configQuery) return;
+    if (!configQuery) return undefined;
     let active = true;
     // Don't reset to "loading" on re-run: once resolved, demoting back would
     // unmount the live Logto tree mid-session and drop the identity.
@@ -468,8 +469,12 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
     };
   }, [client, configQuery]);
 
-  const resolved: LogtoPublicConfig | undefined =
+  const unresolved: LogtoPublicConfig | undefined =
     staticConfig ?? (fetched.status === "ready" ? fetched.config : undefined);
+  const resolved =
+    unresolved === undefined
+      ? undefined
+      : normalizeLogtoPublicConfig(unresolved);
 
   // Key the memo on scalar contents, not object identity, so a fresh `config`/
   // `scopes`/`resources` value each render doesn't rebuild the LogtoClient.
@@ -611,10 +616,15 @@ export function useLogtoAuth(): LogtoAuth {
   useEffect(() => {
     let active = true;
     if (isAuthenticated) {
-      // Resolves undefined on failure (never rejects).
-      getIdTokenClaims().then((claims) => {
-        if (active) setUser(claims);
-      });
+      // The SDK documents undefined on failure; still contain an unexpected
+      // rejection so a third-party regression cannot become unhandled.
+      void getIdTokenClaims()
+        .then((claims) => {
+          if (active) setUser(claims);
+        })
+        .catch(() => {
+          if (active) setUser(undefined);
+        });
     } else {
       setUser(undefined);
     }

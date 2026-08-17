@@ -16,7 +16,7 @@ export type SessionDeviceBinding = {
 
 /** Minimal persistence seam: IndexedDB in production, in-memory in unit tests. */
 export type SessionDeviceKeyRepository = {
-  read(): Promise<unknown | undefined>;
+  read(): Promise<unknown>;
   /** Returns false when another tab won the first-write race. */
   add(keyPair: CryptoKeyPair): Promise<boolean>;
 };
@@ -32,28 +32,35 @@ function unavailable(cause?: unknown): SessionDeviceBindingError {
   );
 }
 
-function isCryptoKey(value: unknown, type: KeyType, usage: KeyUsage): boolean {
+function isCryptoKey(
+  value: unknown,
+  type: KeyType,
+  usage: KeyUsage,
+): value is CryptoKey {
   if (typeof value !== "object" || value === null) return false;
-  const key = value as Partial<CryptoKey>;
-  const algorithm = key.algorithm as
-    | (KeyAlgorithm & { namedCurve?: unknown })
-    | undefined;
+  if (!("algorithm" in value)) return false;
+  const algorithm = value.algorithm;
+  if (typeof algorithm !== "object" || algorithm === null) return false;
   return (
-    key.type === type &&
-    algorithm?.name === "ECDSA" &&
+    "type" in value &&
+    value.type === type &&
+    "name" in algorithm &&
+    algorithm.name === "ECDSA" &&
+    "namedCurve" in algorithm &&
     algorithm.namedCurve === "P-256" &&
-    Array.isArray(key.usages) &&
-    key.usages.includes(usage)
+    "usages" in value &&
+    Array.isArray(value.usages) &&
+    value.usages.includes(usage)
   );
 }
 
 function isDeviceKeyPair(value: unknown): value is CryptoKeyPair {
   if (typeof value !== "object" || value === null) return false;
-  const pair = value as Partial<CryptoKeyPair>;
+  if (!("privateKey" in value) || !("publicKey" in value)) return false;
   return (
-    isCryptoKey(pair.privateKey, "private", "sign") &&
-    pair.privateKey?.extractable === false &&
-    isCryptoKey(pair.publicKey, "public", "verify")
+    isCryptoKey(value.privateKey, "private", "sign") &&
+    !value.privateKey.extractable &&
+    isCryptoKey(value.publicKey, "public", "verify")
   );
 }
 
@@ -144,11 +151,11 @@ export class WebCryptoSessionDeviceBinding implements SessionDeviceBinding {
 
 class IndexedDbDeviceKeyRepository implements SessionDeviceKeyRepository {
   constructor(
-    private factory: IDBFactory,
+    private factory: IDBFactory | null,
     private databaseName: string,
   ) {}
 
-  async read(): Promise<unknown | undefined> {
+  async read(): Promise<unknown> {
     const database = await this.open();
     try {
       return await new Promise((resolve, reject) => {
@@ -156,7 +163,10 @@ class IndexedDbDeviceKeyRepository implements SessionDeviceKeyRepository {
           .transaction(DEVICE_KEY_STORE, "readonly")
           .objectStore(DEVICE_KEY_STORE)
           .get(DEVICE_KEY_ID);
-        request.onsuccess = () => resolve(request.result as unknown);
+        request.onsuccess = () => {
+          const result: unknown = request.result;
+          resolve(result);
+        };
         request.onerror = () => reject(request.error ?? unavailable());
       });
     } finally {
@@ -189,8 +199,10 @@ class IndexedDbDeviceKeyRepository implements SessionDeviceKeyRepository {
   }
 
   private open(): Promise<IDBDatabase> {
+    const factory = this.factory;
+    if (factory === null) return Promise.reject(unavailable());
     return new Promise((resolve, reject) => {
-      const request = this.factory.open(
+      const request = factory.open(
         this.databaseName,
         DEVICE_KEY_DATABASE_VERSION,
       );
@@ -215,12 +227,7 @@ export function createSessionDeviceBinding(
 ): SessionDeviceBinding {
   return new WebCryptoSessionDeviceBinding(
     new IndexedDbDeviceKeyRepository(
-      factory ??
-        ({
-          open: () => {
-            throw unavailable();
-          },
-        } as unknown as IDBFactory),
+      factory,
       `convex-logto:${namespace}:device-binding`,
     ),
   );

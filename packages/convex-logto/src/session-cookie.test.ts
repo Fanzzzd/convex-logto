@@ -208,6 +208,56 @@ describe("request validation", () => {
     expect(consoleError).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
+
+  it.each([
+    ["without Content-Length", undefined],
+    ["with a falsely small Content-Length", "1"],
+  ])(
+    "returns 413 for a cookie request over 64 KiB %s",
+    async (_name, length) => {
+      const { handler, action } = makeHarness();
+      const headers = new Headers({
+        Origin: APP_ORIGIN,
+        [LOGTO_SESSION_CSRF_HEADER]: LOGTO_SESSION_CSRF_VALUE,
+        "Content-Type": "application/json",
+      });
+      if (length !== undefined) headers.set("Content-Length", length);
+      const oversized = new Request(`${APP_ORIGIN}${BASE_PATH}/sign-in`, {
+        method: "POST",
+        headers,
+        body: "x".repeat(64 * 1024 + 1),
+      });
+
+      const response = await handler(oversized);
+
+      expect(response.status).toBe(413);
+      expect(action).not.toHaveBeenCalled();
+    },
+  );
+
+  it("returns 400 when a cookie request body stream fails", async () => {
+    const { handler, action } = makeHarness();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("read failed"));
+      },
+    });
+    const failing = new Request(`${APP_ORIGIN}${BASE_PATH}/sign-in`, {
+      method: "POST",
+      headers: {
+        Origin: APP_ORIGIN,
+        [LOGTO_SESSION_CSRF_HEADER]: LOGTO_SESSION_CSRF_VALUE,
+        "Content-Type": "application/json",
+      },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+
+    const response = await handler(failing);
+
+    expect(response.status).toBe(400);
+    expect(action).not.toHaveBeenCalled();
+  });
 });
 
 describe("cookie session flows", () => {
@@ -492,6 +542,297 @@ describe("browser transport", () => {
       postLogoutRedirectUri: APP_ORIGIN,
       everywhere: true,
     });
+  });
+
+  it.each([
+    [
+      "sign-in",
+      api.signIn,
+      { redirectUri: `${APP_ORIGIN}/callback` },
+      {
+        url: " HTTPS://AUTH.EXAMPLE.COM:443/oidc/auth?state=one two ",
+      },
+      { url: "https://auth.example.com/oidc/auth?state=one%20two" },
+    ],
+    [
+      "sign-out",
+      api.signOut,
+      { sessionToken: COOKIE_SESSION_MARKER },
+      { endSessionUrl: "http://LOCALHOST:80/oidc/session/end" },
+      { endSessionUrl: "http://localhost/oidc/session/end" },
+    ],
+  ] as const)(
+    "canonicalizes a valid %s navigation response",
+    async (_route, action, args, responseBody, expected) => {
+      const transport = createLogtoSessionCookieTransport(api, {
+        endpoint: BASE_PATH,
+        fetch: vi
+          .fn<typeof globalThis.fetch>()
+          .mockResolvedValue(Response.json(responseBody)),
+      });
+
+      await expect(transport.action(action, args)).resolves.toEqual(expected);
+    },
+  );
+
+  it.each([
+    [
+      "sign-in",
+      api.signIn,
+      { redirectUri: `${APP_ORIGIN}/callback` },
+      { url: "javascript:alert(document.domain)" },
+    ],
+    [
+      "callback",
+      api.callback,
+      {
+        code: "code-1",
+        state: "state-1",
+        redirectUri: `${APP_ORIGIN}/callback`,
+      },
+      { unexpected: true },
+    ],
+    [
+      "token",
+      api.refresh,
+      { sessionToken: COOKIE_SESSION_MARKER },
+      { unexpected: true },
+    ],
+    [
+      "sign-out",
+      api.signOut,
+      { sessionToken: COOKIE_SESSION_MARKER },
+      { endSessionUrl: "javascript:alert(document.domain)" },
+    ],
+    [
+      "sign-in-credentials",
+      api.signIn,
+      { redirectUri: `${APP_ORIGIN}/callback` },
+      { url: "https://alice@auth.example.com/oidc/auth" },
+    ],
+    [
+      "sign-out-invalid-url",
+      api.signOut,
+      { sessionToken: COOKIE_SESSION_MARKER },
+      { endSessionUrl: "not an absolute URL" },
+    ],
+    [
+      "sign-out-everywhere",
+      api.signOutEverywhere!,
+      { sessionToken: COOKIE_SESSION_MARKER },
+      { count: -1 },
+    ],
+  ] as const)(
+    "rejects a malformed successful %s response at the Fetch boundary",
+    async (_route, action, args, responseBody) => {
+      const transport = createLogtoSessionCookieTransport(api, {
+        endpoint: BASE_PATH,
+        fetch: vi
+          .fn<typeof globalThis.fetch>()
+          .mockResolvedValue(Response.json(responseBody)),
+      });
+
+      await expect(transport.action(action, args)).rejects.toThrow(
+        /returned an invalid response/,
+      );
+    },
+  );
+
+  it("times out a custom fetch while waiting for response headers", async () => {
+    vi.useFakeTimers();
+    let observedSignal: AbortSignal | undefined;
+    let markFetchStarted = () => {};
+    const fetchStarted = new Promise<void>((resolve) => {
+      markFetchStarted = resolve;
+    });
+    const fetchMock = vi.fn<typeof globalThis.fetch>((_input, init) => {
+      observedSignal = init?.signal ?? undefined;
+      markFetchStarted();
+      return new Promise<Response>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("test fallback")), 10_001);
+      });
+    });
+    const transport = createLogtoSessionCookieTransport(api, {
+      endpoint: BASE_PATH,
+      fetch: fetchMock,
+    });
+    const action = transport.action(api.refresh, {
+      sessionToken: COOKIE_SESSION_MARKER,
+    });
+    void action.catch(() => {});
+    try {
+      await fetchStarted;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(observedSignal?.aborted).toBe(true);
+      await expect(action).rejects.toThrow(/timed out/i);
+      const [, init] = fetchMock.mock.calls[0]!;
+      expect(init).toMatchObject({
+        method: "POST",
+        credentials: "include",
+      });
+      expect(new Headers(init?.headers).get(LOGTO_SESSION_CSRF_HEADER)).toBe(
+        LOGTO_SESSION_CSRF_VALUE,
+      );
+    } finally {
+      await vi.advanceTimersByTimeAsync(1);
+      await action.catch(() => {});
+      vi.useRealTimers();
+    }
+  });
+
+  it("times out and cancels a hanging custom response body", async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    let observedSignal: AbortSignal | undefined;
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation((_input, init) => {
+        observedSignal = init?.signal ?? undefined;
+        const stream = new ReadableStream<Uint8Array>({
+          pull() {
+            // Remain pending until the transport aborts or the test fallback.
+          },
+          cancel,
+        });
+        setTimeout(() => {}, 10_001);
+        return Promise.resolve(new Response(stream));
+      });
+    const transport = createLogtoSessionCookieTransport(api, {
+      endpoint: BASE_PATH,
+      fetch: fetchMock,
+    });
+    const action = transport.action(api.refresh, {
+      sessionToken: COOKIE_SESSION_MARKER,
+    });
+    void action.catch(() => {});
+    try {
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(observedSignal?.aborted).toBe(true);
+      await expect(action).rejects.toThrow(/timed out/i);
+      await Promise.resolve();
+      expect(cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      await vi.advanceTimersByTimeAsync(1);
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a falsely-small response after the first byte over 256 KiB", async () => {
+    const cancel = vi.fn();
+    const chunks = [new Uint8Array(256 * 1024), new Uint8Array([0])] as const;
+    let chunkIndex = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks[chunkIndex];
+        if (chunk === undefined) return;
+        chunkIndex += 1;
+        controller.enqueue(chunk);
+      },
+      cancel,
+    });
+    const transport = createLogtoSessionCookieTransport(api, {
+      endpoint: BASE_PATH,
+      fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(stream, {
+          headers: { "Content-Length": "1" },
+        }),
+      ),
+    });
+
+    await expect(
+      transport.action(api.refresh, {
+        sessionToken: COOKIE_SESSION_MARKER,
+      }),
+    ).rejects.toThrow(/response is too large/i);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies a custom response stream failure without parsing it", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("stream failed"));
+      },
+    });
+    const transport = createLogtoSessionCookieTransport(api, {
+      endpoint: BASE_PATH,
+      fetch: vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response(stream)),
+    });
+
+    await expect(
+      transport.action(api.refresh, {
+        sessionToken: COOKIE_SESSION_MARKER,
+      }),
+    ).rejects.toThrow(/could not read/i);
+  });
+
+  it("clears the browser transport timer after a successful response", async () => {
+    vi.useFakeTimers();
+    const transport = createLogtoSessionCookieTransport(api, {
+      endpoint: BASE_PATH,
+      fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        Response.json({
+          idToken: "id-token-1",
+          sessionId: "session-id-1",
+        }),
+      ),
+    });
+    try {
+      await expect(
+        transport.action(api.refresh, {
+          sessionToken: COOKIE_SESSION_MARKER,
+        }),
+      ).resolves.toMatchObject({ idToken: "id-token-1" });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves a small non-2xx handler ConvexError", async () => {
+    const transport = createLogtoSessionCookieTransport(api, {
+      endpoint: BASE_PATH,
+      fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        Response.json(
+          {
+            error: {
+              kind: "terminal",
+              code: "session_not_found",
+              message: "Sign in again.",
+            },
+          },
+          { status: 401 },
+        ),
+      ),
+    });
+
+    await expect(
+      transport.action(api.refresh, {
+        sessionToken: COOKIE_SESSION_MARKER,
+      }),
+    ).rejects.toMatchObject({
+      data: {
+        kind: "terminal",
+        code: "session_not_found",
+        message: "Sign in again.",
+      },
+    });
+  });
+
+  it("preserves an immediate custom Fetch rejection", async () => {
+    const networkError = new TypeError("custom fetch failed");
+    const transport = createLogtoSessionCookieTransport(api, {
+      endpoint: BASE_PATH,
+      fetch: vi.fn<typeof globalThis.fetch>().mockRejectedValue(networkError),
+    });
+
+    await expect(
+      transport.action(api.refresh, {
+        sessionToken: COOKIE_SESSION_MARKER,
+      }),
+    ).rejects.toBe(networkError);
   });
 });
 

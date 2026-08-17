@@ -74,15 +74,17 @@ export type ConvexLogtoSessionProviderProps = {
   navigate?: (to: string) => void;
   /**
    * Where the short-lived ID token persists. `"session"` (default): per-tab
-   * sessionStorage — an unexpired token makes reload a zero-round-trip
-   * authenticate. `"memory"`: strictest, every reload refreshes. `"local"`:
-   * shared across tabs and restarts. By default the one-time session token
-   * lives in localStorage; `cookieTransport` moves it into an HttpOnly cookie.
+   * sessionStorage — an unexpired token can restore without refresh while its
+   * paired component-session marker remains. `"memory"`: strictest, every
+   * reload refreshes. `"local"`: shared across tabs and restarts. By default
+   * the rotating session token lives in localStorage; `cookieTransport` moves
+   * it into an HttpOnly cookie.
    */
   tokenStorage?: TokenStorageKind;
   /**
-   * Bind refreshes to a non-extractable ECDSA key persisted in IndexedDB.
-   * Default `false`. Cannot be combined with `cookieTransport`.
+   * Bind refresh and revocation operations to a non-extractable ECDSA key
+   * persisted in IndexedDB. Default `false`. Cannot be combined with
+   * `cookieTransport`.
    */
   deviceBinding?: boolean;
   /**
@@ -113,8 +115,8 @@ export type ConvexLogtoSessionProviderProps = {
 
 /**
  * Session mode: Convex holds the Logto refresh token server-side (Traditional
- * Web app); the browser holds only a short-lived ID token and a one-time
- * rotating session token. Requires the session component
+ * Web app); the browser holds only a short-lived ID token and a rotating
+ * application session token. Requires the session component
  * (`app.use(logto)` in `convex/convex.config.ts`) and `logtoSessionApi(...)`
  * re-exported from your Convex functions.
  *
@@ -314,8 +316,8 @@ export type LogtoSessionAuth = {
    */
   signIn: (options?: { returnTo?: string }) => Promise<void>;
   /**
-   * Sign out: kills the session server-side (revoking Logto's grant), clears
-   * this browser's storage (other tabs follow via the storage event), then —
+   * Sign out: deletes the component Session and its server-held refresh token,
+   * clears this browser's storage (other tabs follow via the storage event), then —
    * unless `federated: false` — ends Logto's SSO session and returns to
    * `postLogoutRedirectUri` (default `window.location.origin`, which you must
    * register as a **Post sign-out redirect URI**).
