@@ -8,7 +8,7 @@ description: Every export from convex-logto and its web, native, and session-mod
 | Export | From | Purpose |
 | --- | --- | --- |
 | `logtoAuthConfig(opts?)` | `convex-logto` | Provider entry for `auth.config.ts`. Reads `LOGTO_ENDPOINT` / `LOGTO_APP_ID`. |
-| `logtoConfigQuery()` | `convex-logto` | Public query serving `{ endpoint, appId, allowInsecureHttp? }` to the frontend (runtime-config mode). |
+| `logtoConfigQuery(opts?)` | `convex-logto` | Public query serving `{ endpoint, appId, allowInsecureHttp? }` to the frontend (runtime-config mode). |
 | `logtoSync<DataModel>(handlers)` | `convex-logto` | Returns `{ sync }`, an internal mutation mapping user events to your tables. |
 | `registerLogtoWebhook(http, sync, opts?)` | `convex-logto` | Registers the verified webhook route. Reads `LOGTO_WEBHOOK_SIGNING_KEY`. |
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
