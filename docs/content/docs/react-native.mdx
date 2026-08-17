@@ -289,6 +289,11 @@ Logto browser session.
 | Cookie transport | optional, same-site only | unavailable |
 | Software device binding | optional on web | intentionally absent; SecureStore uses the OS keystore |
 
+Full runnable app: [`examples/expo-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo-session)
+— the native counterpart of `vite-react-session`, with the same nine-function
+`convex/auth.ts`, a device list, and a side-by-side comparison against the
+bridge-mode [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo).
+
 Native session mode therefore has no `tokenStorage`, `cookieTransport`, or
 `deviceBinding` provider props. If SecureStore is unavailable or fails, auth
 fails loudly through `onAuthError`; a sign-in action or system-browser

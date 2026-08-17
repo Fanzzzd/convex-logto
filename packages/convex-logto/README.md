@@ -368,7 +368,7 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 
 ### React Native / Expo
 
-For Expo bridge mode, import from **`convex-logto/native`** (built on [`@logto/rn`](https://github.com/logto-io/react-native)) instead of `convex-logto/react`. For server-held session mode, use **`convex-logto/native-session`** with `expo-secure-store` and `expo-web-browser`. Neither native entry needs a callback route — `signIn` opens the system browser and resolves on the deep-link return. See the [React Native guide](https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/react-native.mdx) and the runnable bridge-mode [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo) app; a dedicated session-mode example is tracked in [#43](https://github.com/Fanzzzd/convex-logto/issues/43).
+For Expo bridge mode, import from **`convex-logto/native`** (built on [`@logto/rn`](https://github.com/logto-io/react-native)) instead of `convex-logto/react`. For server-held session mode, use **`convex-logto/native-session`** with `expo-secure-store` and `expo-web-browser`. Neither native entry needs a callback route — `signIn` opens the system browser and resolves on the deep-link return. See the [React Native guide](https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/react-native.mdx) and the two runnable apps: bridge-mode [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo) and session-mode [`examples/expo-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo-session).
 
 ## License
 

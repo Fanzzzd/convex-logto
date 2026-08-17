@@ -81,7 +81,7 @@
     }
   },
   "scripts": {
-    "build": "tsup && tsc -p tsconfig.component.json",
+    "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsup && tsc -p tsconfig.component.json && node scripts/verify-build-artifacts.mjs",
     "check-types": "tsc --noEmit",
     "test": "vitest run",
     "lint": "oxlint --deny-warnings src",

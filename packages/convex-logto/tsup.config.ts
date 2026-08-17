@@ -12,6 +12,11 @@ const external = [
   /^react-native(\/.*)?$/,
 ];
 
+// Never set `clean` on any config here. These configs run concurrently, and
+// tsup's dts worker cleans `**/*.d.{ts,mts,cts}` across the whole outDir at
+// rollup `buildStart` with no negation — so one config's cleaner silently
+// deletes declarations its siblings have already emitted (egoist/tsup#1270).
+// The build script deletes `dist` once, up front, instead.
 const shared = {
   dts: true,
   sourcemap: true,
@@ -25,7 +30,6 @@ export default defineConfig([
     ...shared,
     entry: { index: "src/index.ts" },
     format: ["esm", "cjs"],
-    clean: true,
   },
   // `@logto/react@4` is ESM-only, so `./react` is ESM-only too: emitting a
   // `react.cjs` that `require("@logto/react")` would be a runtime trap.
