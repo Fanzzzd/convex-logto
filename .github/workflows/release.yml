@@ -15,43 +15,49 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
       # Trusted publishing (OIDC) requires npm >= 11.5.1; the runner ships older.
-      # Pin the major to avoid a future npm release silently changing publish behavior.
+      # Pin exactly to avoid a future npm release silently changing publish behavior.
       - name: Update npm for trusted publishing
-        run: npm install -g npm@^11.5.1
+        run: npm install -g npm@11.19.0
 
       - run: pnpm install --frozen-lockfile
 
-      # Verify the published library before releasing (scoped — docs deploys via Vercel).
-      - run: pnpm --filter convex-logto lint
+      - name: Audit dependencies
+        run: pnpm audit:dependencies
 
-      - run: pnpm --filter convex-logto format:check
+      # Verify the library, docs, and examples before releasing.
+      - run: pnpm lint
 
-      - run: pnpm --filter convex-logto check-types
+      - run: pnpm format:check
 
-      - run: pnpm --filter convex-logto test
+      - run: pnpm check-types
 
-      - run: pnpm --filter convex-logto build
+      - run: pnpm test
 
-      - run: pnpm --filter convex-logto lint:package
+      - run: pnpm build
+        env:
+          NEXT_PUBLIC_CONVEX_URL: https://ci-placeholder.convex.cloud
+
+      - run: pnpm lint:package
 
       - name: Create "Version Packages" PR or publish to npm
-        uses: changesets/action@v1
+        uses: changesets/action@198f833dd7d863100ea6e28967bc9a9fdefadb0a # v2.1.0
         with:
-          version: pnpm version-packages
-          publish: pnpm release
-          commit: "chore: version packages"
-          title: "chore: version packages"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # No NPM_TOKEN: publishing authenticates via OIDC trusted publishing.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version-script: pnpm version-packages
+          publish-script: pnpm release
+          commit-message: "chore: version packages"
+          pr-title: "chore: version packages"
+        # No NPM_TOKEN: publishing authenticates via OIDC trusted publishing.

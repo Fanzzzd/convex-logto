@@ -12,29 +12,33 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
-      # Scoped to the published library; the docs site is built/deployed by Vercel.
+      - name: Audit dependencies
+        run: pnpm audit:dependencies
+
       - name: Lint (oxlint)
-        run: pnpm --filter convex-logto lint
+        run: pnpm lint
 
       - name: Format check (oxfmt)
-        run: pnpm --filter convex-logto format:check
+        run: pnpm format:check
 
-      - run: pnpm --filter convex-logto check-types
+      - run: pnpm check-types
 
-      - run: pnpm --filter convex-logto test
+      - run: pnpm test
 
-      - run: pnpm --filter convex-logto build
+      - run: pnpm build
+        env:
+          NEXT_PUBLIC_CONVEX_URL: https://ci-placeholder.convex.cloud
 
       - name: Validate published package (publint + are-the-types-wrong)
-        run: pnpm --filter convex-logto lint:package
+        run: pnpm lint:package
