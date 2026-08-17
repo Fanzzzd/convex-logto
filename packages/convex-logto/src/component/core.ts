@@ -578,6 +578,12 @@ export function audienceMatches(value: unknown, appId: string): boolean {
 // Terminal: the session/transaction is gone for good — the client clears its
 // state and transitions to unauthenticated. Transient: network/5xx/contention —
 // the client retries with backoff and NEVER treats it as a sign-out.
+//
+// One class of terminal error is about the *input*, not the session: a rejected
+// session label means "do not retry this value", and nothing about the session
+// died. The client validates label length before the round-trip so an app never
+// has to tell the two apart, and this guard stays as defence in depth for a
+// caller reaching the component directly.
 
 export type SessionErrorData = {
   kind: "terminal" | "transient";

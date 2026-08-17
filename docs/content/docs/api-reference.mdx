@@ -352,7 +352,8 @@ signOutEverywhere, listSessions, renameSession, revokeSession }`.
   authenticates with rotates) of the caller's own sessions, `{ sessions,
   truncated }`, newest first. Call it again after a rename or revoke.
 - `renameSession(sessionId, label)` — name one of the caller's own sessions;
-  `undefined` (or a blank string) clears it. Rejects with terminal
+  `undefined` (or a blank string) clears it. A label over 64 characters is
+  rejected locally, before any round-trip. Rejects with terminal
   `session_not_found` for an id that is not the caller's or is already revoked —
   the component will not confirm that another subject's session exists.
 - `revokeSession(sessionId)` — sign that device out; rejects the same way for an

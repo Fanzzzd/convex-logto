@@ -11,7 +11,7 @@ import {
   type LogtoAuthEventSource,
 } from "./auth-events";
 import { classifySignInSearch, isSafeReturnTo } from "./callback";
-import { decodeJwtSegment } from "./component/core";
+import { SESSION_LABEL_MAX_LENGTH, decodeJwtSegment } from "./component/core";
 import { normalizeHttpNavigationUrl } from "./component/endpoint";
 import {
   SessionDeviceBindingError,
@@ -1152,6 +1152,19 @@ export class SessionAuthEngine {
   ): Promise<void> {
     const action = this.options.api.renameSession;
     if (action === undefined) throw sessionApiUpgradeError("renameSession");
+    // Check the length here rather than learn it from the server. The component
+    // reports an over-long label as a *terminal* session error, and terminal is
+    // defined as "this session is gone" — an app that follows that taxonomy
+    // would sign the user out for typing a long device name. Failing locally
+    // also saves a round-trip on an input the user can simply shorten.
+    if (
+      label !== undefined &&
+      Array.from(label).length > SESSION_LABEL_MAX_LENGTH
+    ) {
+      throw new Error(
+        `convex-logto: a session label may be at most ${SESSION_LABEL_MAX_LENGTH} characters.`,
+      );
+    }
     const credential = await this.sessionCallCredential("renameSession");
     await this.callSessionAction("renameSession", () =>
       this.options.transport.action(action, {
