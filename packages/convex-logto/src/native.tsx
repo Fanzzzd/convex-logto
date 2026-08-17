@@ -115,8 +115,8 @@ export type ConvexLogtoProviderProps = {
    * Opt-in phase timings for the auth bootstrap. Absent (the default), nothing
    * is measured or emitted. See [`LogtoAuthEvent`](./auth-events).
    *
-   * Native bridge mode emits `bootstrap_start`, `config_loaded` (with
-   * `configQuery`), and `convex_authenticated`: `@logto/rn` owns the credential
+   * Native bridge mode emits `bootstrap_start`, `convex_authenticated`, and —
+   * only with `configQuery` — `config_loaded`: `@logto/rn` owns the credential
    * lifecycle, so the settle and refresh phases belong to session mode.
    */
   onAuthEvent?: LogtoAuthEventHandler;
