@@ -27,6 +27,7 @@ import {
   generateToken,
   hashToken,
   SESSION_LIST_LIMIT,
+  SESSION_LIST_SCAN_LIMIT,
   isOutcomeUnknownError,
   isPreviousTokenWithinReuseWindow,
   normalizeClientDescriptor,
@@ -1355,18 +1356,29 @@ export const listSubjectSessions = internalQuery({
   }),
   handler: async (ctx, args) => {
     const cutoff = await subjectRevokedAt(ctx.db, args.subject);
-    const rows = await ctx.db
+    // Stream rather than `take(LIMIT + 1)`: sid-revoked rows are dropped after
+    // the read, so a fixed page could spend every slot on rows awaiting cleanup
+    // and hide the live devices behind them. Scanning is bounded instead.
+    const rows = ctx.db
       .query("sessions")
       .withIndex("by_subject_createdAt", (q) =>
         q
           .eq("subject", args.subject)
           .gt("createdAt", cutoff ?? Number.MIN_SAFE_INTEGER),
       )
-      .order("desc")
-      .take(SESSION_LIST_LIMIT + 1);
+      .order("desc");
     const sidCutoffs = new Map<string, number | undefined>();
-    const sessions = [];
-    for (const session of rows.slice(0, SESSION_LIST_LIMIT)) {
+    const sessions: SessionSummary[] = [];
+    let scanned = 0;
+    let truncated = false;
+    for await (const session of rows) {
+      if (scanned === SESSION_LIST_SCAN_LIMIT) {
+        // Stopped early with rows left: there may be more live sessions, and
+        // saying so beats an unbounded scan or a silent omission.
+        truncated = true;
+        break;
+      }
+      scanned += 1;
       let sidCutoff: number | undefined;
       if (session.sid === undefined) {
         sidCutoff = undefined;
@@ -1379,6 +1391,10 @@ export const listSubjectSessions = internalQuery({
       // A row awaiting bounded cleanup is already dead; it must not appear in a
       // list whose entire purpose is telling the user where they are signed in.
       if (sidCutoff !== undefined && session.createdAt <= sidCutoff) continue;
+      if (sessions.length === SESSION_LIST_LIMIT) {
+        truncated = true;
+        break;
+      }
       sessions.push({
         sessionId: session._id,
         current: session._id === args.callerSessionId,
@@ -1389,7 +1405,7 @@ export const listSubjectSessions = internalQuery({
         deviceBound: session.devicePublicKey !== undefined,
       });
     }
-    return { sessions, truncated: rows.length > SESSION_LIST_LIMIT };
+    return { sessions, truncated };
   },
 });
 

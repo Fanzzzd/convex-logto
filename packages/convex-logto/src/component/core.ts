@@ -27,6 +27,14 @@ export const CLIENT_DESCRIPTOR_MAX_LENGTH = 32;
  */
 export const SESSION_LIST_LIMIT = 16;
 
+/**
+ * How many rows one `listSessions` call may read while filling that page.
+ * Sessions killed by a `sid` watermark are filtered after the read, so the scan
+ * must be allowed to walk past them — but only this far, to keep the query's
+ * work bounded no matter how much revoked state is awaiting cleanup.
+ */
+export const SESSION_LIST_SCAN_LIMIT = 128;
+
 /** Self-reported, unauthenticated description of a signing-in client. */
 export type SessionClientDescriptor = {
   platform?: string;

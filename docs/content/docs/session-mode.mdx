@@ -215,8 +215,11 @@ for a bounded cleanup batch.
 `listSessions()` is a snapshot, not a reactive query — the credential it
 authenticates with rotates roughly every ID-token lifetime, and a subscription
 keyed on a rotating credential would resubscribe on every rotation. Call it again
-after a rename or revoke. It returns at most 16 sessions, newest first, with
-`truncated: true` when the subject has more.
+after a rename or revoke. It returns at most 16 live sessions, newest first, with
+`truncated: true` when more remain. Rows killed by a watermark are skipped
+without consuming a slot, so a burst of revoked-but-not-yet-deleted sessions can
+never hide the live device behind them; the scan is bounded, and a page that
+stops at that bound also reports `truncated`.
 
 `revokeSession()` on the **current** session revokes the server side but leaves
 this client's local credentials in place; call `signOut()` when you mean "sign

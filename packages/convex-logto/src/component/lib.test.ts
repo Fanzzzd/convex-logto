@@ -19,6 +19,7 @@ import {
 } from "./lib";
 import {
   SESSION_LIST_LIMIT,
+  SESSION_LIST_SCAN_LIMIT,
   SESSION_TOKEN_GENERATION_LIMIT,
   toBase64Url,
 } from "./core";
@@ -1711,6 +1712,7 @@ function sessionListHarness(
   } = {},
 ) {
   let sessions = [...initial];
+  const scannedRows: Array<Record<string, unknown>> = [];
   const generations = [
     { _id: "generation-1", sessionId: "session-b", rotatedAt: 1 },
   ];
@@ -1775,6 +1777,14 @@ function sessionListHarness(
             direction = next;
             return result;
           },
+          // Convex query streams are async-iterable, and `listSubjectSessions`
+          // relies on that to stop reading as soon as its page is full.
+          async *[Symbol.asyncIterator]() {
+            for (const row of matching()) {
+              scannedRows.push(row);
+              yield row;
+            }
+          },
         };
         return result;
       },
@@ -1800,7 +1810,13 @@ function sessionListHarness(
       return Promise.resolve();
     },
   };
-  return { db, deleted, patches, sessions: () => sessions };
+  return {
+    db,
+    deleted,
+    patches,
+    sessions: () => sessions,
+    scanned: () => scannedRows.length,
+  };
 }
 
 const listSubjectSessionsHandler = internalHandler(
@@ -1892,6 +1908,86 @@ describe("listSubjectSessions", () => {
     );
 
     expect(result).toEqual({ sessions: [], truncated: false });
+  });
+
+  it("keeps live sessions visible behind a page-full of revoked rows", async () => {
+    // The sid watermark kills the newest SESSION_LIST_LIMIT rows while their
+    // physical rows wait for a cleanup batch. A fixed page read would spend
+    // every slot on them and hide the one device the user can still act on.
+    const harness = sessionListHarness(
+      [
+        ...Array.from({ length: SESSION_LIST_LIMIT }, (_unused, index) => ({
+          _id: `session-dead-${index}`,
+          subject: "subject-1",
+          sid: "sid-dead",
+          createdAt: 1_000 + index,
+          lastRefreshedAt: 1_000 + index,
+        })),
+        {
+          _id: "session-live",
+          subject: "subject-1",
+          createdAt: 500,
+          lastRefreshedAt: 500,
+        },
+      ],
+      { sids: [{ sid: "sid-dead", revokedAt: 2_000 }] },
+    );
+
+    const result = await listSubjectSessionsHandler(
+      { db: harness.db },
+      { subject: "subject-1", callerSessionId: "session-live" },
+    );
+
+    expect(result.sessions.map((session) => session.sessionId)).toEqual([
+      "session-live",
+    ]);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("stops at the scan limit and says so rather than reading unboundedly", async () => {
+    const harness = sessionListHarness(
+      Array.from(
+        { length: SESSION_LIST_SCAN_LIMIT + 10 },
+        (_unused, index) => ({
+          _id: `session-dead-${index}`,
+          subject: "subject-1",
+          sid: "sid-dead",
+          createdAt: index,
+          lastRefreshedAt: index,
+        }),
+      ),
+      { sids: [{ sid: "sid-dead", revokedAt: Number.MAX_SAFE_INTEGER }] },
+    );
+
+    const result = await listSubjectSessionsHandler(
+      { db: harness.db },
+      { subject: "subject-1", callerSessionId: "session-dead-0" },
+    );
+
+    expect(result).toEqual({ sessions: [], truncated: true });
+    // The cap plus the one row whose existence proves more remain.
+    expect(harness.scanned()).toBe(SESSION_LIST_SCAN_LIMIT + 1);
+  });
+
+  it("reads no further than the page it fills", async () => {
+    const harness = sessionListHarness(
+      Array.from({ length: SESSION_LIST_LIMIT + 20 }, (_unused, index) => ({
+        _id: `session-${index}`,
+        subject: "subject-1",
+        createdAt: index,
+        lastRefreshedAt: index,
+      })),
+    );
+
+    const result = await listSubjectSessionsHandler(
+      { db: harness.db },
+      { subject: "subject-1", callerSessionId: "session-0" },
+    );
+
+    expect(result.sessions).toHaveLength(SESSION_LIST_LIMIT);
+    expect(result.truncated).toBe(true);
+    // One row past the page proves truncation; nothing beyond it is read.
+    expect(harness.scanned()).toBe(SESSION_LIST_LIMIT + 1);
   });
 
   it("reports truncation past the page limit", async () => {

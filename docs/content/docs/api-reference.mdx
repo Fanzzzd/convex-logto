@@ -157,9 +157,12 @@ and retrying continues deletion. `count` is the number of physical rows removed
 by a completed cleanup, not the point when revocation became effective.
 
 `listSessions({ sessionToken, deviceProof? })` returns
-`{ sessions, truncated }` — at most 16 of the caller's own sessions, newest
-first, each `{ sessionId, current, createdAt, lastRefreshedAt, label?, client?,
-deviceBound }`. `renameSession({ sessionToken, targetSessionId, label? })` and
+`{ sessions, truncated }` — at most 16 of the caller's own *live* sessions,
+newest first, each `{ sessionId, current, createdAt, lastRefreshedAt, label?,
+client?, deviceBound }`. Sessions killed by a revocation watermark are skipped
+without consuming a page slot (a bounded scan walks past them), so pending
+cleanup can never hide a live device; `truncated` reports both "more sessions
+exist" and "the scan stopped at its bound". `renameSession({ sessionToken, targetSessionId, label? })` and
 `revokeSession({ sessionToken, targetSessionId })` return a boolean. All three
 derive the subject from the presented token exactly as `signOutEverywhere` does,
 so a `targetSessionId` owned by another subject — or already killed by a
