@@ -12,6 +12,7 @@ import type { LogtoSessionApi } from "./session";
 import {
   ConvexLogtoSessionProvider,
   useLogtoAuth,
+  type LogtoAuthEvent,
   type LogtoSessionClientDescriptor,
 } from "./react-session";
 
@@ -19,9 +20,13 @@ import {
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
+let convexAuthenticated = false;
 vi.mock("convex/react", () => ({
   ConvexProviderWithAuth: ({ children }: { children: ReactNode }) => children,
-  useConvexAuth: () => ({ isLoading: false, isAuthenticated: false }),
+  useConvexAuth: () => ({
+    isLoading: false,
+    isAuthenticated: convexAuthenticated,
+  }),
   useQuery: () => undefined,
 }));
 
@@ -55,7 +60,11 @@ function Probe() {
 }
 
 let root: Root | null = null;
-async function render(clientDescriptor?: LogtoSessionClientDescriptor) {
+let authEvents: LogtoAuthEvent[] = [];
+async function render(
+  clientDescriptor?: LogtoSessionClientDescriptor,
+  onAuthEvent?: (event: LogtoAuthEvent) => void,
+) {
   root ??= createRoot(document.createElement("div"));
   await act(async () => {
     root!.render(
@@ -63,6 +72,7 @@ async function render(clientDescriptor?: LogtoSessionClientDescriptor) {
         client={client}
         sessionApi={api}
         clientDescriptor={clientDescriptor}
+        onAuthEvent={onAuthEvent}
       >
         <Probe />
       </ConvexLogtoSessionProvider>,
@@ -76,6 +86,8 @@ beforeEach(() => {
   ).happyDOM.setURL("http://localhost:5173/");
   localStorage.clear();
   sessionStorage.clear();
+  convexAuthenticated = false;
+  authEvents = [];
   callback.mockReset().mockResolvedValue({
     idToken: "id-token",
     sessionToken: "session-token",
@@ -127,4 +139,34 @@ it("passes the descriptor through to the exchange", async () => {
       client: { platform: "web", browser: "Firefox" },
     }),
   );
+});
+
+it("reports convex_authenticated once Convex accepts the token, and only once", async () => {
+  // The phase an app actually measures against: the first authenticated query.
+  await render(undefined, (event) => authEvents.push(event));
+  expect(authEvents.map((event) => event.phase)).not.toContain(
+    "convex_authenticated",
+  );
+
+  convexAuthenticated = true;
+  await render(undefined, (event) => authEvents.push(event));
+  // Convex drops and regains auth on a reconnect or a forced token refresh;
+  // that is not a second bootstrap, so it must not look like one.
+  convexAuthenticated = false;
+  await render(undefined, (event) => authEvents.push(event));
+  convexAuthenticated = true;
+  await render(undefined, (event) => authEvents.push(event));
+
+  expect(
+    authEvents.filter((event) => event.phase === "convex_authenticated"),
+  ).toHaveLength(1);
+});
+
+it("keeps one engine when only the event handler's identity changes", async () => {
+  await render(undefined, () => {});
+  const first = capturedSignIn;
+
+  await render(undefined, () => {});
+
+  expect(capturedSignIn).toBe(first);
 });

@@ -16,6 +16,7 @@ import {
   type StoredSession,
   type TokenStorageKind,
 } from "./session-client";
+import type { LogtoAuthEvent } from "./auth-events";
 import type { LogtoSessionApi } from "./session";
 import {
   SessionDeviceBindingError,
@@ -98,6 +99,7 @@ function makeHarness(options?: {
   sessionApi?: LogtoSessionApi;
   storage?: SessionStorageAdapter;
   serverHeldCredential?: boolean;
+  onAuthEvent?: (event: LogtoAuthEvent) => void;
   clientDescriptor?: {
     platform?: string;
     os?: string;
@@ -142,6 +144,7 @@ function makeHarness(options?: {
     deviceBinding: options?.deviceBinding,
     serverHeldCredential: options?.serverHeldCredential,
     clientDescriptor: () => options?.clientDescriptor,
+    onAuthEvent: options?.onAuthEvent,
     navigate,
     onAuthError,
     sleep: () => Promise.resolve(), // skip retry backoff in tests
@@ -1750,5 +1753,148 @@ describe("client descriptor", () => {
     expect(harness.handlers.callback).toHaveBeenCalledWith(
       expect.objectContaining({ client: { os: "macOS" } }),
     );
+  });
+});
+
+describe("auth phase events", () => {
+  const phasesOf = (events: LogtoAuthEvent[]) =>
+    events.map((event) => event.phase);
+
+  function eventHarness(options?: Parameters<typeof makeHarness>[0]) {
+    const events: LogtoAuthEvent[] = [];
+    const harness = makeHarness({
+      ...options,
+      onAuthEvent: (event) => events.push(event),
+    });
+    return { ...harness, events };
+  }
+
+  it("reports a cached restore as the mount's one settle", async () => {
+    const { engine, events } = eventHarness({
+      storedSession: { token: "t1", sessionId: "s1" },
+      storedIdToken: freshToken(),
+    });
+
+    engine.start();
+    await settled(engine);
+
+    expect(phasesOf(events)).toEqual(["bootstrap_start", "session_restored"]);
+    expect(events[1]).toMatchObject({ source: "cache" });
+    // Monotonic and non-negative, whatever clock the platform provides.
+    expect(events[1]!.elapsedMs).toBeGreaterThanOrEqual(events[0]!.elapsedMs);
+  });
+
+  it("reports a refresh restore, with the refresh bracketed", async () => {
+    const { engine, handlers, events } = eventHarness({
+      storedSession: { token: "t1", sessionId: "s1" },
+    });
+    handlers.refresh.mockResolvedValue({
+      idToken: freshToken(),
+      sessionToken: "t2",
+      sessionId: "s1",
+    });
+
+    engine.start();
+    await settled(engine);
+
+    expect(phasesOf(events)).toEqual([
+      "bootstrap_start",
+      "refresh_started",
+      "refresh_succeeded",
+      "session_restored",
+    ]);
+    expect(events.at(-1)).toMatchObject({ source: "refresh" });
+  });
+
+  it("classifies a failed refresh so a regression can be told from an outage", async () => {
+    const { engine, handlers, events } = eventHarness({
+      storedSession: { token: "t1", sessionId: "s1" },
+    });
+    handlers.refresh.mockRejectedValue(terminalError());
+
+    engine.start();
+    await settled(engine);
+
+    expect(phasesOf(events)).toEqual([
+      "bootstrap_start",
+      "refresh_started",
+      "refresh_failed",
+      "unauthenticated",
+    ]);
+    expect(events[2]).toMatchObject({ errorKind: "terminal" });
+  });
+
+  it("reports the callback exchange as the settle source", async () => {
+    const { engine, storage, handlers, events } = eventHarness();
+    storage.stashTransaction({ state: "st" });
+    setURL("http://localhost:5173/callback?code=c&state=st");
+    handlers.callback.mockResolvedValue({
+      idToken: freshToken(),
+      sessionToken: "t1",
+      sessionId: "s1",
+    });
+
+    engine.start();
+    await settled(engine);
+
+    expect(events.at(-1)).toMatchObject({
+      phase: "session_restored",
+      source: "callback",
+    });
+  });
+
+  it("does not re-report the settle when a later refresh re-authenticates", async () => {
+    // A long-lived tab must not look like it keeps re-mounting.
+    const { engine, handlers, events } = eventHarness({
+      storedSession: { token: "t1", sessionId: "s1" },
+      storedIdToken: freshToken(),
+    });
+    engine.start();
+    await settled(engine);
+    handlers.refresh.mockResolvedValue({
+      idToken: freshToken(),
+      sessionToken: "t2",
+      sessionId: "s1",
+    });
+
+    // Serve the cached token first, so the forced fetch has one to reject.
+    await engine.fetchAccessToken(false);
+    await engine.fetchAccessToken(true);
+
+    expect(phasesOf(events)).toEqual([
+      "bootstrap_start",
+      "session_restored",
+      "refresh_started",
+      "refresh_succeeded",
+    ]);
+  });
+
+  it("reports revocation and sign-out", async () => {
+    const { engine, storage, handlers, events } = eventHarness({
+      storedSession: { token: "t1", sessionId: "s1" },
+      storedIdToken: freshToken(),
+    });
+    engine.start();
+    await settled(engine);
+    engine.handleRevoked();
+    storage.writeSession({ token: "t2", sessionId: "s2" });
+    handlers.signOut.mockResolvedValue({});
+
+    await engine.signOut({ federated: false });
+
+    expect(phasesOf(events).slice(2)).toEqual(["revoked", "signed_out"]);
+  });
+
+  it("reports convex_authenticated only when the provider says so", async () => {
+    const { engine, events } = eventHarness({
+      storedSession: { token: "t1", sessionId: "s1" },
+      storedIdToken: freshToken(),
+    });
+    engine.start();
+    await settled(engine);
+
+    expect(phasesOf(events)).not.toContain("convex_authenticated");
+    engine.reportConvexAuthenticated();
+    expect(phasesOf(events).at(-1)).toBe("convex_authenticated");
   });
 });

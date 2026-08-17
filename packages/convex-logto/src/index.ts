@@ -15,6 +15,12 @@ export {
   type LogtoOidcProvider,
   type LogtoPublicConfig,
 } from "./config";
+export type {
+  LogtoAuthEvent,
+  LogtoAuthEventHandler,
+  LogtoAuthEventSource,
+  LogtoAuthPhase,
+} from "./auth-events";
 export {
   assertSubjectHasActiveSession,
   assertUserHasActiveSession,
