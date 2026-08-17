@@ -17,8 +17,14 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+import {
+  createAuthEventEmitter,
+  type AuthEventEmitter,
+  type LogtoAuthEventHandler,
+} from "./auth-events";
 import { useNativeAuthState } from "./auth-loading";
 import type { LogtoConfigQueryRef, LogtoPublicConfig } from "./config";
 import { normalizeLogtoPublicConfig } from "./component/endpoint";
@@ -105,6 +111,15 @@ export type ConvexLogtoProviderProps = {
    * from `fallback` (which renders before Convex is mounted).
    */
   fallback?: ReactNode;
+  /**
+   * Opt-in phase timings for the auth bootstrap. Absent (the default), nothing
+   * is measured or emitted. See [`LogtoAuthEvent`](./auth-events).
+   *
+   * Native bridge mode emits `bootstrap_start`, `config_loaded` (with
+   * `configQuery`), and `convex_authenticated`: `@logto/rn` owns the credential
+   * lifecycle, so the settle and refresh phases belong to session mode.
+   */
+  onAuthEvent?: LogtoAuthEventHandler;
   children: ReactNode;
 } & (
   | {
@@ -153,6 +168,7 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
     scopes,
     resources,
     fallback = null,
+    onAuthEvent,
     children,
   } = props;
   const staticConfig = props.config;
@@ -164,6 +180,19 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
     );
   }
 
+  // Opt-in phase timings. The emitter is built once per mount and reads the
+  // handler through a ref, so an inline arrow never rebuilds anything — and
+  // while the ref is empty (no `onAuthEvent`) an emit costs nothing.
+  const onAuthEventRef = useRef(onAuthEvent);
+  // Assigned during render, not in an effect: child effects run before the
+  // parent's, so the `convex_authenticated` watcher below would emit into a
+  // ref that still held the previous render's handler.
+  onAuthEventRef.current = onAuthEvent;
+  const events = useMemo(() => createAuthEventEmitter(onAuthEventRef), []);
+  useEffect(() => {
+    events("bootstrap_start");
+  }, [events]);
+
   // One-shot fetch (config is per-deployment, fixed at runtime), used only in
   // configQuery mode.
   const [fetched, setFetched] = useState<ConfigState>({ status: "loading" });
@@ -174,7 +203,9 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
     client
       .query(configQuery)
       .then((config) => {
-        if (active) setFetched({ status: "ready", config });
+        if (!active) return;
+        events("config_loaded");
+        setFetched({ status: "ready", config });
       })
       .catch((error: unknown) => {
         if (active) setFetched({ status: "error", error });
@@ -182,7 +213,7 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
     return () => {
       active = false;
     };
-  }, [client, configQuery]);
+  }, [client, configQuery, events]);
 
   const unresolved: LogtoPublicConfig | undefined =
     staticConfig ?? (fetched.status === "ready" ? fetched.config : undefined);
@@ -225,11 +256,27 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
     <RedirectUriContext.Provider value={redirectUri}>
       <LogtoProvider config={logtoConfig}>
         <ConvexProviderWithAuth client={client} useAuth={useAuthFromLogto}>
+          <ConvexAuthPhaseWatcher events={events} />
           {children}
         </ConvexProviderWithAuth>
       </LogtoProvider>
     </RedirectUriContext.Provider>
   );
+}
+
+/**
+ * `convex_authenticated` is the phase that matters to an app — the first moment
+ * an authenticated query can run — and only Convex knows when it arrives.
+ */
+function ConvexAuthPhaseWatcher({ events }: { events: AuthEventEmitter }) {
+  const { isAuthenticated } = useConvexAuth();
+  const reported = useRef(false);
+  useEffect(() => {
+    if (!isAuthenticated || reported.current) return;
+    reported.current = true;
+    events("convex_authenticated");
+  }, [events, isAuthenticated]);
+  return null;
 }
 
 export type LogtoAuth = {
@@ -311,3 +358,10 @@ export function useLogtoAuth(): LogtoAuth {
     [isAuthenticated, isLoading, user, doSignIn, doSignOut],
   );
 }
+
+export type {
+  LogtoAuthEvent,
+  LogtoAuthEventHandler,
+  LogtoAuthEventSource,
+  LogtoAuthPhase,
+} from "./auth-events";

@@ -4,6 +4,12 @@
 
 import type { FunctionReference } from "convex/server";
 import { ConvexError } from "convex/values";
+import {
+  createAuthEventEmitter,
+  type AuthEventEmitter,
+  type LogtoAuthEventSink,
+  type LogtoAuthEventSource,
+} from "./auth-events";
 import { classifySignInSearch, isSafeReturnTo } from "./callback";
 import { normalizeHttpNavigationUrl } from "./component/endpoint";
 import {
@@ -497,6 +503,12 @@ export type SessionEngineOptions = {
   /** Native system-browser/deep-link flow; absent preserves the web flow. */
   authFlow?: SessionAuthFlow;
   onAuthError?: (error: Error) => void;
+  /**
+   * Opt-in phase timings for the auth bootstrap. Absent — or a slot holding
+   * `undefined` — means nothing is measured at all. React providers pass a slot
+   * so a handler can arrive on a later render without rebuilding the engine.
+   */
+  onAuthEvent?: LogtoAuthEventSink;
   /** Injectable for tests. */
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -526,6 +538,9 @@ export class SessionAuthEngine {
   private serverSnapshot: SessionSnapshot;
   private listeners = new Set<() => void>();
   private started = false;
+  private readonly events: AuthEventEmitter;
+  /** The first settle is the one that answers "how long until the app could query". */
+  private settleReported = false;
   private inflightSignIn: Promise<void> | null = null;
   private inflightRefresh: Promise<string | null> | null = null;
   private storagePreparation: Promise<void> | null = null;
@@ -538,6 +553,7 @@ export class SessionAuthEngine {
 
   constructor(private options: SessionEngineOptions) {
     this.now = options.now ?? (() => Date.now());
+    this.events = createAuthEventEmitter(options.onAuthEvent);
     this.sleep =
       options.sleep ??
       ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -585,7 +601,11 @@ export class SessionAuthEngine {
     for (const listener of [...this.listeners]) listener();
   }
 
-  private setAuthenticated(idToken: string): void {
+  private setAuthenticated(
+    idToken: string,
+    source: LogtoAuthEventSource = "refresh",
+  ): void {
+    this.reportSettle("session_restored", source);
     this.setSnapshot({
       status: "authenticated",
       sessionId: this.options.storage.readSession()?.sessionId ?? null,
@@ -594,11 +614,26 @@ export class SessionAuthEngine {
   }
 
   private setUnauthenticated(): void {
+    this.reportSettle("unauthenticated");
     this.setSnapshot({
       status: "unauthenticated",
       sessionId: null,
       user: undefined,
     });
+  }
+
+  /**
+   * Only the first settle is a bootstrap phase. Later transitions have their own
+   * events (`refresh_*`, `revoked`, `signed_out`), so re-reporting them here
+   * would make a long-lived tab look like it kept re-mounting.
+   */
+  private reportSettle(
+    phase: "session_restored" | "unauthenticated",
+    source?: LogtoAuthEventSource,
+  ): void {
+    if (this.settleReported) return;
+    this.settleReported = true;
+    this.events(phase, source === undefined ? undefined : { source });
   }
 
   // -- mount --
@@ -611,6 +646,7 @@ export class SessionAuthEngine {
     )
       return;
     this.started = true;
+    this.events("bootstrap_start");
     void this.startInner().catch((error: unknown) => {
       this.reportError(this.asError(error));
       this.setUnauthenticated();
@@ -710,7 +746,7 @@ export class SessionAuthEngine {
       // overwritten with an authenticated snapshot built from this exchange.
       if (generation !== this.authGeneration) return;
       this.lastServed = null;
-      this.setAuthenticated(result.idToken);
+      this.setAuthenticated(result.idToken, "callback");
       const destination =
         result.returnTo !== undefined && isSafeReturnTo(result.returnTo)
           ? result.returnTo
@@ -754,12 +790,21 @@ export class SessionAuthEngine {
     }
   }
 
+  /**
+   * Storage was seeded with the server-rendered token, so a restore that reads
+   * it back is an SSR hand-off, not a warm cache from an earlier visit. Telling
+   * them apart is the whole point of `source` — they have different costs.
+   */
+  private cachedTokenSource(cached: string): LogtoAuthEventSource {
+    return cached === this.options.initialToken ? "ssr" : "cache";
+  }
+
   private async restore(): Promise<void> {
     const cached = this.options.storage.readIdToken();
     if (cached !== null && this.isFresh(cached)) {
       const session = this.options.storage.readSession();
       if (session !== null && session.sessionId !== "") {
-        this.setAuthenticated(cached);
+        this.setAuthenticated(cached, this.cachedTokenSource(cached));
         return;
       }
       if (session === null) {
@@ -781,7 +826,7 @@ export class SessionAuthEngine {
       // A transient refresh keeps storage intact: use the still-fresh cached
       // token as a degraded fallback. Terminal failures already cleared it.
       if (this.options.storage.readSession() !== null) {
-        this.setAuthenticated(cached);
+        this.setAuthenticated(cached, this.cachedTokenSource(cached));
         return;
       }
     }
@@ -866,6 +911,7 @@ export class SessionAuthEngine {
         return null;
       }
       if (generation !== this.authGeneration) return null;
+      this.events("refresh_started");
       try {
         const result = await this.retrying(() =>
           this.options.transport.action(this.options.api.refresh, {
@@ -881,10 +927,13 @@ export class SessionAuthEngine {
         this.options.storage.writeIdToken(result.idToken);
         await this.flushStorageReporting();
         if (generation !== this.authGeneration) return null;
+        this.events("refresh_succeeded");
         return result.idToken;
       } catch (error) {
         if (generation !== this.authGeneration) return null;
-        if (sessionErrorKind(error) === "terminal") {
+        const errorKind = sessionErrorKind(error);
+        this.events("refresh_failed", { errorKind });
+        if (errorKind === "terminal") {
           // Signed out / revoked / reuse-killed: the session is gone for good.
           this.options.storage.clearAll();
           this.setUnauthenticated();
@@ -1219,6 +1268,7 @@ export class SessionAuthEngine {
     // Logto. The localStorage removal kicks other tabs via the storage event.
     let cleanupError = this.clearStorageLocally();
     this.lastServed = null;
+    this.events("signed_out");
     this.setUnauthenticated();
     cleanupError = await this.finishStorageCleanup(cleanupError);
     const durableCleanupFailed = cleanupError !== undefined;
@@ -1337,14 +1387,24 @@ export class SessionAuthEngine {
   /** Another tab signed out (our localStorage session key was removed). */
   handleExternalSignOut(): void {
     this.authGeneration += 1;
+    this.events("signed_out", { source: "cross-tab" });
     this.options.storage.clearIdToken();
     this.lastServed = null;
     this.setUnauthenticated();
   }
 
+  /**
+   * Convex accepted the token: the app can run its first authenticated query.
+   * The provider reports it because only Convex knows when it happened.
+   */
+  reportConvexAuthenticated(): void {
+    this.events("convex_authenticated");
+  }
+
   /** The reactive `sessionValid` subscription pushed `false`: the session was revoked. */
   handleRevoked(): void {
     this.authGeneration += 1;
+    this.events("revoked");
     this.options.storage.clearAll();
     void this.flushStorage().catch((error: unknown) => {
       this.reportError(this.asError(error));

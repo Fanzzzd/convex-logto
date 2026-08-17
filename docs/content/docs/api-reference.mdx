@@ -315,6 +315,7 @@ in the bundle — it talks to the functions from `logtoSessionApi(...)`.
 | `initialToken` / `initialSessionId` | — | Paired SSR seed returned by `handler.getInitialToken(request)`. |
 | `reactiveRevocation` | — | Subscribe to session liveness; drop auth live on revocation. Default `true`. |
 | `onAuthError` | — | Sign-in initiation failures, recoverable callback failures, or opted-in device-key storage failures. Initiation failures are reported before `signIn()` rejects; all are logged to the console. |
+| `onAuthEvent` | — | Opt-in phase timings (see [Auth phase events](#auth-phase-events)). Absent means nothing is measured. |
 
 There is no callback component to add — the provider completes the exchange on
 `callbackPath` and replace-navigates into the app itself.
@@ -356,6 +357,51 @@ signOutEverywhere, listSessions, renameSession, revokeSession }`.
   credentials; use `signOut()` for that. Like `signOutEverywhere`, this is an
   RP-level boundary: the other device's Logto SSO cookie survives, so it can
   start a new sign-in. A missing re-export fails with the same explicit fix.
+
+## Auth phase events
+
+Every provider — bridge, session, and both native entries — takes an optional
+`onAuthEvent` for measuring how long a user waits before the first authenticated
+query, and which phase regressed. Absent, nothing is measured; no timer runs and
+no clock is read.
+
+```tsx
+<ConvexLogtoSessionProvider
+  client={convex}
+  sessionApi={api.auth}
+  onAuthEvent={(event) => analytics.track(event.phase, event.elapsedMs)}
+>
+  <App />
+</ConvexLogtoSessionProvider>
+```
+
+An event is `{ phase, elapsedMs, source?, errorKind? }`. `elapsedMs` counts from
+`bootstrap_start` on a monotonic clock where the platform has one. Events carry
+**no token, no user identity, and no URL**, so one can be forwarded to an
+analytics backend as-is.
+
+| Phase | When |
+| --- | --- |
+| `bootstrap_start` | The provider mounted; everything else is measured from here. |
+| `config_loaded` | Bridge mode with `configQuery`: the one config fetch resolved. |
+| `session_restored` | The mount settled authenticated. `source` is `cache` (a still-fresh stored token), `ssr` (the token the server rendered with), `refresh`, or `callback`. |
+| `unauthenticated` | The mount settled with no session. |
+| `convex_authenticated` | Convex accepted the token — the first authenticated query can run. Emitted once per mount, even if Convex later reconnects. |
+| `refresh_started` / `refresh_succeeded` | A token refresh, including silent ones long after mount. |
+| `refresh_failed` | With `errorKind`: `terminal` (the session is gone) or `transient` (retryable). |
+| `revoked` | The reactive `sessionValid` subscription reported the session dead. |
+| `signed_out` | This client signed out, or another tab did (`source: "cross-tab"`). |
+
+Only the first settle reports `session_restored` / `unauthenticated`; later
+transitions have their own phases, so a long-lived tab never looks like it
+re-mounted. A handler that throws is caught and logged — telemetry can never fail
+an authentication.
+
+Bridge mode emits `bootstrap_start`, `config_loaded`, and `convex_authenticated`:
+the Logto SDK owns the credential lifecycle there, so the settle and refresh
+phases are session mode's. Passing the handler on a later render is fine — it is
+read per event, so nothing is rebuilt — and it then reports from that point on
+rather than replaying phases it missed.
 
 ## Native session mode (`convex-logto/native-session`)
 
