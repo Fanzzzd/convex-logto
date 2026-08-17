@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { HomeLayout } from "fumadocs-ui/layouts/home";
-import { ArrowRight, Github, Package } from "lucide-react";
+import { ArrowRight, Package } from "lucide-react";
+import { GithubIcon } from "@/components/github-icon";
 import { baseOptions } from "@/lib/layout.shared";
 
 export const Route = createFileRoute("/")({
@@ -52,7 +53,7 @@ function Home() {
             rel="noreferrer"
             className="inline-flex items-center gap-2 rounded-lg border border-fd-border px-5 py-2.5 text-sm font-medium transition-colors hover:bg-fd-accent"
           >
-            <Github className="size-4" />
+            <GithubIcon className="size-4" />
             GitHub
           </a>
           <a
