@@ -77,6 +77,8 @@ clean clone (`git clone --no-hardlinks . /tmp/x && cd /tmp/x && pnpm install
   - Terminal means "this session is gone for good" and deletes rows. A deployment misconfiguration (`invalid_client`, a wrong `LOGTO_APP_ID`) must be transient — otherwise one wrong env var deletes every session.
   - Revocation commits a logical marker first, then drains rows in bounded batches. A row that is logically revoked but not yet deleted must not retain authority.
   - Every path that installs credentials in the browser re-checks `authGeneration` after each await, so a response issued before a sign-out cannot resurrect it.
+  - Anything that reads or mutates a session takes its subject from the caller's presented token, never from an argument — and a row killed by a watermark is invisible to reads too, or a "where am I signed in" list would show sessions that are already dead.
+  - A page filtered after the read must be filled by scanning, not by slicing: dead rows must never consume a slot and hide the live device behind them. Bound the scan instead, and report truncation when it stops early.
   - Validate a webhook payload only as far as the fields the library consumes. Rejecting a signature-verified delivery turns Logto schema drift into silent, unretried event loss.
 
 ## Releasing
