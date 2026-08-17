@@ -25,7 +25,9 @@ import {
   generatePkce,
   generateToken,
   hashToken,
+  isOutcomeUnknownError,
   isPreviousTokenWithinReuseWindow,
+  outcomeUnknown,
   rotateTokenHashes,
   sessionReuseDetectedError,
   terminal,
@@ -385,23 +387,38 @@ async function tokenEndpoint(
     controller.abort();
   }, TOKEN_ENDPOINT_TIMEOUT_MS);
   try {
-    const res = await fetch(buildLogtoEndpointUrl(config.endpoint, "token"), {
-      method: "POST",
-      headers: {
-        Authorization: basicAuth(config),
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams(params),
-      signal: controller.signal,
-    });
+    let res: Response;
+    try {
+      res = await fetch(buildLogtoEndpointUrl(config.endpoint, "token"), {
+        method: "POST",
+        headers: {
+          Authorization: basicAuth(config),
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams(params),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      // Our own timeout fired: the request was on the wire, so Logto may have
+      // rotated the grant already. Everything else that fails without any
+      // response (DNS, connection refused, Logto down) overwhelmingly fails
+      // before the grant is processed, and treating those as unknown would
+      // force a full reauthentication on every Logto outage.
+      if (controller.signal.aborted) {
+        throw outcomeUnknown(
+          "Logto's token endpoint did not answer in time — the refresh outcome is unknown.",
+        );
+      }
+      throw error;
+    }
     const bodyResult = await readBoundedBody(res, MAX_TOKEN_RESPONSE_BYTES);
     if (!bodyResult.ok) {
       if (!res.ok) throw classifyTokenEndpointFailure(res.status, {});
-      throw transient(
-        "logto_unreachable",
+      // A 2xx we could not read means Logto *did* issue (and rotate) tokens.
+      throw outcomeUnknown(
         bodyResult.reason === "too_large"
-          ? "Logto's token response exceeded the safe size limit."
-          : "Could not read the Logto token response.",
+          ? "Logto's token response exceeded the safe size limit — the refresh outcome is unknown."
+          : "Could not read the Logto token response — the refresh outcome is unknown.",
       );
     }
     let body: unknown;
@@ -690,13 +707,18 @@ export const refresh = action({
             refresh_token: begin.refreshToken,
           });
         } catch (error) {
-          const terminalFailure = isTerminalSessionError(error);
-          await ctx.runMutation(
-            terminalFailure
-              ? internal.lib.killSession
-              : internal.lib.releaseClaim,
-            { sessionId: begin.sessionId, claimId },
-          );
+          // Releasing the claim makes the stored refresh token spendable again.
+          // That is only safe when the failure proves Logto never processed it;
+          // otherwise leave the claim in place so the next presentation ages
+          // into `claim-expired` instead of re-spending a rotated token.
+          if (!isOutcomeUnknownError(error)) {
+            await ctx.runMutation(
+              isTerminalSessionError(error)
+                ? internal.lib.killSession
+                : internal.lib.releaseClaim,
+              { sessionId: begin.sessionId, claimId },
+            );
+          }
           throw error;
         }
         let claims: ReturnType<typeof decodeIdToken>;
@@ -1195,6 +1217,16 @@ export const beginSubjectRevocationByToken = internalMutation({
       return { outcome: "reuse" as const };
     }
     const caller = match.session;
+    // A row that is logically revoked but not yet physically cleaned up is an
+    // expected intermediate state. It must not retain destructive authority:
+    // otherwise a dead token could raise the watermark past sessions created
+    // after it died and delete them.
+    if (await sessionIsLogicallyRevoked(ctx.db, caller)) {
+      throw terminal(
+        "session_revoked",
+        "This session has been revoked. Sign in again.",
+      );
+    }
     const revokedAt = await markSubjectRevoked(
       ctx.db,
       caller.subject,

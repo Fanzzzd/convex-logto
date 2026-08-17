@@ -395,18 +395,80 @@ export function sessionReuseDetectedError(): ConvexError<SessionErrorData> {
 }
 
 /** Classify a Logto token-endpoint failure: 4xx auth failures are terminal, the rest transient. */
+/**
+ * OAuth 2.0 error codes (RFC 6749 §5.2) that describe a broken *deployment*,
+ * not a dead user grant. `invalid_client` in particular is answered with 401
+ * and means this app's own credentials are wrong — treating it as terminal
+ * would delete every session in the deployment the moment a client secret is
+ * rotated without updating `LOGTO_CLIENT_SECRET`.
+ */
+const CONFIGURATION_FAULT_ERRORS = new Set([
+  "invalid_client",
+  "invalid_request",
+  "unauthorized_client",
+  "unsupported_grant_type",
+  "invalid_scope",
+]);
+
+/**
+ * `outcome_unknown` marks a refresh whose request reached Logto but whose
+ * result never came back. The stored refresh token may already have been
+ * rotated, so it must never be presented a second time — Logto's reuse
+ * detection destroys the whole grant, including sibling Sessions.
+ */
+export const TOKEN_OUTCOME_UNKNOWN = "logto_outcome_unknown";
+
+export function outcomeUnknown(message: string): ConvexError<SessionErrorData> {
+  return transient(TOKEN_OUTCOME_UNKNOWN, message);
+}
+
+export function isOutcomeUnknownError(error: unknown): boolean {
+  return (
+    error instanceof ConvexError &&
+    typeof error.data === "object" &&
+    error.data !== null &&
+    "code" in error.data &&
+    error.data.code === TOKEN_OUTCOME_UNKNOWN
+  );
+}
+
 export function classifyTokenEndpointFailure(
   status: number,
   body: { error?: string },
 ): ConvexError<SessionErrorData> {
   if (status === 400 || status === 401) {
+    // Logto answered with a decision, so it did not rotate anything.
+    if (
+      body.error !== undefined &&
+      CONFIGURATION_FAULT_ERRORS.has(body.error)
+    ) {
+      return transient(
+        body.error,
+        `Logto rejected this deployment's own request (${body.error}) — check ` +
+          `LOGTO_APP_ID / LOGTO_CLIENT_SECRET / LOGTO_ENDPOINT. Sessions are kept.`,
+      );
+    }
+    if (body.error === undefined) {
+      // No machine-readable reason. Destroying sessions on an answer we cannot
+      // attribute is the irreversible choice, so fail transiently instead.
+      return transient(
+        "logto_rejected",
+        `Logto token endpoint responded ${status} without an error code — retry later.`,
+      );
+    }
     return terminal(
-      body.error ?? "invalid_grant",
-      `Logto rejected the grant (${body.error ?? status}) — the session can't continue.`,
+      body.error,
+      `Logto rejected the grant (${body.error}) — the session can't continue.`,
     );
   }
-  return transient(
-    "logto_unreachable",
-    `Logto token endpoint responded ${status} — retry later.`,
+  if (status === 429) {
+    // Rate limiting happens before the grant is processed.
+    return transient(
+      "logto_rate_limited",
+      "Logto rate-limited the token endpoint — retry later.",
+    );
+  }
+  return outcomeUnknown(
+    `Logto token endpoint responded ${status} — the refresh outcome is unknown.`,
   );
 }

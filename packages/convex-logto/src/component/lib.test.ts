@@ -25,10 +25,15 @@ type SubjectSession = {
   createdAt: number;
 };
 
-function subjectSessionHarness(initial: SubjectSession[]) {
+function subjectSessionHarness(
+  initial: SubjectSession[],
+  initialMarkers: Array<{ subject: string; revokedAt: number }> = [],
+) {
   const sessions = [...initial];
   const deleted: string[] = [];
-  const markers: Array<Record<string, unknown>> = [];
+  const markers: Array<Record<string, unknown>> = initialMarkers.map(
+    (marker, index) => ({ _id: `subject-marker-${index}`, ...marker }),
+  );
   const db = {
     query: (table: string) => ({
       withIndex: (
@@ -62,7 +67,7 @@ function subjectSessionHarness(initial: SubjectSession[]) {
           order: () => ({
             first: () =>
               Promise.resolve(
-                [...matching()].sort(
+                [...matching()].toSorted(
                   (left, right) => right.createdAt - left.createdAt,
                 )[0] ?? null,
               ),
@@ -180,6 +185,24 @@ describe("killSubjectSessionsByToken", () => {
     ]);
   });
 
+  it("refuses a logically revoked session's token", async () => {
+    // The row is dead but its bounded physical cleanup has not reached it yet.
+    // Accepting it would raise the subject watermark past sessions created
+    // after it died and delete them.
+    const { db, deleted, sessions, handler } = subjectSessionHarness(
+      fixture(),
+      [{ subject: "subject-a", revokedAt: 900_000 }],
+    );
+
+    await expect(
+      handler({ db }, { presentedHash: "caller-current", now, reuseWindowMs }),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "session_revoked" },
+    });
+    expect(deleted).toEqual([]);
+    expect(sessions).toHaveLength(3);
+  });
+
   it("rejects an unknown token terminally", async () => {
     const { db, handler } = subjectSessionHarness(fixture());
 
@@ -288,7 +311,7 @@ function sessionMutationHarness(
                   typeof value === "number" &&
                   actual < value;
           });
-          return filtered.sort((left, right) => {
+          return filtered.toSorted((left, right) => {
             const difference =
               (left as TokenGeneration).rotatedAt -
               (right as TokenGeneration).rotatedAt;
@@ -527,6 +550,22 @@ function expectRefreshClaimReleased(
   expect(runMutation.mock.calls[1]?.[1]).not.toHaveProperty("idToken");
 }
 
+/**
+ * The refresh token may already have been rotated remotely, so the claim must
+ * stay in place: the next presentation then ages into `claim-expired` instead
+ * of spending the same token a second time.
+ */
+function expectRefreshClaimRetained(
+  runMutation: ReturnType<typeof vi.fn>,
+): void {
+  expect(runMutation).toHaveBeenCalledTimes(1);
+  const reference = runMutation.mock.calls[0]?.[0] as FunctionReference<
+    "mutation",
+    "internal"
+  >;
+  expect(getFunctionName(reference)).toBe("lib:beginRefresh");
+}
+
 describe("bounded token endpoint", () => {
   it("aborts while waiting for token response headers after 10 seconds", async () => {
     vi.useFakeTimers();
@@ -555,9 +594,9 @@ describe("bounded token endpoint", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       expect(observedSignal?.aborted).toBe(true);
       await expect(promise).rejects.toMatchObject({
-        data: { kind: "transient", code: "logto_unreachable" },
+        data: { kind: "transient", code: "logto_outcome_unknown" },
       });
-      expectRefreshClaimReleased(runMutation);
+      expectRefreshClaimRetained(runMutation);
     } finally {
       await vi.advanceTimersByTimeAsync(1);
       await promise.catch(() => {});
@@ -600,9 +639,9 @@ describe("bounded token endpoint", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       expect(observedSignal?.aborted).toBe(true);
       await expect(promise).rejects.toMatchObject({
-        data: { kind: "transient", code: "logto_unreachable" },
+        data: { kind: "transient", code: "logto_outcome_unknown" },
       });
-      expectRefreshClaimReleased(runMutation);
+      expectRefreshClaimRetained(runMutation);
     } finally {
       await vi.advanceTimersByTimeAsync(1);
       await promise.catch(() => {});
@@ -636,16 +675,16 @@ describe("bounded token endpoint", () => {
     const { promise, runMutation } = tokenEndpointRefreshHarness();
     try {
       await expect(promise).rejects.toMatchObject({
-        data: { kind: "transient" },
+        data: { kind: "transient", code: "logto_outcome_unknown" },
       });
       expect(cancel).toHaveBeenCalledTimes(1);
-      expectRefreshClaimReleased(runMutation);
+      expectRefreshClaimRetained(runMutation);
     } finally {
       fetchSpy.mockRestore();
     }
   });
 
-  it("treats a token response stream error as transient and releases the claim", async () => {
+  it("treats a token response stream error as an unknown outcome and keeps the claim", async () => {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.error(new Error("stream failed"));
@@ -657,9 +696,56 @@ describe("bounded token endpoint", () => {
     const { promise, runMutation } = tokenEndpointRefreshHarness();
     try {
       await expect(promise).rejects.toMatchObject({
-        data: { kind: "transient" },
+        data: { kind: "transient", code: "logto_outcome_unknown" },
+      });
+      expectRefreshClaimRetained(runMutation);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("keeps sessions alive when Logto rejects this deployment's credentials", async () => {
+    // 401 invalid_client means LOGTO_CLIENT_SECRET is wrong, not that the
+    // user's grant died. Treating it as terminal would delete every session in
+    // the deployment on a secret rotation.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: "invalid_client" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { promise, runMutation } = tokenEndpointRefreshHarness();
+    try {
+      await expect(promise).rejects.toMatchObject({
+        data: { kind: "transient", code: "invalid_client" },
       });
       expectRefreshClaimReleased(runMutation);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("kills the session only when Logto rejects the grant itself", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: "invalid_grant" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { promise, runMutation } = tokenEndpointRefreshHarness();
+    try {
+      await expect(promise).rejects.toMatchObject({
+        data: { kind: "terminal", code: "invalid_grant" },
+      });
+      expect(runMutation).toHaveBeenCalledTimes(2);
+      expect(
+        getFunctionName(
+          runMutation.mock.calls[1]?.[0] as FunctionReference<
+            "mutation",
+            "internal"
+          >,
+        ),
+      ).toBe("lib:killSession");
     } finally {
       fetchSpy.mockRestore();
     }

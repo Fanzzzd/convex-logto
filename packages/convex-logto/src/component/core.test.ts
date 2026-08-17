@@ -14,6 +14,7 @@ import {
   generatePkce,
   generateToken,
   hashToken,
+  isOutcomeUnknownError,
   rotateTokenHashes,
   terminal,
   toBase64Url,
@@ -414,17 +415,48 @@ it("terminal/transient build ConvexErrors with the crossing data shape", () => {
 });
 
 it.each([
-  [400, "terminal"],
-  [401, "terminal"],
-  [500, "transient"],
-  [502, "transient"],
-  [429, "transient"],
-])("classifyTokenEndpointFailure(%i) → %s", (status, kind) => {
-  expect(classifyTokenEndpointFailure(status, {}).data.kind).toBe(kind);
+  // Only a rejected *grant* is terminal. Everything else keeps the session.
+  [400, "invalid_grant", "terminal"],
+  [400, "invalid_request", "transient"],
+  [400, "unsupported_grant_type", "transient"],
+  [401, "invalid_client", "transient"],
+  [401, "unauthorized_client", "transient"],
+  [429, undefined, "transient"],
+  [500, undefined, "transient"],
+  [502, undefined, "transient"],
+])("classifyTokenEndpointFailure(%i, %s) → %s", (status, error, kind) => {
+  expect(
+    classifyTokenEndpointFailure(status, error === undefined ? {} : { error })
+      .data.kind,
+  ).toBe(kind);
 });
+
+it.each([400, 401])(
+  "classifyTokenEndpointFailure(%i) without an error code keeps the session",
+  (status) => {
+    // Deleting every session of a deployment is irreversible; an answer we
+    // cannot attribute must not trigger it.
+    expect(classifyTokenEndpointFailure(status, {}).data.kind).toBe(
+      "transient",
+    );
+  },
+);
 
 it("classifyTokenEndpointFailure surfaces Logto's error code", () => {
   expect(
     classifyTokenEndpointFailure(400, { error: "invalid_grant" }).data.code,
   ).toBe("invalid_grant");
+  expect(
+    classifyTokenEndpointFailure(401, { error: "invalid_client" }).data.code,
+  ).toBe("invalid_client");
 });
+
+it.each([500, 502, 503])(
+  "classifyTokenEndpointFailure(%i) marks the refresh outcome unknown",
+  (status) => {
+    // The request reached Logto, which may have rotated the grant already.
+    expect(
+      isOutcomeUnknownError(classifyTokenEndpointFailure(status, {})),
+    ).toBe(true);
+  },
+);
