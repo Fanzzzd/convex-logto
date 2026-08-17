@@ -263,6 +263,7 @@ to resolve it from the backend at runtime. Exactly one of the two.
 | `navigate` | — | Soft navigation (your router's `navigate`). Optional for plain Vite; **recommended for any router** (TanStack / Next) so post-sign-in is a soft navigation rather than a full-page reload that drops router state. Prefer a replace-style navigate. Falls back to a hard `location.replace`. |
 | `onAuthError` | — | Called on sign-in initiation failures (Logto unreachable, blocked storage, in-app browser restrictions) and recoverable callback failures (stale/replayed callback, setup errors like `invalid_scope`). Errors are also logged to the console. |
 | `discoveryCache` | — | Cache OIDC discovery + JWKS in sessionStorage. Default `true`. |
+| `onAuthEvent` | — | Opt-in phase timings (see [Auth phase events](#auth-phase-events)). Bridge mode emits `bootstrap_start`, `config_loaded`, and `convex_authenticated`. Absent means nothing is measured. |
 | `scopes` / `resources` | — | Extra OIDC scopes / API resources. `openid`, `profile`, `offline_access`, and `email` are always included. |
 
 Safe to render on the server: nothing touches `window` during render — no stub
@@ -429,6 +430,7 @@ device-binding option.
 | `redirectUri` | yes | Custom-scheme or universal-link callback registered as both a Redirect URI and Post sign-out redirect URI in Logto. |
 | `reactiveRevocation` | — | Subscribe to `sessionValid` and clear SecureStore immediately when revoked. Default `true`. |
 | `onAuthError` | — | Receives sign-in initiation failures plus recoverable OAuth, SecureStore, and system-browser failures; initiation failures are reported before `signIn()` rejects and all errors are logged. |
+| `onAuthEvent` | — | Opt-in phase timings (see [Auth phase events](#auth-phase-events)). Absent means nothing is measured. |
 
 `useLogtoAuth()` returns `{ isAuthenticated, isLoading, user, signIn,
 signOut, signOutEverywhere, listSessions, renameSession, revokeSession }`, with
@@ -481,6 +483,7 @@ and resolves when the deep link returns.
 | `redirectUri` | **yes** | Native callback URI — your `app.json` `scheme` plus a path (e.g. `io.logto://callback`), registered on the Logto app. The default for `signIn()`. |
 | `fallback` | — | Rendered while `configQuery` loads, before the Convex provider mounts. Default `null`. |
 | `scopes` / `resources` | — | Extra OIDC scopes / API resources. `openid`, `profile`, `offline_access`, and `email` are always included. |
+| `onAuthEvent` | — | Opt-in phase timings (see [Auth phase events](#auth-phase-events)): `bootstrap_start`, `config_loaded`, `convex_authenticated`. Absent means nothing is measured. |
 
 ### `useLogtoAuth()` (native)
 
