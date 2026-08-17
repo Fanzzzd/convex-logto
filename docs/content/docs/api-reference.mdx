@@ -163,7 +163,9 @@ client?, deviceBound }`. Sessions killed by a revocation watermark are skipped
 without consuming a page slot (a bounded scan walks past them), so pending
 cleanup can never hide a live device; `truncated` reports both "more sessions
 exist" and "the scan stopped at its bound". `renameSession({ sessionToken, targetSessionId, label? })` and
-`revokeSession({ sessionToken, targetSessionId })` return a boolean. All three
+`revokeSession({ sessionToken, targetSessionId })` succeed or raise terminal
+`session_not_found` — they never report failure by returning; the `useLogtoAuth`
+wrappers resolve to `void`. All three
 derive the subject from the presented token exactly as `signOutEverywhere` does,
 so a `targetSessionId` owned by another subject — or already killed by a
 revocation watermark — raises the normal terminal `session_not_found` instead of
@@ -346,10 +348,14 @@ signOutEverywhere, listSessions, renameSession, revokeSession }`.
   authenticates with rotates) of the caller's own sessions, `{ sessions,
   truncated }`, newest first. Call it again after a rename or revoke.
 - `renameSession(sessionId, label)` — name one of the caller's own sessions;
-  `undefined` clears it. Returns `false` for an id that is not the caller's.
-- `revokeSession(sessionId)` — sign that device out. Revoking the **current**
-  session does not clear this browser's credentials; use `signOut()` for that.
-  Like `signOutEverywhere`, a missing re-export fails with the same explicit fix.
+  `undefined` (or a blank string) clears it. Rejects with terminal
+  `session_not_found` for an id that is not the caller's or is already revoked —
+  the component will not confirm that another subject's session exists.
+- `revokeSession(sessionId)` — sign that device out; rejects the same way for an
+  unknown id. Revoking the **current** session does not clear this browser's
+  credentials; use `signOut()` for that. Like `signOutEverywhere`, this is an
+  RP-level boundary: the other device's Logto SSO cookie survives, so it can
+  start a new sign-in. A missing re-export fails with the same explicit fix.
 
 ## Native session mode (`convex-logto/native-session`)
 

@@ -35,6 +35,29 @@ export const SESSION_LIST_LIMIT = 16;
  */
 export const SESSION_LIST_SCAN_LIMIT = 128;
 
+/**
+ * The other half of that bound. A session document may approach Convex's 1 MiB
+ * limit (a fat ID token with many claims), so a row count alone does not bound
+ * the read: the scan also stops once it has read this many bytes. A quarter of
+ * the 16 MiB transaction budget leaves room for the one document already in
+ * hand when the check fires, and for the watermark lookups alongside it.
+ */
+export const SESSION_LIST_SCAN_BYTES = 4 * 1024 * 1024;
+
+/** The large, variable fields of a session row, plus slack for the rest. */
+export function sessionReadCost(session: {
+  logtoRefreshToken: string;
+  lastIdToken: string;
+  label?: string;
+}): number {
+  return (
+    session.logtoRefreshToken.length +
+    session.lastIdToken.length +
+    (session.label?.length ?? 0) +
+    512
+  );
+}
+
 /** Self-reported, unauthenticated description of a signing-in client. */
 export type SessionClientDescriptor = {
   platform?: string;
@@ -43,23 +66,30 @@ export type SessionClientDescriptor = {
 };
 
 /**
- * Collapse whitespace and drop control characters, so a label cannot smuggle
- * newlines or bidi overrides into a UI that renders it next to other sessions.
+ * Every invisible character class, not a hand-picked list of bidi overrides:
+ * `Cc` controls, `Cf` format characters (the bidi embeddings and isolates, but
+ * also RLM/LRM/ALM and the zero-width joiners `\s` never matches), and the line
+ * and paragraph separators. A label is rendered next to other sessions, and any
+ * of these can make one entry impersonate another.
+ */
+const INVISIBLE_DISPLAY_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+/** Emoji sequences join with ZWJ; dropping it would split families apart. */
+const ZERO_WIDTH_JOINER = "\u200d";
+
+/**
+ * Collapse whitespace and drop invisible characters, so a label cannot smuggle
+ * newlines or direction changes into a UI that lists it beside other sessions.
  */
 function normalizeDisplayText(raw: string): string {
   // Code points, not graphemes: the limit these feed is a storage bound, and
-  // per-code-point filtering is what strips the control characters below.
+  // per-code-point filtering is what strips the invisible characters.
   return Array.from(raw)
-    .filter((character) => {
-      const code = character.codePointAt(0) ?? 0;
-      // C0/C1 controls, plus the bidi overrides that let a label impersonate
-      // another entry in the list.
-      if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return false;
-      return (
-        !(code >= 0x202a && code <= 0x202e) &&
-        !(code >= 0x2066 && code <= 0x2069)
-      );
-    })
+    .filter(
+      (character) =>
+        character === ZERO_WIDTH_JOINER ||
+        !INVISIBLE_DISPLAY_CHARACTERS.test(character),
+    )
     .join("")
     .replace(/\s+/g, " ")
     .trim();

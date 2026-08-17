@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "convex-logto-expo-session",
+    "slug": "convex-logto-expo-session",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "scheme": "io.logto.session",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "app.convexlogto.session.example"
+    },
+    "android": {
+      "package": "app.convexlogto.session.example"
+    }
+  }
+}

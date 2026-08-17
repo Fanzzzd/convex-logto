@@ -366,6 +366,24 @@ function optionalString(
   return value;
 }
 
+/**
+ * Like `optionalString`, but blank means "not provided" instead of an error.
+ * Use it for display fields the component itself treats that way — an emptied
+ * rename box must clear a label, not fail the request in cookie mode only.
+ */
+function optionalDisplayString(
+  body: Record<string, unknown>,
+  name: string,
+): string | undefined {
+  const value = body[name];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new RequestValidationError(`${name} must be a string when provided`);
+  }
+  const trimmed = value.trim();
+  return trimmed === "" ? undefined : trimmed;
+}
+
 function optionalBoolean(
   body: Record<string, unknown>,
   name: string,
@@ -392,10 +410,11 @@ function optionalClientDescriptor(
     throw new RequestValidationError("client must be an object when provided");
   }
   const fields = (["platform", "os", "browser"] as const).flatMap((key) => {
-    // Trim here so the handler and the browser engine agree on what "blank"
-    // means; the component normalizes and truncates again either way.
-    const field = optionalString(value, key)?.trim();
-    return field === undefined || field === "" ? [] : [[key, field] as const];
+    // Blank is "absent" here so the handler and the browser engine agree on
+    // what it means; the component normalizes and truncates again either way.
+    // A blank field must never fail a sign-in that is otherwise fine.
+    const field = optionalDisplayString(value, key);
+    return field === undefined ? [] : [[key, field] as const];
   });
   return fields.length === 0 ? undefined : Object.fromEntries(fields);
 }
@@ -436,7 +455,7 @@ export function assertLogtoSessionCookieCompatibility(options: {
 }
 
 /**
- * Build the same-site cookie transport's four-route standard-fetch handler.
+ * Build the same-site cookie transport's five-route standard-fetch handler.
  * The returned function can be exported directly as a Next.js POST/OPTIONS
  * handler or called from TanStack Start and Convex HTTP actions.
  */
@@ -634,7 +653,7 @@ export function createLogtoSessionCookieHandler(
                   sessionToken,
                   targetSessionId: requiredString(body, "targetSessionId"),
                   // Absent means "clear it" — the op itself carries the intent.
-                  label: optionalString(body, "label"),
+                  label: optionalDisplayString(body, "label"),
                 }),
               },
               {},
@@ -953,8 +972,11 @@ function readTargetSessionId(args: unknown): string {
 function readOptionalLabel(args: unknown): string | undefined {
   if (!isRecord(args)) throw invalidCookieResponse();
   const value = args.label;
-  if (value === undefined || typeof value === "string") return value;
-  throw invalidCookieResponse();
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw invalidCookieResponse();
+  // "" clears the label on every other transport, so it must not be forwarded
+  // as a value this route would then reject.
+  return value.trim() === "" ? undefined : value;
 }
 
 function parseSessionListResponse(value: unknown): {

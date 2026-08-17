@@ -227,6 +227,14 @@ this device out". The device proof requirement applies to the *caller's* session
 not the target — requiring the target's key would make it impossible to revoke a
 lost device, which is the main reason this exists.
 
+`renameSession()` and `revokeSession()` resolve with no value, or reject with the
+terminal `session_not_found` error — an id belonging to another subject, or one a
+watermark already killed, is refused without confirming that it exists. Like
+`signOutEverywhere()`, revocation is an **RP-level boundary**: it deletes the
+session and its server-held refresh token, but cannot erase the Logto OP cookie in
+that device's browser, so a device holding one can start a new sign-in. For a
+genuinely lost device, revoke it in Logto (or suspend the user) as well.
+
 ### Labels and the client descriptor
 
 `label` is user-chosen and set through `renameSession`. It is normalized on write

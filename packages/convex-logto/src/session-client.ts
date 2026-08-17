@@ -479,8 +479,12 @@ export type SessionEngineOptions = {
    * so a user can recognise it in `listSessions()`. The app supplies it — the
    * library never sniffs a User-Agent or IP — and it is advisory display data,
    * never authenticated.
+   *
+   * A getter, not a value: apps often learn the description asynchronously, and
+   * rebuilding the engine to deliver it would restart the mount state machine
+   * mid-callback. It is read once, at the exchange.
    */
-  clientDescriptor?: LogtoSessionClientDescriptor;
+  clientDescriptor?: () => LogtoSessionClientDescriptor | undefined;
   /**
    * The session credential lives somewhere this code cannot delete — the
    * HttpOnly cookie of the same-site transport. Sign-out then has no local
@@ -677,7 +681,9 @@ export class SessionAuthEngine {
     }
     try {
       const devicePublicKey = await this.options.deviceBinding?.getPublicKey();
-      const client = normalizeClientDescriptor(this.options.clientDescriptor);
+      const client = normalizeClientDescriptor(
+        this.options.clientDescriptor?.(),
+      );
       // Nothing has been minted yet, so simply abandoning the code is enough.
       if (generation !== this.authGeneration) return;
       const result = await this.retrying(() =>
@@ -1063,15 +1069,20 @@ export class SessionAuthEngine {
     );
   }
 
-  /** Rename one of the caller's own sessions. Pass `undefined` to clear it. */
+  /**
+   * Rename one of the caller's own sessions. Pass `undefined` to clear it.
+   * Rejects with a terminal `session_not_found` for an id that is not the
+   * caller's or has already been revoked — the same way the component refuses
+   * to confirm that another subject's session exists.
+   */
   async renameSession(
     targetSessionId: string,
     label: string | undefined,
-  ): Promise<boolean> {
+  ): Promise<void> {
     const action = this.options.api.renameSession;
     if (action === undefined) throw sessionApiUpgradeError("renameSession");
     const credential = await this.sessionCallCredential("renameSession");
-    return await this.callSessionAction("renameSession", () =>
+    await this.callSessionAction("renameSession", () =>
       this.options.transport.action(action, {
         ...credential,
         targetSessionId,
@@ -1081,14 +1092,15 @@ export class SessionAuthEngine {
   }
 
   /**
-   * Revoke one of the caller's own sessions. Revoking the current one leaves
-   * this client's credentials in place — call `signOut()` for that.
+   * Revoke one of the caller's own sessions, rejecting like `renameSession` for
+   * an id that is not the caller's. Revoking the current one leaves this
+   * client's credentials in place — call `signOut()` for that.
    */
-  async revokeSession(targetSessionId: string): Promise<boolean> {
+  async revokeSession(targetSessionId: string): Promise<void> {
     const action = this.options.api.revokeSession;
     if (action === undefined) throw sessionApiUpgradeError("revokeSession");
     const credential = await this.sessionCallCredential("revokeSession");
-    return await this.callSessionAction("revokeSession", () =>
+    await this.callSessionAction("revokeSession", () =>
       this.options.transport.action(action, { ...credential, targetSessionId }),
     );
   }

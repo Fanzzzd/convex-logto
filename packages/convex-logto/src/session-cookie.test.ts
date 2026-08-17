@@ -1021,6 +1021,52 @@ describe("sessions route", () => {
     });
   });
 
+  it.each([
+    ["an empty label", ""],
+    ["a blank label", "   "],
+  ])(
+    "treats %s as a clear, matching every other transport",
+    async (_n, label) => {
+      const { handler, handlers } = makeHarness();
+
+      const res = await handler(
+        request("sessions", {
+          cookie: cookie("session-token-1"),
+          body: { op: "rename", targetSessionId: "session-id-2", label },
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(handlers.renameSession).toHaveBeenCalledWith({
+        sessionToken: "session-token-1",
+        targetSessionId: "session-id-2",
+        label: undefined,
+      });
+    },
+  );
+
+  it("keeps a sign-in working when a descriptor field is blank", async () => {
+    // The component drops blank fields; rejecting the whole callback here would
+    // make an app-built descriptor fail sign-in in cookie mode alone.
+    const { handler, handlers } = makeHarness();
+
+    const res = await handler(
+      request("callback", {
+        body: {
+          code: "code-1",
+          state: "state-1",
+          redirectUri: `${APP_ORIGIN}/callback`,
+          client: { platform: "", os: "macOS" },
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(handlers.callback).toHaveBeenCalledWith(
+      expect.objectContaining({ client: { os: "macOS" } }),
+    );
+  });
+
   it("revokes another session without clearing this browser's cookie", async () => {
     const { handler, handlers } = makeHarness();
 
@@ -1185,6 +1231,23 @@ describe("browser transport session management", () => {
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(String(url).endsWith(`${BASE_PATH}/sessions`)).toBe(true);
     expect(JSON.parse(String(init?.body))).toEqual({ op: "list" });
+  });
+
+  it("forwards an empty label as an omitted one, so the route clears it", async () => {
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json({ renamed: true }));
+
+    await transportWith(fetchMock).action(api.renameSession!, {
+      sessionToken: COOKIE_SESSION_MARKER,
+      targetSessionId: "session-id-2",
+      label: "",
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body))).toEqual({
+      op: "rename",
+      targetSessionId: "session-id-2",
+    });
   });
 
   it("never forwards the session-token argument, only the op payload", async () => {

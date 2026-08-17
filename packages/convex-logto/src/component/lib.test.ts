@@ -19,6 +19,7 @@ import {
 } from "./lib";
 import {
   SESSION_LIST_LIMIT,
+  SESSION_LIST_SCAN_BYTES,
   SESSION_LIST_SCAN_LIMIT,
   SESSION_TOKEN_GENERATION_LIMIT,
   toBase64Url,
@@ -1697,7 +1698,20 @@ type ListSession = {
   label?: string;
   client?: { platform?: string; os?: string; browser?: string };
   devicePublicKey?: { kty: "EC"; crv: "P-256"; x: string; y: string };
+  // The large fields the scan's byte budget is measured against; every real row
+  // carries them, so the fixtures do too.
+  logtoRefreshToken: string;
+  lastIdToken: string;
 };
+
+const listRow = (
+  row: Omit<ListSession, "logtoRefreshToken" | "lastIdToken"> &
+    Partial<Pick<ListSession, "logtoRefreshToken" | "lastIdToken">>,
+): ListSession => ({
+  logtoRefreshToken: "refresh-token",
+  lastIdToken: "id-token",
+  ...row,
+});
 
 /**
  * Index-aware fake for the session-management handlers: `by_subject_createdAt`
@@ -1840,28 +1854,28 @@ const resolveCallerSessionHandler = internalHandler(
 );
 
 const listFixture = (): ListSession[] => [
-  {
+  listRow({
     _id: "session-a",
     subject: "subject-1",
     createdAt: 1_000,
     lastRefreshedAt: 1_500,
     label: "Laptop",
     client: { browser: "Firefox" },
-  },
-  {
+  }),
+  listRow({
     _id: "session-b",
     subject: "subject-1",
     sid: "sid-b",
     createdAt: 2_000,
     lastRefreshedAt: 2_500,
     devicePublicKey: { kty: "EC", crv: "P-256", x: "x", y: "y" },
-  },
-  {
+  }),
+  listRow({
     _id: "session-other",
     subject: "subject-2",
     createdAt: 3_000,
     lastRefreshedAt: 3_000,
-  },
+  }),
 ];
 
 describe("listSubjectSessions", () => {
@@ -1916,19 +1930,21 @@ describe("listSubjectSessions", () => {
     // every slot on them and hide the one device the user can still act on.
     const harness = sessionListHarness(
       [
-        ...Array.from({ length: SESSION_LIST_LIMIT }, (_unused, index) => ({
-          _id: `session-dead-${index}`,
-          subject: "subject-1",
-          sid: "sid-dead",
-          createdAt: 1_000 + index,
-          lastRefreshedAt: 1_000 + index,
-        })),
-        {
+        ...Array.from({ length: SESSION_LIST_LIMIT }, (_unused, index) =>
+          listRow({
+            _id: `session-dead-${index}`,
+            subject: "subject-1",
+            sid: "sid-dead",
+            createdAt: 1_000 + index,
+            lastRefreshedAt: 1_000 + index,
+          }),
+        ),
+        listRow({
           _id: "session-live",
           subject: "subject-1",
           createdAt: 500,
           lastRefreshedAt: 500,
-        },
+        }),
       ],
       { sids: [{ sid: "sid-dead", revokedAt: 2_000 }] },
     );
@@ -1946,9 +1962,8 @@ describe("listSubjectSessions", () => {
 
   it("stops at the scan limit and says so rather than reading unboundedly", async () => {
     const harness = sessionListHarness(
-      Array.from(
-        { length: SESSION_LIST_SCAN_LIMIT + 10 },
-        (_unused, index) => ({
+      Array.from({ length: SESSION_LIST_SCAN_LIMIT + 10 }, (_unused, index) =>
+        listRow({
           _id: `session-dead-${index}`,
           subject: "subject-1",
           sid: "sid-dead",
@@ -1969,14 +1984,45 @@ describe("listSubjectSessions", () => {
     expect(harness.scanned()).toBe(SESSION_LIST_SCAN_LIMIT + 1);
   });
 
+  it("stops on the byte budget before a page of huge rows blows the read limit", async () => {
+    // A session row can approach Convex's 1 MiB document limit, so a row count
+    // alone does not bound the read.
+    const fatIdToken = "x".repeat(SESSION_LIST_SCAN_BYTES / 4);
+    const harness = sessionListHarness(
+      Array.from({ length: SESSION_LIST_LIMIT }, (_unused, index) =>
+        listRow({
+          _id: `session-${index}`,
+          subject: "subject-1",
+          sid: "sid-dead",
+          createdAt: index,
+          lastRefreshedAt: index,
+          lastIdToken: fatIdToken,
+        }),
+      ),
+      { sids: [{ sid: "sid-dead", revokedAt: Number.MAX_SAFE_INTEGER }] },
+    );
+
+    const result = await listSubjectSessionsHandler(
+      { db: harness.db },
+      { subject: "subject-1", callerSessionId: "session-0" },
+    );
+
+    expect(result.truncated).toBe(true);
+    // Four rows fill the budget; the fifth is the one already in hand when the
+    // check fires, and nothing past it is read.
+    expect(harness.scanned()).toBe(5);
+  });
+
   it("reads no further than the page it fills", async () => {
     const harness = sessionListHarness(
-      Array.from({ length: SESSION_LIST_LIMIT + 20 }, (_unused, index) => ({
-        _id: `session-${index}`,
-        subject: "subject-1",
-        createdAt: index,
-        lastRefreshedAt: index,
-      })),
+      Array.from({ length: SESSION_LIST_LIMIT + 20 }, (_unused, index) =>
+        listRow({
+          _id: `session-${index}`,
+          subject: "subject-1",
+          createdAt: index,
+          lastRefreshedAt: index,
+        }),
+      ),
     );
 
     const result = await listSubjectSessionsHandler(
@@ -1992,12 +2038,14 @@ describe("listSubjectSessions", () => {
 
   it("reports truncation past the page limit", async () => {
     const harness = sessionListHarness(
-      Array.from({ length: SESSION_LIST_LIMIT + 1 }, (_unused, index) => ({
-        _id: `session-${index}`,
-        subject: "subject-1",
-        createdAt: index,
-        lastRefreshedAt: index,
-      })),
+      Array.from({ length: SESSION_LIST_LIMIT + 1 }, (_unused, index) =>
+        listRow({
+          _id: `session-${index}`,
+          subject: "subject-1",
+          createdAt: index,
+          lastRefreshedAt: index,
+        }),
+      ),
     );
 
     const result = await listSubjectSessionsHandler(

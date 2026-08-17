@@ -253,6 +253,12 @@ token, so another user's `sessionId` resolves to `session_not_found`. The option
 `clientDescriptor` provider prop supplies the advisory device description; the
 library never reads a User-Agent or IP.
 
+`revokeSession()` is an RP-level boundary, like `signOutEverywhere()`: it deletes
+that session and its server-held refresh token, but it cannot erase the Logto SSO
+cookie in the other device's browser. A device that still holds one can start a
+new sign-in and may be authenticated without another credential prompt — revoke a
+genuinely lost device in Logto itself (or suspend the user) as well.
+
 Apps with a same-site server endpoint can additionally mount
 `createLogtoSessionCookieHandler()` and pass
 `cookieTransport={{ endpoint: "/api/logto" }}` to the provider. That moves the
@@ -345,7 +351,7 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 | `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](#session-mode): builds the nine public auth functions backed by the session component. |
 | `assertSubjectHasActiveSession(ctx, component)` | `convex-logto` | Session mode: throw unless the authenticated subject has at least one active component Session; this does not bind the current bearer to one Session. A bounded scan can transiently throw `session_liveness_scan_incomplete` while bulk cleanup progresses. |
 | `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Deprecated compatibility alias for `assertSubjectHasActiveSession`. |
-| `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Four-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
+| `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Five-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
 | `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Static `config` or backend `configQuery`. |
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
 | default | `convex-logto/convex.config` | The session component, for `app.use(logto)`. |

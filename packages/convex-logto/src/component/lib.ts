@@ -27,6 +27,7 @@ import {
   generateToken,
   hashToken,
   SESSION_LIST_LIMIT,
+  SESSION_LIST_SCAN_BYTES,
   SESSION_LIST_SCAN_LIMIT,
   isOutcomeUnknownError,
   isPreviousTokenWithinReuseWindow,
@@ -34,6 +35,7 @@ import {
   normalizeSessionLabel,
   outcomeUnknown,
   rotateTokenHashes,
+  sessionReadCost,
   sessionReuseDetectedError,
   terminal,
   transient,
@@ -537,6 +539,11 @@ export const exchange = action({
     returnTo: v.optional(v.string()),
   }),
   handler: async (ctx, args) => {
+    // Normalize the display fields before anything is spent: an over-long label
+    // rejects here, not after the authorization code has been exchanged for a
+    // grant no one would ever hold.
+    const label = normalizeSessionLabel(args.label);
+    const client = normalizeClientDescriptor(args.client);
     const transaction: ConsumedTransaction = await ctx.runMutation(
       internal.lib.consumeTransaction,
       {
@@ -571,8 +578,8 @@ export const exchange = action({
         lastIdToken: tokens.id_token,
         lastIdTokenExp: claims.expiresAtMs,
         devicePublicKey: args.devicePublicKey,
-        label: normalizeSessionLabel(args.label),
-        client: normalizeClientDescriptor(args.client),
+        label,
+        client,
         now,
       },
     );
@@ -1324,6 +1331,11 @@ const sessionSummaryValidator = v.object({
  * as the destructive paths: a superseded generation inside the reuse window is
  * accepted, a logically revoked session is not, and a bound session needs its
  * proof. Never accepts a client-supplied subject.
+ *
+ * Unlike `signOut` and `signOutEverywhere`, presenting a superseded token from
+ * outside the window here does not contain the session: this is a query, which
+ * cannot write, and the token it rejected already grants nothing. Reuse
+ * detection still fires on the first refresh or sign-out that token is used for.
  */
 export const resolveCallerSession = internalQuery({
   args: {
@@ -1370,15 +1382,20 @@ export const listSubjectSessions = internalQuery({
     const sidCutoffs = new Map<string, number | undefined>();
     const sessions: SessionSummary[] = [];
     let scanned = 0;
+    let scannedBytes = 0;
     let truncated = false;
     for await (const session of rows) {
-      if (scanned === SESSION_LIST_SCAN_LIMIT) {
+      if (
+        scanned === SESSION_LIST_SCAN_LIMIT ||
+        scannedBytes >= SESSION_LIST_SCAN_BYTES
+      ) {
         // Stopped early with rows left: there may be more live sessions, and
         // saying so beats an unbounded scan or a silent omission.
         truncated = true;
         break;
       }
       scanned += 1;
+      scannedBytes += sessionReadCost(session);
       let sidCutoff: number | undefined;
       if (session.sid === undefined) {
         sidCutoff = undefined;

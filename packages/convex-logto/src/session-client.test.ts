@@ -141,7 +141,7 @@ function makeHarness(options?: {
     initialSession,
     deviceBinding: options?.deviceBinding,
     serverHeldCredential: options?.serverHeldCredential,
-    clientDescriptor: options?.clientDescriptor,
+    clientDescriptor: () => options?.clientDescriptor,
     navigate,
     onAuthError,
     sleep: () => Promise.resolve(), // skip retry backoff in tests
@@ -1580,7 +1580,7 @@ describe("session management", () => {
     storage.writeSession({ token: "t1", sessionId: "s1" });
     handlers.renameSession.mockResolvedValue(true);
 
-    await expect(engine.renameSession("s2", "Phone")).resolves.toBe(true);
+    await expect(engine.renameSession("s2", "Phone")).resolves.toBeUndefined();
     expect(handlers.renameSession).toHaveBeenCalledWith({
       sessionToken: "t1",
       targetSessionId: "s2",
@@ -1600,7 +1600,7 @@ describe("session management", () => {
     storage.writeIdToken(freshToken());
     handlers.revokeSession.mockResolvedValue(true);
 
-    await expect(engine.revokeSession("s2")).resolves.toBe(true);
+    await expect(engine.revokeSession("s2")).resolves.toBeUndefined();
 
     expect(handlers.revokeSession).toHaveBeenCalledWith({
       sessionToken: "t1",

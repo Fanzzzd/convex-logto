@@ -170,20 +170,21 @@ export function ConvexLogtoSessionProvider({
   const cookieEndpoint = cookieTransport?.endpoint;
   const cookieFetch = cookieTransport?.fetch;
   const cookieDeviceBinding = cookieTransport?.deviceBinding;
-  // Depend on the field values, not the object identity, so the common inline
-  // `clientDescriptor={{ browser: "Chrome" }}` doesn't rebuild the engine.
-  const clientPlatform = clientDescriptor?.platform;
-  const clientOs = clientDescriptor?.os;
-  const clientBrowser = clientDescriptor?.browser;
 
   // The engine must survive re-renders, but `navigate`/`onAuthError` are often
   // inline arrows with a fresh identity each render — route them through refs
-  // so the engine stays stable and still always calls the latest one.
+  // so the engine stays stable and still always calls the latest one. The
+  // client descriptor rides along for a stronger reason: apps usually learn it
+  // asynchronously, and rebuilding the engine to deliver it would restart the
+  // mount state machine — abandoning an in-flight callback exchange and leaving
+  // the tree signed out with a live session on the server.
   const navigateRef = useRef(navigate);
   const onAuthErrorRef = useRef(onAuthError);
+  const clientDescriptorRef = useRef(clientDescriptor);
   useEffect(() => {
     navigateRef.current = navigate;
     onAuthErrorRef.current = onAuthError;
+    clientDescriptorRef.current = clientDescriptor;
   });
 
   const engine = useMemo(() => {
@@ -217,11 +218,7 @@ export function ConvexLogtoSessionProvider({
       deviceBinding: deviceBinding
         ? createSessionDeviceBinding(namespace)
         : undefined,
-      clientDescriptor: {
-        platform: clientPlatform,
-        os: clientOs,
-        browser: clientBrowser,
-      },
+      clientDescriptor: () => clientDescriptorRef.current,
       navigate: (to) => {
         const soft = navigateRef.current;
         if (soft) soft(to);
@@ -240,9 +237,6 @@ export function ConvexLogtoSessionProvider({
     cookieFetch,
     cookieDeviceBinding,
     deviceBinding,
-    clientPlatform,
-    clientOs,
-    clientBrowser,
     initialToken,
     initialSessionId,
   ]);
@@ -375,18 +369,22 @@ export type LogtoSessionAuth = {
   }>;
   /**
    * Name one of the caller's own sessions (pass `undefined` to clear it).
-   * Returns false when the id is not the caller's or is already revoked.
+   * Rejects with a terminal `session_not_found` when the id is not the caller's
+   * or is already revoked — the component refuses to confirm that another
+   * subject's session exists.
    */
   renameSession: (
     targetSessionId: string,
     label: string | undefined,
-  ) => Promise<boolean>;
+  ) => Promise<void>;
   /**
-   * Revoke one of the caller's own sessions. That device drops on its next
-   * reactive revocation tick. Revoking the current session does not clear this
-   * browser's credentials — call `signOut` for that.
+   * Revoke one of the caller's own sessions; that device drops on its next
+   * reactive revocation tick, and an unknown id rejects like `renameSession`.
+   * Revoking the current session does not clear this browser's credentials —
+   * call `signOut` for that, and note that a device which still holds a live
+   * Logto SSO cookie can start a new sign-in.
    */
-  revokeSession: (targetSessionId: string) => Promise<boolean>;
+  revokeSession: (targetSessionId: string) => Promise<void>;
 };
 
 /**

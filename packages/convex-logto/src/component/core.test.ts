@@ -475,6 +475,29 @@ describe("session labels and client descriptors", () => {
     expect(normalizeSessionLabel(undefined)).toBeUndefined();
   });
 
+  it.each([
+    ["RLM", "\u200f"],
+    ["LRM", "\u200e"],
+    ["ALM", "\u061c"],
+    ["RLO", "\u202e"],
+    ["isolate", "\u2066"],
+    ["zero-width space", "\u200b"],
+    ["soft hyphen", "\u00ad"],
+    ["word joiner", "\u2060"],
+    ["line separator", "\u2028"],
+  ])(
+    "strips %s, which could reorder or hide part of a label",
+    (_name, char) => {
+      // The session list is where a user picks which device to revoke; a label
+      // that renders as another one is a way to steer that choice.
+      expect(normalizeSessionLabel(`12${char}34`)).toBe("1234");
+    },
+  );
+
+  it("keeps the zero-width joiner so emoji sequences survive", () => {
+    expect(normalizeSessionLabel("👨\u200d💻")).toBe("👨\u200d💻");
+  });
+
   it("rejects an over-long label instead of truncating it", () => {
     // The user is naming a device they need to recognise later; a silently
     // shortened name is worse than a clear error.

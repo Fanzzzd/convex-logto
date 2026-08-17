@@ -84,16 +84,15 @@ export function ConvexLogtoSessionProvider({
   onAuthError,
   children,
 }: ConvexLogtoSessionProviderProps) {
+  // Refs, not `useMemo` dependencies: apps usually learn the device description
+  // asynchronously, and rebuilding the engine to deliver it would restart the
+  // mount state machine mid-sign-in.
   const onAuthErrorRef = useRef(onAuthError);
+  const clientDescriptorRef = useRef(clientDescriptor);
   useEffect(() => {
     onAuthErrorRef.current = onAuthError;
+    clientDescriptorRef.current = clientDescriptor;
   });
-
-  // Field values, not object identity, so an inline descriptor literal doesn't
-  // rebuild the engine on every render.
-  const clientPlatform = clientDescriptor?.platform;
-  const clientOs = clientDescriptor?.os;
-  const clientBrowser = clientDescriptor?.browser;
 
   const engine = useMemo(() => {
     const storage = new NativeSessionStorageArea(
@@ -107,24 +106,13 @@ export function ConvexLogtoSessionProvider({
       callbackPath: "",
       afterSignIn: "",
       authFlow: createNativeSessionAuthFlow(redirectUri, WebBrowser),
-      clientDescriptor: {
-        platform: clientPlatform,
-        os: clientOs,
-        browser: clientBrowser,
-      },
+      clientDescriptor: () => clientDescriptorRef.current,
       // Native returns to the same mounted tree; callback completion has no
       // route cleanup or post-sign-in navigation to perform.
       navigate: () => {},
       onAuthError: (error) => onAuthErrorRef.current?.(error),
     });
-  }, [
-    client,
-    sessionApi,
-    redirectUri,
-    clientPlatform,
-    clientOs,
-    clientBrowser,
-  ]);
+  }, [client, sessionApi, redirectUri]);
 
   useEffect(() => {
     engine.start();
@@ -229,16 +217,20 @@ export type LogtoSessionAuth = {
     sessions: LogtoSessionSummary[];
     truncated: boolean;
   }>;
-  /** Name one of the caller's own sessions (`undefined` clears it). */
+  /**
+   * Name one of the caller's own sessions (`undefined` clears it). Rejects with
+   * a terminal `session_not_found` for an id that is not the caller's.
+   */
   renameSession: (
     targetSessionId: string,
     label: string | undefined,
-  ) => Promise<boolean>;
+  ) => Promise<void>;
   /**
-   * Revoke one of the caller's own sessions. Revoking the current one does not
-   * clear this device's credentials — call `signOut` for that.
+   * Revoke one of the caller's own sessions, rejecting like `renameSession` for
+   * an unknown id. Revoking the current one does not clear this device's
+   * credentials — call `signOut` for that.
    */
-  revokeSession: (targetSessionId: string) => Promise<boolean>;
+  revokeSession: (targetSessionId: string) => Promise<void>;
 };
 
 export function useLogtoAuth(): LogtoSessionAuth {
