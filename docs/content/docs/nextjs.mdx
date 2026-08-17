@@ -44,3 +44,65 @@ export default function CallbackPage() {
 ```
 
 Full app: [`examples/nextjs`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs).
+
+## Session mode
+
+[Session mode](/docs/session-mode) keeps the same client boundary: the provider
+uses hooks and `window`, so it stays inside `app/providers.tsx`, and
+`app/layout.tsx` stays a Server Component that renders it.
+
+```tsx title="app/providers.tsx"
+"use client";
+import { ConvexReactClient } from "convex/react";
+import { ConvexLogtoSessionProvider } from "convex-logto/react-session";
+import { useRouter } from "next/navigation";
+import { api } from "../convex/_generated/api";
+
+const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  return (
+    <ConvexLogtoSessionProvider
+      client={convex}
+      sessionApi={api.auth}
+      navigate={(to) => router.replace(to)}
+    >
+      {children}
+    </ConvexLogtoSessionProvider>
+  );
+}
+```
+
+`configQuery` is gone — session mode keeps every Logto value on the Convex
+deployment, so the bundle carries none of it. `app/callback/page.tsx` stays the
+Server Component shown above; the provider finishes the exchange under it and
+replace-navigates away.
+
+### Cookie transport
+
+App Router route handlers take and return standard `Request`/`Response`, so the
+handler mounts as a catch-all:
+
+```ts title="app/api/logto/[route]/route.ts"
+import { logtoCookieHandler } from "@/server/logto-cookie";
+
+export const POST = logtoCookieHandler;
+export const OPTIONS = logtoCookieHandler;
+```
+
+Add `cookieTransport={{ endpoint: "/api/logto" }}` to the provider above. The
+handler module and its `allowedOrigins` are in
+[the cookie transport section](/docs/session-mode#httponly-cookie-transport-optional).
+
+<Callout type="warn">
+Do **not** call `getInitialToken()` from a layout or page to seed SSR in the App
+Router. It rotates the session cookie, and a Server Component cannot set cookies —
+Next.js only allows that in Route Handlers, Server Actions, and middleware. The
+rotated cookie would be dropped, leaving the browser holding a superseded token
+that is eventually presented outside the reuse window and read as token reuse,
+which kills the session. Skip seeding here: the provider fetches a fresh ID token
+from `/api/logto/token` right after hydration.
+</Callout>
+
+Full walkthrough: [Session mode](/docs/session-mode).
