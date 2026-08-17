@@ -5,9 +5,10 @@ description: Revoke session-mode sessions when Logto ends an IdP session, using 
 
 OIDC back-channel logout lets Logto notify your Convex deployment when its
 identity-provider session ends. In [session mode](/docs/session-mode), the
-component deletes the matching session row and the existing `sessionValid`
-subscription pushes signed-out state to every live client. There is no client
-configuration or new frontend code.
+component records logical revocation for every component Session mapped to the
+Logout Token's `sid`, then removes those rows in bounded batches. The existing
+`sessionValid` subscription pushes signed-out state to every live client. There
+is no client configuration or new frontend code.
 
 This is separate from [webhook sync](/docs/webhook-sync): webhooks handle
 account-level deletion and suspension, while back-channel logout handles an
@@ -52,8 +53,10 @@ each need their own Logto app and URI.
 
 Enable **Is session required?** for precise session-level logout. Logto then
 includes the ID token's `sid`, and the component deletes only sessions created
-from that Logto session. If Logto sends a token with `sub` but no `sid`, the
-OIDC-defined fallback deletes every component session for that subject.
+from that Logto SSO session. One `sid` may map to multiple component Sessions.
+If Logto sends a token with `sub` but no `sid`, the OIDC-defined fallback
+logically revokes every component Session for that subject before bounded row
+cleanup.
 
 Existing component sessions created before this feature gain their `sid` on
 their next ID-token refresh (or immediately after signing in again). A valid
@@ -66,14 +69,15 @@ The endpoint accepts only a form-encoded POST containing exactly one
 `logout_token`. Before changing state it:
 
 - verifies an `RS256` or `PS256` signature with
-  `<LOGTO_ENDPOINT>/oidc/jwks` (cached for five minutes, with bounded refresh on
-  a new key id);
+  `<LOGTO_ENDPOINT>/oidc/jwks` (cached for five minutes; concurrent misses share
+  one refresh; fetches time out after 10 seconds and responses are limited to
+  256 KiB and 32 keys);
 - requires the configured issuer and app audience, fresh `iat`, unexpired
   `exp`, and a non-empty `jti`;
 - requires the OIDC back-channel logout event and either `sid` or `sub`;
 - rejects `none`, symmetric signing algorithms, malformed JWTs, and any
   `nonce` claim;
-- caps the request body at 1 MB.
+- streams the request body through a 1 MiB application limit.
 
 Verified `jti` values are claimed for 24 hours using the component's existing
 delivery-deduplication table. A retry is answered with the same `200` without

@@ -5,6 +5,7 @@
 import { ConvexReactClient } from "convex/react";
 import { ConvexLogtoProvider } from "convex-logto/react";
 import { useRouter } from "next/navigation";
+import { api } from "../convex/_generated/api";
 
 // Created once on the client — never recreated across renders.
 const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
@@ -14,12 +15,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <ConvexLogtoProvider
       client={convex}
-      // Static public config (endpoint + app id are not secrets): no config
-      // round-trip before sign-in is interactive.
-      config={{
-        endpoint: process.env.NEXT_PUBLIC_LOGTO_ENDPOINT!,
-        appId: process.env.NEXT_PUBLIC_LOGTO_APP_ID!,
-      }}
+      // Keep the Next artifact environment-agnostic: the deployment serves
+      // public Logto config at runtime, matching this example's README.
+      configQuery={api.logto.config}
       // Soft navigation after sign-in instead of a full page reload.
       navigate={(to) => router.push(to)}
     >

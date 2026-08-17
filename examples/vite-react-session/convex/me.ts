@@ -1,4 +1,4 @@
-import { assertUserHasActiveSession } from "convex-logto";
+import { assertSubjectHasActiveSession } from "convex-logto";
 import { components } from "./_generated/api";
 import { query } from "./_generated/server";
 
@@ -11,12 +11,13 @@ export const me = query({
   },
 });
 
-// Server-side revocation enforcement: an ID token stays cryptographically valid
-// until it expires, so sensitive functions can additionally require a LIVE
-// session — revoked users are cut off immediately, not at token expiry.
+// Subject-level revocation enforcement: an ID token stays cryptographically
+// valid until it expires, so sensitive functions can additionally require that
+// its subject still has an active component session. This is not a proof that
+// the bearer came from one particular browser session.
 export const sensitive = query({
   handler: async (ctx) => {
-    await assertUserHasActiveSession(ctx, components.logto);
-    return { secret: "only holders of a live session see this" };
+    await assertSubjectHasActiveSession(ctx, components.logto);
+    return { secret: "only subjects with an active session see this" };
   },
 });

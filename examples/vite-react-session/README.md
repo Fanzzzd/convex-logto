@@ -2,7 +2,7 @@
 
 Session mode: your Convex deployment is the OAuth client (a Logto **Traditional
 Web** app). The Logto refresh token never reaches the browser — a Convex
-component holds it, rotates a one-time session token with the browser, and
+component holds it, rotates a session token with the browser, and
 pushes session revocation reactively. No `@logto/react`, no Logto config in the
 bundle.
 
@@ -35,8 +35,8 @@ bundle.
 - `convex/convex.config.ts` — installs the session component (`app.use(logto)`).
 - `convex/auth.ts` — the entire server surface: one `logtoSessionApi(...)` call.
 - `src/main.tsx` — `ConvexLogtoSessionProvider` pointed at `api.auth`.
-- `convex/me.ts` — `assertUserHasActiveSession` for instant server-side
-  revocation on sensitive functions.
+- `convex/me.ts` — `assertSubjectHasActiveSession` for subject-level revocation
+  enforcement on sensitive functions.
 
 > In this monorepo the dependency is `convex-logto: workspace:*`. Standalone,
 > run `npm i convex-logto` — session mode needs no other auth dependency.

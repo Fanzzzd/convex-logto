@@ -6,7 +6,7 @@ Each is a standalone app — see its README to run it.
 | Example | What it shows |
 | --- | --- |
 | [`vite-react`](./vite-react) | The minimal setup: `ConvexLogtoProvider` + declarative auth gating. |
-| [`vite-react-session`](./vite-react-session) | **Session mode**: server-held refresh token (Convex component), rotating one-time session tokens, live session revocation — no Logto SDK in the bundle. |
+| [`vite-react-session`](./vite-react-session) | **Session mode**: server-held refresh token (Convex component), rotating application session tokens, live session revocation — no Logto SDK in the bundle. |
 | [`tanstack-router-spa`](./tanstack-router-spa) | TanStack Router (SPA): declarative gating + `beforeLoad` route guards (auth outside render), **plus a webhook-synced users table with role-based access (RBAC)**. |
 | [`tanstack-start`](./tanstack-start) | TanStack Start (SSR): one SSR-safe provider + `beforeLoad` route guards. |
 | [`nextjs`](./nextjs) | Next.js App Router: client provider boundary + callback route. |

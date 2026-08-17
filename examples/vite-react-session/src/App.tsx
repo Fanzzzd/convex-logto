@@ -8,10 +8,9 @@ import { useLogtoAuth } from "convex-logto/react-session";
 import { Component, type ReactNode } from "react";
 import { api } from "../convex/_generated/api";
 
-// A query gated by `assertUserHasActiveSession` starts THROWING the instant the
-// session is revoked — a beat before auth flips to signed-out. Catch it so the
-// revocation renders as a clean sign-out instead of crashing the tree. (This is
-// ordinary Convex practice: reactive query errors surface in useQuery.)
+// A query gated by `assertSubjectHasActiveSession` throws once the authenticated
+// subject has no active component session. Catch the reactive query error so
+// revocation renders as a clean sign-out instead of crashing the tree.
 class SessionBoundary extends Component<
   { children: ReactNode },
   { revoked: boolean }

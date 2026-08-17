@@ -3,9 +3,13 @@ title: Multiple environments
 description: Dev / staging / prod with a single source of Logto config per environment.
 ---
 
-Because the frontend pulls config from the backend, **the only thing that varies
-per environment is the Convex deployment it points at** (which you already set
-via `VITE_CONVEX_URL`). The frontend has no Logto env vars to manage.
+This page uses the runtime `configQuery` setup from
+[Quick start](/docs/quick-start). In that mode the frontend pulls public Logto
+config from Convex, so **the only thing that varies per environment is the
+Convex deployment it points at** (which you already set via
+`VITE_CONVEX_URL`). The frontend has no Logto env vars to manage. With the
+default static `config`, set the two public Logto values in each frontend
+environment instead.
 
 ## Single-source config (recommended)
 
@@ -22,6 +26,6 @@ npx convex env set --prod LOGTO_APP_ID   <prod-app-id>
 # staging: target that deployment the same way
 ```
 
-Same code everywhere. The only thing that changes per environment is which Convex
-deployment `VITE_CONVEX_URL` points at — there's no Logto config to duplicate or
-keep in sync.
+With `configQuery`, the same frontend artifact works everywhere. Only the Convex
+deployment selected by `VITE_CONVEX_URL` changes; each deployment serves its own
+public Logto configuration.

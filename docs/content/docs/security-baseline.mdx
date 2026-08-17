@@ -154,11 +154,12 @@ trade-off. The practical distinction for this checklist is:
 - Bridge mode uses Logto's browser storage adapter. Its refresh token is in
   `localStorage`, so same-origin script can copy the durable credential and use it
   according to the tenant's token lifetime and rotation policy.
-- Session mode keeps the Logto refresh token in the Convex component. By default the
-  browser has a short-lived ID token in `sessionStorage` and a one-time session token
-  in `localStorage`. The callback mints the first session token, and every successful
-  refresh rotates it; the server retains only hashes and allows the immediately
-  previous generation for a 10-second race window.
+- Session mode keeps the Logto refresh token in the Convex component. By
+  default the browser has a short-lived ID token in `sessionStorage` and a
+  rotating session token in `localStorage`. The callback mints the first
+  generation, and every successful refresh rotates it; the server retains only
+  hashes for a bounded set of recent generations until their reuse-window
+  expiry.
 
 That reduction matters, but the default session token remains JavaScript-readable.
 Choose one step-up when off-device exfiltration is in scope:
@@ -170,9 +171,9 @@ Choose one step-up when off-device exfiltration is in scope:
   Convex client, and same-origin malicious script can still act through the app.
 - [Device binding](/docs/session-mode#device-binding-optional) keeps the token in
   JavaScript but requires proof from a non-extractable IndexedDB P-256 key on every
-  refresh. Prefer it for a static SPA when preventing a copied token from working on
-  another device is the goal. It does not stop script already executing on the
-  original origin from using the key.
+  refresh and revocation operation. Prefer it for a static SPA when preventing a
+  copied token from working on another device is the goal. It does not stop script
+  already executing on the original origin from using the key.
 
 Cookie transport and device binding are mutually exclusive. Proof generation must
 sign the exact rotating token, while HttpOnly deliberately makes that token
