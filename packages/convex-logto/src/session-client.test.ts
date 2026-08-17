@@ -733,6 +733,39 @@ describe("callback", () => {
     expect(engine.getSnapshot().status).toBe("unauthenticated");
   });
 
+  it("a sign-out during the storage flush does not flip back to authenticated", async () => {
+    // The credentials are already written at this point, so sign-out finds and
+    // revokes the session properly — but the callback must not then re-assert
+    // an authenticated snapshot on top of it.
+    const { engine, storage, handlers, onAuthError } = makeHarness();
+    setURL("http://localhost:5173/callback?code=c1&state=s1");
+    storage.stashTransaction({ state: "s1" });
+    const flushed = deferred<void>();
+    const realFlush = storage.flush.bind(storage);
+    let signOutDuringFlush: Promise<void> | undefined;
+    storage.flush = () => {
+      if (signOutDuringFlush === undefined && storage.readSession() !== null) {
+        signOutDuringFlush = engine.signOut({ federated: false });
+        return flushed.promise;
+      }
+      return realFlush();
+    };
+    handlers.callback.mockResolvedValue(sessionResult(9));
+    handlers.signOut.mockResolvedValue({});
+
+    engine.start();
+    await vi.waitFor(() => expect(signOutDuringFlush).toBeDefined());
+    flushed.resolve(undefined);
+    await signOutDuringFlush;
+    await vi.waitFor(() =>
+      expect(engine.getSnapshot().status).not.toBe("restoring"),
+    );
+
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+    expect(storage.readSession()).toBeNull();
+    void onAuthError;
+  });
+
   it("an unsafe server returnTo falls back to afterSignIn", async () => {
     const { engine, storage, handlers, navigate } = makeHarness({
       afterSignIn: "/home",

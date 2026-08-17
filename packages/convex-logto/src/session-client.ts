@@ -641,6 +641,10 @@ export class SessionAuthEngine {
       });
       this.options.storage.writeIdToken(result.idToken);
       await this.flushStorage();
+      // The credentials are stored by now, so a sign-out landing during the
+      // flush finds and revokes the session itself. It must not then be
+      // overwritten with an authenticated snapshot built from this exchange.
+      if (generation !== this.authGeneration) return;
       this.lastServed = null;
       this.setAuthenticated(result.idToken);
       const destination =
