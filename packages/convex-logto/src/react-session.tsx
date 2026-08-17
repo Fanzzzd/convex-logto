@@ -193,6 +193,9 @@ export function ConvexLogtoSessionProvider({
       initialSession: usesCookieTransport
         ? createCookieSessionMarker(storage.readSession(), initialSessionId)
         : undefined,
+      // The credential is an HttpOnly cookie only the server can expire, so a
+      // failed revoke is a failed sign-out — not something to swallow.
+      serverHeldCredential: usesCookieTransport,
       deviceBinding: deviceBinding
         ? createSessionDeviceBinding(namespace)
         : undefined,

@@ -91,6 +91,7 @@ function makeHarness(options?: {
   deviceBinding?: SessionDeviceBinding;
   sessionApi?: LogtoSessionApi;
   storage?: SessionStorageAdapter;
+  serverHeldCredential?: boolean;
 }) {
   const handlers: Handlers = {
     signIn: vi.fn(),
@@ -125,6 +126,7 @@ function makeHarness(options?: {
     initialToken: options?.initialToken,
     initialSession,
     deviceBinding: options?.deviceBinding,
+    serverHeldCredential: options?.serverHeldCredential,
     navigate,
     onAuthError,
     sleep: () => Promise.resolve(), // skip retry backoff in tests
@@ -1257,6 +1259,52 @@ describe("signOut", () => {
     expect(storage.readSession()).toBeNull();
     expect(storage.readIdToken()).toBeNull();
     expect(engine.getSnapshot().status).toBe("unauthenticated");
+  });
+});
+
+describe("server-held credential sign-out", () => {
+  it("rejects and reports when the server revoke fails", async () => {
+    // Cookie mode: the credential is an HttpOnly cookie only the server can
+    // expire. Reporting success would leave the user signed in.
+    const { engine, storage, handlers, onAuthError } = makeHarness({
+      serverHeldCredential: true,
+      storedSession: { token: "cookie-session", sessionId: "session-id-1" },
+    });
+    void storage;
+    handlers.signOut.mockRejectedValue(new Error("network unavailable"));
+
+    await expect(engine.signOut({ federated: false })).rejects.toThrow(
+      /network unavailable/,
+    );
+    expect(onAuthError).toHaveBeenCalled();
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+  });
+
+  it("still resolves for a local credential, but never silently", async () => {
+    // A local session token is destroyed without the server, so a dead Logto
+    // must not block sign-out — the failure still has to surface.
+    const { engine, handlers, onAuthError } = makeHarness({
+      storedSession: { token: "local-session", sessionId: "session-id-1" },
+    });
+    handlers.signOut.mockRejectedValue(new Error("network unavailable"));
+
+    await expect(engine.signOut({ federated: false })).resolves.toBeUndefined();
+    expect(onAuthError).toHaveBeenCalled();
+  });
+
+  it("treats an empty postLogoutRedirectUri as absent", async () => {
+    const { engine, handlers } = makeHarness({
+      storedSession: { token: "local-session", sessionId: "session-id-1" },
+    });
+    handlers.signOut.mockResolvedValue({});
+
+    await engine.signOut({ postLogoutRedirectUri: "  ", federated: false });
+
+    expect(handlers.signOut).toHaveBeenCalledWith(
+      expect.objectContaining({
+        postLogoutRedirectUri: "http://localhost:5173",
+      }),
+    );
   });
 });
 

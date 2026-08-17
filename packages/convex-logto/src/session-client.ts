@@ -425,6 +425,13 @@ export type SessionEngineOptions = {
   initialSession?: StoredSession;
   /** Opt-in proof-of-possession key; absent keeps the legacy unbound flow. */
   deviceBinding?: SessionDeviceBinding;
+  /**
+   * The session credential lives somewhere this code cannot delete — the
+   * HttpOnly cookie of the same-site transport. Sign-out then has no local
+   * fallback: if the server does not revoke, the user is still signed in, so
+   * the failure must reach the caller instead of being reported as success.
+   */
+  serverHeldCredential?: boolean;
   /** Replace-style navigation; falls back to `location.replace`. */
   navigate?: (to: string) => void;
   /** Native system-browser/deep-link flow; absent preserves the web flow. */
@@ -963,7 +970,10 @@ export class SessionAuthEngine {
     await this.performSignOut({
       postLogoutRedirectUri: options?.postLogoutRedirectUri,
       federated: options?.federated !== false,
-      requireServerSuccess: false,
+      // A local credential can be destroyed without the server, so a dead Logto
+      // must not block sign-out. A server-held one cannot: there the revoke
+      // *is* the sign-out.
+      requireServerSuccess: this.options.serverHeldCredential === true,
       revoke: async (sessionToken, deviceProof, postLogoutRedirectUri) =>
         await this.options.transport.action(this.options.api.signOut, {
           sessionToken,
@@ -1062,8 +1072,11 @@ export class SessionAuthEngine {
     let serverRevocationError: unknown;
     let fatalServerError: Error | undefined;
     if (session !== null) {
+      // `??` alone would forward an empty string, which every server-side
+      // validator rejects — a caller passing `""` means "use the default".
+      const requested = options.postLogoutRedirectUri?.trim();
       postLogoutRedirectUri =
-        options.postLogoutRedirectUri ??
+        (requested === undefined || requested === "" ? undefined : requested) ??
         this.options.authFlow?.redirectUri ??
         window.location.origin;
       if (deviceProofError !== undefined) {
@@ -1092,9 +1105,14 @@ export class SessionAuthEngine {
                     { cause: error },
                   );
             this.reportError(fatalServerError);
+          } else {
+            // Best effort, but never silent: the server session outlives this
+            // sign-out until it expires, and only the app can decide whether
+            // that matters enough to retry.
+            this.reportError(this.asError(error));
           }
-          // Best effort when local cleanup succeeded; a combined failure is
-          // converted into a loud SessionSignOutError below.
+          // A combined failure is converted into a loud SessionSignOutError
+          // below.
         }
       }
     }
