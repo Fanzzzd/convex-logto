@@ -33,3 +33,74 @@ export const Route = createFileRoute("/callback")({
 ```
 
 Full app: [`examples/tanstack-start`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-start).
+
+## Session mode
+
+`ConvexLogtoSessionProvider` is SSR-safe for the same reason: on the server it
+renders one fixed `restoring` snapshot and touches no browser API, so it mounts
+in the same place with no client boundary.
+
+```tsx title="src/router.tsx"
+import { ConvexLogtoSessionProvider } from "convex-logto/react-session";
+
+<ConvexLogtoSessionProvider
+  client={convex}
+  sessionApi={api.auth}
+  navigate={(to) => void router.navigate({ to, replace: true })}
+>
+  <RouterProvider router={router} />
+</ConvexLogtoSessionProvider>;
+```
+
+Keep the `/callback` route — the provider finishes the exchange there before
+navigating on.
+
+### The pieces that are Start-specific
+
+Start is the framework where session mode has *more* to offer than a SPA, because
+it has a server on the same origin:
+
+1. **Mount the cookie handler as a server route.** Start's server handlers receive
+   a standard `Request`, which is exactly what the handler takes:
+
+   ```ts title="src/routes/api/logto/$.ts"
+   import { createFileRoute } from "@tanstack/react-router";
+   import { logtoCookieHandler } from "~/server/logto-cookie";
+
+   export const Route = createFileRoute("/api/logto/$")({
+     server: {
+       handlers: {
+         POST: ({ request }) => logtoCookieHandler(request),
+         OPTIONS: ({ request }) => logtoCookieHandler(request),
+       },
+     },
+   });
+   ```
+
+   Then pass `cookieTransport={{ endpoint: "/api/logto" }}` to the provider. The
+   rotating session token moves into an HttpOnly `__Host-` cookie that JavaScript
+   cannot read. See [the cookie transport](/docs/session-mode#httponly-cookie-transport-optional)
+   for the handler module and its `allowedOrigins`.
+
+2. **Seed the first paint.** With the cookie in place, a server function can
+   exchange it for a fresh ID token during the root loader, so the first render is
+   already authenticated:
+
+   ```tsx
+   const seedSession = createServerFn().handler(async () => {
+     const seed = await logtoCookieHandler.getInitialToken(getRequest());
+     setResponseHeaders(Object.fromEntries(seed.headers));
+     return {
+       initialToken: seed.initialToken,
+       initialSessionId: seed.initialSessionId,
+     };
+   });
+   ```
+
+   Pass the pair to `initialToken` / `initialSessionId`. **Forwarding
+   `seed.headers` is not optional**: that response carries the rotated cookie, and
+   dropping it leaves the browser holding a superseded token that will eventually
+   be presented outside the reuse window and read as reuse. Call it at most once
+   per document request.
+
+Full walkthrough: [Session mode](/docs/session-mode).
