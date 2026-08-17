@@ -763,6 +763,7 @@ export const refresh = action({
           throw error;
         }
         let claims: ReturnType<typeof decodeIdToken>;
+        let idToken: string;
         try {
           if (tokens.id_token === undefined) {
             throw terminal(
@@ -770,7 +771,8 @@ export const refresh = action({
               "Logto's token response carried no id_token — is `openid` scope enabled?",
             );
           }
-          claims = decodeIdToken(tokens.id_token, args);
+          idToken = tokens.id_token;
+          claims = decodeIdToken(idToken, args);
         } catch (error) {
           // Logto answered 2xx: the grant was processed and possibly rotated,
           // so this is a *deployment* fault (an `iss`/`aud` drift after an
@@ -800,7 +802,7 @@ export const refresh = action({
             // Logto rotates the confidential-client refresh token only at ≥70%
             // TTL; persist the new one atomically whenever it arrives.
             newRefreshToken: tokens.refresh_token,
-            idToken: tokens.id_token,
+            idToken,
             idTokenExp: claims.expiresAtMs,
             sid: claims.sid,
             now: Date.now(),
@@ -820,7 +822,7 @@ export const refresh = action({
           );
         }
         return {
-          idToken: tokens.id_token,
+          idToken,
           sessionToken: candidate,
           sessionId: begin.sessionId,
         };
