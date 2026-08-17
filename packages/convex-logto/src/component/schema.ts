@@ -63,6 +63,24 @@ export default defineSchema({
         y: v.string(),
       }),
     ),
+    /**
+     * User-chosen name for this session, shown in a "where am I signed in"
+     * list. Normalized and length-limited on write.
+     */
+    label: v.optional(v.string()),
+    /**
+     * Coarse, **self-reported** description of the client that signed in, so a
+     * user can recognise their own devices. The app supplies it; the library
+     * never reads a User-Agent or IP. It is not authenticated and must never
+     * be used for a security decision.
+     */
+    client: v.optional(
+      v.object({
+        platform: v.optional(v.string()),
+        os: v.optional(v.string()),
+        browser: v.optional(v.string()),
+      }),
+    ),
     /** The Logto refresh token (confidential client). Never leaves the component. */
     logtoRefreshToken: v.string(),
     /** Cached current ID token + expiry, served on the reuse-window path. */

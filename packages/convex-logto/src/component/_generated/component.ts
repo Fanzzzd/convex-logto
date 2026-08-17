@@ -43,10 +43,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {
           appId: string;
+          client?: { browser?: string; os?: string; platform?: string };
           clientSecret: string;
           code: string;
           devicePublicKey?: { crv: "P-256"; kty: "EC"; x: string; y: string };
           endpoint: string;
+          label?: string;
           redirectUri: string;
           state: string;
         },
@@ -99,6 +101,29 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         | { outcome: "reuse" },
         Name
       >;
+      listSessions: FunctionReference<
+        "action",
+        "internal",
+        {
+          deviceProof?: string;
+          now: number;
+          reuseWindowMs: number;
+          sessionToken: string;
+        },
+        {
+          sessions: Array<{
+            client?: { browser?: string; os?: string; platform?: string };
+            createdAt: number;
+            current: boolean;
+            deviceBound: boolean;
+            label?: string;
+            lastRefreshedAt: number;
+            sessionId: string;
+          }>;
+          truncated: boolean;
+        },
+        Name
+      >;
       recordWebhookDelivery: FunctionReference<
         "mutation",
         "internal",
@@ -118,6 +143,33 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           sessionToken: string;
         },
         { idToken: string; sessionId: string; sessionToken: string },
+        Name
+      >;
+      renameSession: FunctionReference<
+        "action",
+        "internal",
+        {
+          deviceProof?: string;
+          label?: string;
+          now: number;
+          reuseWindowMs: number;
+          sessionToken: string;
+          targetSessionId: string;
+        },
+        boolean,
+        Name
+      >;
+      revokeSession: FunctionReference<
+        "action",
+        "internal",
+        {
+          deviceProof?: string;
+          now: number;
+          reuseWindowMs: number;
+          sessionToken: string;
+          targetSessionId: string;
+        },
+        boolean,
         Name
       >;
       sessionValid: FunctionReference<

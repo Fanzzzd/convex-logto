@@ -21,8 +21,10 @@ export {
   logtoSessionApi,
   type LogtoSessionApi,
   type LogtoSessionApiOptions,
+  type LogtoSessionClientDescriptor,
   type LogtoSessionComponent,
   type LogtoSessionDevicePublicKey,
+  type LogtoSessionSummary,
 } from "./session";
 export {
   LOGTO_SESSION_COOKIE_BASE_PATH,

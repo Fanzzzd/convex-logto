@@ -76,7 +76,8 @@
     {
       "files": [
         "src/react.bridge.test.tsx",
-        "src/react.config-loading.test.tsx"
+        "src/react.config-loading.test.tsx",
+        "src/react-session.provider.test.tsx"
       ],
       "rules": {
         "vitest/no-restricted-vi-methods": "off"

@@ -25,7 +25,11 @@ import {
   NativeSessionStorageArea,
 } from "./native-session-client";
 import { SessionAuthEngine } from "./session-client";
-import type { LogtoSessionApi } from "./session";
+import type {
+  LogtoSessionApi,
+  LogtoSessionClientDescriptor,
+  LogtoSessionSummary,
+} from "./session";
 
 const SessionContext = createContext<{
   engine: SessionAuthEngine;
@@ -49,6 +53,13 @@ export type ConvexLogtoSessionProviderProps = {
   sessionApi: LogtoSessionApi;
   /** Custom-scheme/universal-link callback registered in Logto. */
   redirectUri: string;
+  /**
+   * Self-reported description of this device ("ios", "iPhone 15", ...), stamped
+   * on the session at sign-in so `listSessions()` can show the user something
+   * recognisable. Advisory display data, never authenticated. Safe to pass as an
+   * inline object: only the three field values affect the engine.
+   */
+  clientDescriptor?: LogtoSessionClientDescriptor;
   /** Subscribe to `sessionValid` and drop auth immediately on revocation. Default true. */
   reactiveRevocation?: boolean;
   /** Sign-in initiation plus recoverable OAuth, SecureStore, and system-browser failures. */
@@ -68,13 +79,19 @@ export function ConvexLogtoSessionProvider({
   client,
   sessionApi,
   redirectUri,
+  clientDescriptor,
   reactiveRevocation = true,
   onAuthError,
   children,
 }: ConvexLogtoSessionProviderProps) {
+  // Refs, not `useMemo` dependencies: apps usually learn the device description
+  // asynchronously, and rebuilding the engine to deliver it would restart the
+  // mount state machine mid-sign-in.
   const onAuthErrorRef = useRef(onAuthError);
+  const clientDescriptorRef = useRef(clientDescriptor);
   useEffect(() => {
     onAuthErrorRef.current = onAuthError;
+    clientDescriptorRef.current = clientDescriptor;
   });
 
   const engine = useMemo(() => {
@@ -89,6 +106,7 @@ export function ConvexLogtoSessionProvider({
       callbackPath: "",
       afterSignIn: "",
       authFlow: createNativeSessionAuthFlow(redirectUri, WebBrowser),
+      clientDescriptor: () => clientDescriptorRef.current,
       // Native returns to the same mounted tree; callback completion has no
       // route cleanup or post-sign-in navigation to perform.
       navigate: () => {},
@@ -190,6 +208,29 @@ export type LogtoSessionAuth = {
   signOutEverywhere: (options?: {
     postLogoutRedirectUri?: string;
   }) => Promise<void>;
+  /**
+   * The caller's own sessions, for a "where am I signed in" screen. A snapshot,
+   * not a subscription — the session token it authenticates with rotates — so
+   * call it again after `renameSession` / `revokeSession`.
+   */
+  listSessions: () => Promise<{
+    sessions: LogtoSessionSummary[];
+    truncated: boolean;
+  }>;
+  /**
+   * Name one of the caller's own sessions (`undefined` clears it). Rejects with
+   * a terminal `session_not_found` for an id that is not the caller's.
+   */
+  renameSession: (
+    targetSessionId: string,
+    label: string | undefined,
+  ) => Promise<void>;
+  /**
+   * Revoke one of the caller's own sessions, rejecting like `renameSession` for
+   * an unknown id. Revoking the current one does not clear this device's
+   * credentials — call `signOut` for that.
+   */
+  revokeSession: (targetSessionId: string) => Promise<void>;
 };
 
 export function useLogtoAuth(): LogtoSessionAuth {
@@ -211,6 +252,16 @@ export function useLogtoAuth(): LogtoSessionAuth {
       engine.signOutEverywhere(options),
     [engine],
   );
+  const listSessions = useCallback(() => engine.listSessions(), [engine]);
+  const renameSession = useCallback(
+    (targetSessionId: string, label: string | undefined) =>
+      engine.renameSession(targetSessionId, label),
+    [engine],
+  );
+  const revokeSession = useCallback(
+    (targetSessionId: string) => engine.revokeSession(targetSessionId),
+    [engine],
+  );
   return useMemo(
     () => ({
       isAuthenticated,
@@ -219,6 +270,9 @@ export function useLogtoAuth(): LogtoSessionAuth {
       signIn,
       signOut,
       signOutEverywhere,
+      listSessions,
+      renameSession,
+      revokeSession,
     }),
     [
       isAuthenticated,
@@ -227,10 +281,17 @@ export function useLogtoAuth(): LogtoSessionAuth {
       signIn,
       signOut,
       signOutEverywhere,
+      listSessions,
+      renameSession,
+      revokeSession,
     ],
   );
 }
 
-export type { LogtoSessionApi } from "./session";
+export type {
+  LogtoSessionApi,
+  LogtoSessionClientDescriptor,
+  LogtoSessionSummary,
+} from "./session";
 export type { SessionSignOutServerStatus } from "./session-client";
 export { SessionSignOutError } from "./session-client";

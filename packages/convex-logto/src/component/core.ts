@@ -16,6 +16,126 @@ export const DEFAULT_REUSE_WINDOW_MS = 10 * 1000;
 /** Maximum out-of-order successful session-token responses retained per session. */
 export const SESSION_TOKEN_GENERATION_LIMIT = 8;
 
+/** Longest accepted user-chosen session label, in code points. */
+export const SESSION_LABEL_MAX_LENGTH = 64;
+/** Longest accepted value for each self-reported client descriptor field. */
+export const CLIENT_DESCRIPTOR_MAX_LENGTH = 32;
+/**
+ * Sessions returned by one `listSessions` call. Bounded because the query reads
+ * whole session documents; the result reports whether it was truncated rather
+ * than silently showing a partial list of a user's devices.
+ */
+export const SESSION_LIST_LIMIT = 16;
+
+/**
+ * How many rows one `listSessions` call may read while filling that page.
+ * Sessions killed by a `sid` watermark are filtered after the read, so the scan
+ * must be allowed to walk past them — but only this far, to keep the query's
+ * work bounded no matter how much revoked state is awaiting cleanup.
+ */
+export const SESSION_LIST_SCAN_LIMIT = 128;
+
+/**
+ * The other half of that bound. A session document may approach Convex's 1 MiB
+ * limit (a fat ID token with many claims), so a row count alone does not bound
+ * the read: the scan also stops once it has read this many bytes. A quarter of
+ * the 16 MiB transaction budget leaves room for the one document already in
+ * hand when the check fires, and for the watermark lookups alongside it.
+ */
+export const SESSION_LIST_SCAN_BYTES = 4 * 1024 * 1024;
+
+/** The large, variable fields of a session row, plus slack for the rest. */
+export function sessionReadCost(session: {
+  logtoRefreshToken: string;
+  lastIdToken: string;
+  label?: string;
+}): number {
+  return (
+    session.logtoRefreshToken.length +
+    session.lastIdToken.length +
+    (session.label?.length ?? 0) +
+    512
+  );
+}
+
+/** Self-reported, unauthenticated description of a signing-in client. */
+export type SessionClientDescriptor = {
+  platform?: string;
+  os?: string;
+  browser?: string;
+};
+
+/**
+ * Every invisible character class, not a hand-picked list of bidi overrides:
+ * `Cc` controls, `Cf` format characters (the bidi embeddings and isolates, but
+ * also RLM/LRM/ALM and the zero-width joiners `\s` never matches), and the line
+ * and paragraph separators. A label is rendered next to other sessions, and any
+ * of these can make one entry impersonate another.
+ */
+const INVISIBLE_DISPLAY_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+/** Emoji sequences join with ZWJ; dropping it would split families apart. */
+const ZERO_WIDTH_JOINER = "\u200d";
+
+/**
+ * Collapse whitespace and drop invisible characters, so a label cannot smuggle
+ * newlines or direction changes into a UI that lists it beside other sessions.
+ */
+function normalizeDisplayText(raw: string): string {
+  // Code points, not graphemes: the limit these feed is a storage bound, and
+  // per-code-point filtering is what strips the invisible characters.
+  return Array.from(raw)
+    .filter(
+      (character) =>
+        character === ZERO_WIDTH_JOINER ||
+        !INVISIBLE_DISPLAY_CHARACTERS.test(character),
+    )
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Normalize a user-chosen session label. Rejects rather than truncates: a
+ * silently shortened label is worse than a clear error, because the user is
+ * naming a device they need to recognise later.
+ */
+export function normalizeSessionLabel(
+  raw: string | undefined,
+): string | undefined {
+  if (raw === undefined) return undefined;
+  const label = normalizeDisplayText(raw);
+  if (label === "") return undefined;
+  if (Array.from(label).length > SESSION_LABEL_MAX_LENGTH) {
+    throw terminal(
+      "session_label_too_long",
+      `A session label may be at most ${SESSION_LABEL_MAX_LENGTH} characters.`,
+    );
+  }
+  return label;
+}
+
+/**
+ * Normalize the app-supplied client descriptor. Values are advisory, so an
+ * over-long field is trimmed to the limit instead of failing a sign-in that is
+ * otherwise fine.
+ */
+export function normalizeClientDescriptor(
+  raw: SessionClientDescriptor | undefined,
+): SessionClientDescriptor | undefined {
+  if (raw === undefined) return undefined;
+  const descriptor: SessionClientDescriptor = {};
+  for (const field of ["platform", "os", "browser"] as const) {
+    const value = raw[field];
+    if (value === undefined) continue;
+    const normalized = Array.from(normalizeDisplayText(value))
+      .slice(0, CLIENT_DESCRIPTOR_MAX_LENGTH)
+      .join("");
+    if (normalized !== "") descriptor[field] = normalized;
+  }
+  return Object.keys(descriptor).length === 0 ? undefined : descriptor;
+}
+
 /**
  * GC horizon for dead sessions: Logto's grant chain has a hard 180-day cap, so
  * a session not refreshed for longer than this can never refresh again.

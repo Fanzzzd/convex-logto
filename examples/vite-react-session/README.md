@@ -34,7 +34,10 @@ bundle.
 
 - `convex/convex.config.ts` — installs the session component (`app.use(logto)`).
 - `convex/auth.ts` — the entire server surface: one `logtoSessionApi(...)` call.
-- `src/main.tsx` — `ConvexLogtoSessionProvider` pointed at `api.auth`.
+- `src/main.tsx` — `ConvexLogtoSessionProvider` pointed at `api.auth`, with the
+  optional advisory `clientDescriptor`.
+- `src/App.tsx` — the `Sessions` panel: `listSessions()` / `renameSession()` /
+  `revokeSession()`, plus `signOutEverywhere()`.
 - `convex/me.ts` — `assertSubjectHasActiveSession` for subject-level revocation
   enforcement on sensitive functions.
 

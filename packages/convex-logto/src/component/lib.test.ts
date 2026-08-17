@@ -9,11 +9,21 @@ import {
   gc,
   killSession,
   killSubjectSessionsByToken,
+  deleteOwnedSession,
+  listSubjectSessions,
   refresh,
   releaseClaim,
+  resolveCallerSession,
+  setSessionLabel,
   signOut,
 } from "./lib";
-import { SESSION_TOKEN_GENERATION_LIMIT, toBase64Url } from "./core";
+import {
+  SESSION_LIST_LIMIT,
+  SESSION_LIST_SCAN_BYTES,
+  SESSION_LIST_SCAN_LIMIT,
+  SESSION_TOKEN_GENERATION_LIMIT,
+  toBase64Url,
+} from "./core";
 
 type SubjectSession = {
   _id: string;
@@ -1674,5 +1684,482 @@ describe("gc token generations", () => {
       "session-1",
       "orphan-generation",
     ]);
+  });
+});
+
+// --- session management ------------------------------------------------------
+
+type ListSession = {
+  _id: string;
+  subject: string;
+  sid?: string;
+  createdAt: number;
+  lastRefreshedAt: number;
+  label?: string;
+  client?: { platform?: string; os?: string; browser?: string };
+  devicePublicKey?: { kty: "EC"; crv: "P-256"; x: string; y: string };
+  // The large fields the scan's byte budget is measured against; every real row
+  // carries them, so the fixtures do too.
+  logtoRefreshToken: string;
+  lastIdToken: string;
+};
+
+const listRow = (
+  row: Omit<ListSession, "logtoRefreshToken" | "lastIdToken"> &
+    Partial<Pick<ListSession, "logtoRefreshToken" | "lastIdToken">>,
+): ListSession => ({
+  logtoRefreshToken: "refresh-token",
+  lastIdToken: "id-token",
+  ...row,
+});
+
+/**
+ * Index-aware fake for the session-management handlers: `by_subject_createdAt`
+ * needs `gt` plus descending order, and the revocation markers must be
+ * queryable so a logically-revoked row can be proven invisible.
+ */
+function sessionListHarness(
+  initial: ListSession[],
+  markers: {
+    subjects?: Array<{ subject: string; revokedAt: number }>;
+    sids?: Array<{ sid: string; revokedAt: number }>;
+  } = {},
+) {
+  let sessions = [...initial];
+  const scannedRows: Array<Record<string, unknown>> = [];
+  const generations = [
+    { _id: "generation-1", sessionId: "session-b", rotatedAt: 1 },
+  ];
+  const deleted: string[] = [];
+  const patches: Array<{ id: string; patch: Record<string, unknown> }> = [];
+  const rowsFor = (table: string): Array<Record<string, unknown>> => {
+    if (table === "sessions") return sessions as never;
+    if (table === "sessionTokenGenerations") return generations as never;
+    if (table === "subjectRevocations")
+      return (markers.subjects ?? []) as never;
+    if (table === "sidRevocations") return (markers.sids ?? []) as never;
+    return [];
+  };
+  const db = {
+    query: (table: string) => ({
+      withIndex: (
+        _index: string,
+        configure: (query: {
+          eq(field: string, value: unknown): unknown;
+          gt(field: string, value: unknown): unknown;
+        }) => unknown,
+      ) => {
+        const constraints: Array<{
+          op: "eq" | "gt";
+          field: string;
+          value: unknown;
+        }> = [];
+        const builder = {
+          eq(field: string, value: unknown) {
+            constraints.push({ op: "eq", field, value });
+            return this;
+          },
+          gt(field: string, value: unknown) {
+            constraints.push({ op: "gt", field, value });
+            return this;
+          },
+        };
+        configure(builder);
+        let direction: "asc" | "desc" = "asc";
+        const matching = () => {
+          const filtered = rowsFor(table).filter((row) =>
+            constraints.every(({ op, field, value }) =>
+              op === "eq"
+                ? row[field] === value
+                : typeof row[field] === "number" &&
+                  typeof value === "number" &&
+                  (row[field] as number) > value,
+            ),
+          );
+          return filtered.toSorted((left, right) => {
+            const difference =
+              ((left.createdAt as number) ?? 0) -
+              ((right.createdAt as number) ?? 0);
+            return direction === "desc" ? -difference : difference;
+          });
+        };
+        const result = {
+          unique: () => Promise.resolve(matching()[0] ?? null),
+          collect: () => Promise.resolve(matching()),
+          take: (count: number) => Promise.resolve(matching().slice(0, count)),
+          order: (next: "asc" | "desc") => {
+            direction = next;
+            return result;
+          },
+          // Convex query streams are async-iterable, and `listSubjectSessions`
+          // relies on that to stop reading as soon as its page is full.
+          async *[Symbol.asyncIterator]() {
+            for (const row of matching()) {
+              scannedRows.push(row);
+              yield row;
+            }
+          },
+        };
+        return result;
+      },
+    }),
+    normalizeId: (_table: string, id: string) =>
+      // Only ids this deployment could have minted normalize — a foreign id is
+      // rejected before any read, exactly as Convex does.
+      id.startsWith("session-") ? id : null,
+    get: (id: string) =>
+      Promise.resolve(sessions.find((session) => session._id === id) ?? null),
+    patch: (id: string, patch: Record<string, unknown>) => {
+      patches.push({ id, patch });
+      sessions = sessions.map((session) =>
+        session._id === id
+          ? ({ ...session, ...patch } as ListSession)
+          : session,
+      );
+      return Promise.resolve();
+    },
+    delete: (id: string) => {
+      deleted.push(id);
+      sessions = sessions.filter((session) => session._id !== id);
+      return Promise.resolve();
+    },
+  };
+  return {
+    db,
+    deleted,
+    patches,
+    sessions: () => sessions,
+    scanned: () => scannedRows.length,
+  };
+}
+
+const listSubjectSessionsHandler = internalHandler(
+  listSubjectSessions,
+  (_args: { subject: string; callerSessionId: string }) =>
+    ({}) as { sessions: unknown[]; truncated: boolean },
+);
+const setSessionLabelHandler = internalHandler(
+  setSessionLabel,
+  (_args: { subject: string; targetSessionId: string; label?: string }) =>
+    true as boolean,
+);
+const deleteOwnedSessionHandler = internalHandler(
+  deleteOwnedSession,
+  (_args: { subject: string; targetSessionId: string }) => true as boolean,
+);
+const resolveCallerSessionHandler = internalHandler(
+  resolveCallerSession,
+  (_args: { presentedHash: string; now: number; reuseWindowMs: number }) =>
+    ({}) as { sessionId: string; subject: string },
+);
+
+const listFixture = (): ListSession[] => [
+  listRow({
+    _id: "session-a",
+    subject: "subject-1",
+    createdAt: 1_000,
+    lastRefreshedAt: 1_500,
+    label: "Laptop",
+    client: { browser: "Firefox" },
+  }),
+  listRow({
+    _id: "session-b",
+    subject: "subject-1",
+    sid: "sid-b",
+    createdAt: 2_000,
+    lastRefreshedAt: 2_500,
+    devicePublicKey: { kty: "EC", crv: "P-256", x: "x", y: "y" },
+  }),
+  listRow({
+    _id: "session-other",
+    subject: "subject-2",
+    createdAt: 3_000,
+    lastRefreshedAt: 3_000,
+  }),
+];
+
+describe("listSubjectSessions", () => {
+  it("returns only the caller's sessions, newest first, flagging the current one", async () => {
+    const harness = sessionListHarness(listFixture());
+
+    const result = await listSubjectSessionsHandler(
+      { db: harness.db },
+      { subject: "subject-1", callerSessionId: "session-b" },
+    );
+
+    expect(result).toEqual({
+      truncated: false,
+      sessions: [
+        {
+          sessionId: "session-b",
+          current: true,
+          createdAt: 2_000,
+          lastRefreshedAt: 2_500,
+          deviceBound: true,
+        },
+        {
+          sessionId: "session-a",
+          current: false,
+          createdAt: 1_000,
+          lastRefreshedAt: 1_500,
+          label: "Laptop",
+          client: { browser: "Firefox" },
+          deviceBound: false,
+        },
+      ],
+    });
+  });
+
+  it("hides sessions a revocation watermark already killed", async () => {
+    const harness = sessionListHarness(listFixture(), {
+      subjects: [{ subject: "subject-1", revokedAt: 1_000 }],
+      sids: [{ sid: "sid-b", revokedAt: 2_000 }],
+    });
+
+    const result = await listSubjectSessionsHandler(
+      { db: harness.db },
+      { subject: "subject-1", callerSessionId: "session-b" },
+    );
+
+    expect(result).toEqual({ sessions: [], truncated: false });
+  });
+
+  it("keeps live sessions visible behind a page-full of revoked rows", async () => {
+    // The sid watermark kills the newest SESSION_LIST_LIMIT rows while their
+    // physical rows wait for a cleanup batch. A fixed page read would spend
+    // every slot on them and hide the one device the user can still act on.
+    const harness = sessionListHarness(
+      [
+        ...Array.from({ length: SESSION_LIST_LIMIT }, (_unused, index) =>
+          listRow({
+            _id: `session-dead-${index}`,
+            subject: "subject-1",
+            sid: "sid-dead",
+            createdAt: 1_000 + index,
+            lastRefreshedAt: 1_000 + index,
+          }),
+        ),
+        listRow({
+          _id: "session-live",
+          subject: "subject-1",
+          createdAt: 500,
+          lastRefreshedAt: 500,
+        }),
+      ],
+      { sids: [{ sid: "sid-dead", revokedAt: 2_000 }] },
+    );
+
+    const result = await listSubjectSessionsHandler(
+      { db: harness.db },
+      { subject: "subject-1", callerSessionId: "session-live" },
+    );
+
+    expect(result.sessions.map((session) => session.sessionId)).toEqual([
+      "session-live",
+    ]);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("stops at the scan limit and says so rather than reading unboundedly", async () => {
+    const harness = sessionListHarness(
+      Array.from({ length: SESSION_LIST_SCAN_LIMIT + 10 }, (_unused, index) =>
+        listRow({
+          _id: `session-dead-${index}`,
+          subject: "subject-1",
+          sid: "sid-dead",
+          createdAt: index,
+          lastRefreshedAt: index,
+        }),
+      ),
+      { sids: [{ sid: "sid-dead", revokedAt: Number.MAX_SAFE_INTEGER }] },
+    );
+
+    const result = await listSubjectSessionsHandler(
+      { db: harness.db },
+      { subject: "subject-1", callerSessionId: "session-dead-0" },
+    );
+
+    expect(result).toEqual({ sessions: [], truncated: true });
+    // The cap plus the one row whose existence proves more remain.
+    expect(harness.scanned()).toBe(SESSION_LIST_SCAN_LIMIT + 1);
+  });
+
+  it("stops on the byte budget before a page of huge rows blows the read limit", async () => {
+    // A session row can approach Convex's 1 MiB document limit, so a row count
+    // alone does not bound the read.
+    const fatIdToken = "x".repeat(SESSION_LIST_SCAN_BYTES / 4);
+    const harness = sessionListHarness(
+      Array.from({ length: SESSION_LIST_LIMIT }, (_unused, index) =>
+        listRow({
+          _id: `session-${index}`,
+          subject: "subject-1",
+          sid: "sid-dead",
+          createdAt: index,
+          lastRefreshedAt: index,
+          lastIdToken: fatIdToken,
+        }),
+      ),
+      { sids: [{ sid: "sid-dead", revokedAt: Number.MAX_SAFE_INTEGER }] },
+    );
+
+    const result = await listSubjectSessionsHandler(
+      { db: harness.db },
+      { subject: "subject-1", callerSessionId: "session-0" },
+    );
+
+    expect(result.truncated).toBe(true);
+    // Four rows fill the budget; the fifth is the one already in hand when the
+    // check fires, and nothing past it is read.
+    expect(harness.scanned()).toBe(5);
+  });
+
+  it("reads no further than the page it fills", async () => {
+    const harness = sessionListHarness(
+      Array.from({ length: SESSION_LIST_LIMIT + 20 }, (_unused, index) =>
+        listRow({
+          _id: `session-${index}`,
+          subject: "subject-1",
+          createdAt: index,
+          lastRefreshedAt: index,
+        }),
+      ),
+    );
+
+    const result = await listSubjectSessionsHandler(
+      { db: harness.db },
+      { subject: "subject-1", callerSessionId: "session-0" },
+    );
+
+    expect(result.sessions).toHaveLength(SESSION_LIST_LIMIT);
+    expect(result.truncated).toBe(true);
+    // One row past the page proves truncation; nothing beyond it is read.
+    expect(harness.scanned()).toBe(SESSION_LIST_LIMIT + 1);
+  });
+
+  it("reports truncation past the page limit", async () => {
+    const harness = sessionListHarness(
+      Array.from({ length: SESSION_LIST_LIMIT + 1 }, (_unused, index) =>
+        listRow({
+          _id: `session-${index}`,
+          subject: "subject-1",
+          createdAt: index,
+          lastRefreshedAt: index,
+        }),
+      ),
+    );
+
+    const result = await listSubjectSessionsHandler(
+      { db: harness.db },
+      { subject: "subject-1", callerSessionId: "session-0" },
+    );
+
+    expect(result.sessions).toHaveLength(SESSION_LIST_LIMIT);
+    expect(result.truncated).toBe(true);
+  });
+});
+
+describe("owned-session mutations", () => {
+  it("labels and clears a label on the caller's own session", async () => {
+    const harness = sessionListHarness(listFixture());
+
+    await expect(
+      setSessionLabelHandler(
+        { db: harness.db },
+        { subject: "subject-1", targetSessionId: "session-b", label: "Phone" },
+      ),
+    ).resolves.toBe(true);
+    expect(harness.patches).toEqual([
+      { id: "session-b", patch: { label: "Phone" } },
+    ]);
+
+    await setSessionLabelHandler(
+      { db: harness.db },
+      { subject: "subject-1", targetSessionId: "session-b" },
+    );
+    expect(harness.patches[1]).toEqual({
+      id: "session-b",
+      patch: { label: undefined },
+    });
+  });
+
+  it("revokes the caller's own session together with its generations", async () => {
+    const harness = sessionListHarness(listFixture());
+
+    await expect(
+      deleteOwnedSessionHandler(
+        { db: harness.db },
+        { subject: "subject-1", targetSessionId: "session-b" },
+      ),
+    ).resolves.toBe(true);
+    expect(harness.deleted).toEqual(["generation-1", "session-b"]);
+  });
+
+  it.each([
+    ["another subject's session", "session-other"],
+    ["an id this deployment never minted", "foreign-id"],
+  ])("refuses to touch %s", async (_name, targetSessionId) => {
+    const harness = sessionListHarness(listFixture());
+
+    for (const handler of [setSessionLabelHandler, deleteOwnedSessionHandler]) {
+      await expect(
+        handler({ db: harness.db }, { subject: "subject-1", targetSessionId }),
+      ).rejects.toThrow(/no longer exists/);
+    }
+    expect(harness.deleted).toEqual([]);
+    expect(harness.patches).toEqual([]);
+  });
+
+  it("refuses a session a watermark already killed", async () => {
+    const harness = sessionListHarness(listFixture(), {
+      sids: [{ sid: "sid-b", revokedAt: 2_000 }],
+    });
+
+    await expect(
+      deleteOwnedSessionHandler(
+        { db: harness.db },
+        { subject: "subject-1", targetSessionId: "session-b" },
+      ),
+    ).rejects.toThrow(/no longer exists/);
+  });
+});
+
+describe("resolveCallerSession", () => {
+  it("resolves a live token to its owner", async () => {
+    const harness = sessionMutationHarness({
+      ...refreshFixture(),
+      tokenHash: "current",
+    });
+
+    await expect(
+      resolveCallerSessionHandler(
+        { db: harness.db },
+        { presentedHash: "current", now: 1_000_000, reuseWindowMs: 30_000 },
+      ),
+    ).resolves.toEqual({ sessionId: "session-1", subject: "subject-1" });
+  });
+
+  it("rejects a superseded token once the reuse window closes", async () => {
+    const harness = sessionMutationHarness({
+      ...refreshFixture(),
+      rotatedAt: 900_000,
+    });
+
+    await expect(
+      resolveCallerSessionHandler(
+        { db: harness.db },
+        { presentedHash: "previous", now: 1_000_000, reuseWindowMs: 30_000 },
+      ),
+    ).rejects.toThrow(/No active session/);
+  });
+
+  it("rejects an unknown token", async () => {
+    const harness = sessionMutationHarness(refreshFixture());
+
+    await expect(
+      resolveCallerSessionHandler(
+        { db: harness.db },
+        { presentedHash: "stolen", now: 1_000_000, reuseWindowMs: 30_000 },
+      ),
+    ).rejects.toThrow(/No active session/);
   });
 });

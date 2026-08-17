@@ -13,7 +13,13 @@ const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL as string);
 // short-lived ID token and a rotating application session token.
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <ConvexLogtoSessionProvider client={convex} sessionApi={api.auth}>
+    <ConvexLogtoSessionProvider
+      client={convex}
+      sessionApi={api.auth}
+      // Advisory, app-supplied device description shown by listSessions(). The
+      // library never sniffs a User-Agent — this is exactly what you pass.
+      clientDescriptor={{ platform: "web", browser: "this browser" }}
+    >
       <App />
     </ConvexLogtoSessionProvider>
   </StrictMode>,

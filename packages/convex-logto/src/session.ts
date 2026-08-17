@@ -15,6 +15,22 @@ import {
 import type { LogtoEndpointPolicy } from "./component/endpoint.js";
 import { readEndpointAndAppId } from "./config";
 
+const sessionSummaryValidator = v.object({
+  sessionId: v.string(),
+  current: v.boolean(),
+  createdAt: v.number(),
+  lastRefreshedAt: v.number(),
+  label: v.optional(v.string()),
+  client: v.optional(
+    v.object({
+      platform: v.optional(v.string()),
+      os: v.optional(v.string()),
+      browser: v.optional(v.string()),
+    }),
+  ),
+  deviceBound: v.boolean(),
+});
+
 // --- component reference typing ---------------------------------------------
 
 /** Public half of the browser's non-extractable ECDSA P-256 binding key. */
@@ -24,6 +40,16 @@ export type LogtoSessionDevicePublicKey = {
   x: string;
   y: string;
 };
+
+/**
+ * Coarse, self-reported client description. Advisory display data only — it is
+ * never authenticated and must never drive a security decision.
+ */
+const clientDescriptorValidator = v.object({
+  platform: v.optional(v.string()),
+  os: v.optional(v.string()),
+  browser: v.optional(v.string()),
+});
 
 const devicePublicKeyValidator = v.object({
   kty: v.literal("EC"),
@@ -64,6 +90,8 @@ export type LogtoSessionComponent = {
         state: string;
         redirectUri: string;
         devicePublicKey?: LogtoSessionDevicePublicKey;
+        label?: string;
+        client?: LogtoSessionClientDescriptor;
       },
       {
         idToken: string;
@@ -99,6 +127,42 @@ export type LogtoSessionComponent = {
         reuseWindowMs?: number;
       },
       { endSessionUrl?: string }
+    >;
+    listSessions: FunctionReference<
+      "action",
+      "internal",
+      {
+        sessionToken: string;
+        deviceProof?: string;
+        now: number;
+        reuseWindowMs: number;
+      },
+      { sessions: LogtoSessionSummary[]; truncated: boolean }
+    >;
+    renameSession: FunctionReference<
+      "action",
+      "internal",
+      {
+        sessionToken: string;
+        deviceProof?: string;
+        targetSessionId: string;
+        label?: string;
+        now: number;
+        reuseWindowMs: number;
+      },
+      boolean
+    >;
+    revokeSession: FunctionReference<
+      "action",
+      "internal",
+      {
+        sessionToken: string;
+        deviceProof?: string;
+        targetSessionId: string;
+        now: number;
+        reuseWindowMs: number;
+      },
+      boolean
     >;
     sessionValid: FunctionReference<
       "query",
@@ -158,6 +222,26 @@ export type LogtoSessionComponent = {
  * sees them. `ConvexLogtoSessionProvider` takes a reference to the module that
  * re-exports them (e.g. `api.auth`).
  */
+/** Coarse, self-reported description of a signing-in client. */
+export type LogtoSessionClientDescriptor = {
+  platform?: string;
+  os?: string;
+  browser?: string;
+};
+
+/** One of the caller's sessions, as returned by `listSessions`. */
+export type LogtoSessionSummary = {
+  sessionId: string;
+  /** True for the session whose token authenticated the call. */
+  current: boolean;
+  createdAt: number;
+  lastRefreshedAt: number;
+  label?: string;
+  client?: LogtoSessionClientDescriptor;
+  /** Whether this session requires a device proof to refresh or sign out. */
+  deviceBound: boolean;
+};
+
 export type LogtoSessionApi = {
   signIn: FunctionReference<
     "action",
@@ -173,6 +257,7 @@ export type LogtoSessionApi = {
       state: string;
       redirectUri: string;
       devicePublicKey?: LogtoSessionDevicePublicKey;
+      client?: LogtoSessionClientDescriptor;
     },
     {
       idToken: string;
@@ -210,6 +295,34 @@ export type LogtoSessionApi = {
       postLogoutRedirectUri?: string;
     },
     { endSessionUrl?: string; count: number }
+  >;
+  /**
+   * Optional for the same rolling-upgrade reason as `signOutEverywhere`: a
+   * provider on a newer library must keep working against an app module that
+   * has not re-exported these yet.
+   */
+  listSessions?: FunctionReference<
+    "action",
+    "public",
+    { sessionToken: string; deviceProof?: string },
+    { sessions: LogtoSessionSummary[]; truncated: boolean }
+  >;
+  renameSession?: FunctionReference<
+    "action",
+    "public",
+    {
+      sessionToken: string;
+      deviceProof?: string;
+      targetSessionId: string;
+      label?: string;
+    },
+    boolean
+  >;
+  revokeSession?: FunctionReference<
+    "action",
+    "public",
+    { sessionToken: string; deviceProof?: string; targetSessionId: string },
+    boolean
   >;
   sessionValid: FunctionReference<
     "query",
@@ -295,6 +408,7 @@ export function logtoSessionApi(
       state: string;
       redirectUri: string;
       devicePublicKey?: LogtoSessionDevicePublicKey;
+      client?: LogtoSessionClientDescriptor;
     },
     Promise<{
       idToken: string;
@@ -326,6 +440,26 @@ export function logtoSessionApi(
     },
     Promise<{ endSessionUrl?: string; count: number }>
   >;
+  listSessions: RegisteredAction<
+    "public",
+    { sessionToken: string; deviceProof?: string },
+    Promise<{ sessions: LogtoSessionSummary[]; truncated: boolean }>
+  >;
+  renameSession: RegisteredAction<
+    "public",
+    {
+      sessionToken: string;
+      deviceProof?: string;
+      targetSessionId: string;
+      label?: string;
+    },
+    Promise<boolean>
+  >;
+  revokeSession: RegisteredAction<
+    "public",
+    { sessionToken: string; deviceProof?: string; targetSessionId: string },
+    Promise<boolean>
+  >;
   sessionValid: RegisteredQuery<
     "public",
     { sessionId: string },
@@ -354,6 +488,7 @@ export function logtoSessionApi(
         state: v.string(),
         redirectUri: v.string(),
         devicePublicKey: v.optional(devicePublicKeyValidator),
+        client: v.optional(clientDescriptorValidator),
       },
       returns: v.object({
         idToken: v.string(),
@@ -368,6 +503,7 @@ export function logtoSessionApi(
           state: args.state,
           redirectUri: args.redirectUri,
           devicePublicKey: args.devicePublicKey,
+          client: args.client,
         });
       },
     }),
@@ -437,6 +573,60 @@ export function logtoSessionApi(
             postLogoutRedirectUri: args.postLogoutRedirectUri,
           }),
         };
+      },
+    }),
+    listSessions: actionGeneric({
+      args: {
+        sessionToken: v.string(),
+        deviceProof: v.optional(v.string()),
+      },
+      returns: v.object({
+        sessions: v.array(sessionSummaryValidator),
+        truncated: v.boolean(),
+      }),
+      handler: async (ctx, args) => {
+        return await ctx.runAction(component.lib.listSessions, {
+          sessionToken: args.sessionToken,
+          deviceProof: args.deviceProof,
+          now: Date.now(),
+          reuseWindowMs: options.reuseWindowMs ?? DEFAULT_REUSE_WINDOW_MS,
+        });
+      },
+    }),
+    renameSession: actionGeneric({
+      args: {
+        sessionToken: v.string(),
+        deviceProof: v.optional(v.string()),
+        targetSessionId: v.string(),
+        label: v.optional(v.string()),
+      },
+      returns: v.boolean(),
+      handler: async (ctx, args) => {
+        return await ctx.runAction(component.lib.renameSession, {
+          sessionToken: args.sessionToken,
+          deviceProof: args.deviceProof,
+          targetSessionId: args.targetSessionId,
+          label: args.label,
+          now: Date.now(),
+          reuseWindowMs: options.reuseWindowMs ?? DEFAULT_REUSE_WINDOW_MS,
+        });
+      },
+    }),
+    revokeSession: actionGeneric({
+      args: {
+        sessionToken: v.string(),
+        deviceProof: v.optional(v.string()),
+        targetSessionId: v.string(),
+      },
+      returns: v.boolean(),
+      handler: async (ctx, args) => {
+        return await ctx.runAction(component.lib.revokeSession, {
+          sessionToken: args.sessionToken,
+          deviceProof: args.deviceProof,
+          targetSessionId: args.targetSessionId,
+          now: Date.now(),
+          reuseWindowMs: options.reuseWindowMs ?? DEFAULT_REUSE_WINDOW_MS,
+        });
       },
     }),
     sessionValid: queryGeneric({
