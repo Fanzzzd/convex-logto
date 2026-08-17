@@ -184,10 +184,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * a retry reaches browser storage; `flush()` makes explicit sign-out fail loud
  * instead of claiming success while durable credentials survive a reload.
  */
+/** Artifacts whose durable removal failure must reach the caller. */
+const CREDENTIAL_NAMES = new Set(["session", "idToken"]);
+
 export class SessionStorageArea {
   private memory = new Map<string, string>();
   private failedBrowserAreas = new Set<Exclude<StorageKind, "memory">>();
   private pendingRemovals = new Map<string, unknown>();
+  /**
+   * Keys this instance has positive evidence for in a real browser area — it
+   * either wrote one there or read one back. Only those can leave a *durable*
+   * credential behind, so only their removal failures are worth failing on. A
+   * blocked area (sandboxed iframe, "block all cookies") never stored anything,
+   * and reporting its removal failures would wedge sign-in, sign-out and
+   * refresh forever over credentials that only ever lived in memory.
+   */
+  private durableKeys = new Set<string>();
 
   constructor(
     private namespace: string,
@@ -218,32 +230,36 @@ export class SessionStorageArea {
     return `${kind}:${key}`;
   }
 
-  private area(
-    kind: StorageKind,
-  ): Pick<Storage, "getItem" | "setItem" | "removeItem"> {
-    if (
-      kind !== "memory" &&
-      !this.failedBrowserAreas.has(kind) &&
-      typeof window !== "undefined"
-    ) {
-      try {
-        const area =
-          kind === "local" ? window.localStorage : window.sessionStorage;
-        // Accessing the getter can itself throw (sandboxed iframes).
-        area.getItem(this.key("probe"));
-        return area;
-      } catch {
-        this.fallBack(kind);
-      }
+  /** The real browser area, or null when it is unavailable or known-broken. */
+  private browserArea(
+    kind: Exclude<StorageKind, "memory">,
+  ): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {
+    if (this.failedBrowserAreas.has(kind) || typeof window === "undefined") {
+      return null;
     }
-    return this.memoryArea();
+    try {
+      const area =
+        kind === "local" ? window.localStorage : window.sessionStorage;
+      // Accessing the getter can itself throw (sandboxed iframes).
+      area.getItem(this.key("probe"));
+      return area;
+    } catch {
+      this.fallBack(kind);
+      return null;
+    }
   }
 
   private read(kind: StorageKind, name: string): StoredValue {
     const key = this.key(name);
+    const browser = kind === "memory" ? null : this.browserArea(kind);
     let raw: string | null;
     try {
-      raw = this.area(kind).getItem(key);
+      raw = (browser ?? this.memoryArea()).getItem(key);
+      // Reading a value back out of a real browser area proves it is durable
+      // here, even when another page load is what wrote it.
+      if (raw !== null && browser !== null && kind !== "memory") {
+        this.durableKeys.add(this.pendingRemovalKey(kind, key));
+      }
     } catch {
       // The probe can succeed even when reading the actual key is denied.
       // Trip the circuit breaker and retry against this instance's memory so
@@ -263,12 +279,19 @@ export class SessionStorageArea {
   }
 
   private write(kind: StorageKind, name: string, value: unknown): void {
+    const key = this.key(name);
+    const serialized = JSON.stringify(value);
+    const browser = kind === "memory" ? null : this.browserArea(kind);
     try {
-      this.area(kind).setItem(this.key(name), JSON.stringify(value));
+      (browser ?? this.memoryArea()).setItem(key, serialized);
+      if (browser !== null && kind !== "memory") {
+        this.durableKeys.add(this.pendingRemovalKey(kind, key));
+      }
+      return;
     } catch {
       this.fallBack(kind);
-      this.memoryArea().setItem(this.key(name), JSON.stringify(value));
     }
+    this.memoryArea().setItem(key, serialized);
   }
 
   private remove(kind: StorageKind, name: string): void {
@@ -277,13 +300,37 @@ export class SessionStorageArea {
     if (kind === "memory" || typeof window === "undefined") return;
     const pendingKey = this.pendingRemovalKey(kind, key);
     try {
+      // Deliberately bypass the circuit breaker: a removal must still be tried
+      // against an area this instance previously gave up on.
       const area =
         kind === "local" ? window.localStorage : window.sessionStorage;
       area.removeItem(key);
+      this.durableKeys.delete(pendingKey);
       this.pendingRemovals.delete(pendingKey);
     } catch (error) {
       this.fallBack(kind);
-      this.pendingRemovals.set(pendingKey, error);
+      // Only a credential that is actually still there is a durable-removal
+      // failure. A spent `txn` stash holds the OIDC `state` string, not a
+      // bearer, so failing sign-out over it would be a false alarm.
+      if (CREDENTIAL_NAMES.has(name) && this.survivedRemoval(kind, key)) {
+        this.pendingRemovals.set(pendingKey, error);
+      }
+    }
+  }
+
+  /** Did a failed removal actually leave a credential in the browser area? */
+  private survivedRemoval(
+    kind: Exclude<StorageKind, "memory">,
+    key: string,
+  ): boolean {
+    try {
+      const area =
+        kind === "local" ? window.localStorage : window.sessionStorage;
+      return area.getItem(key) !== null;
+    } catch {
+      // The area cannot even be read. Anything this instance is known to have
+      // put there is at risk; anything else never reached it at all.
+      return this.durableKeys.has(this.pendingRemovalKey(kind, key));
     }
   }
 
@@ -466,6 +513,8 @@ export class SessionAuthEngine {
 
   private setSnapshot(next: SessionSnapshot): void {
     this.snapshot = next;
+    // Snapshot: a listener may subscribe or unsubscribe while being notified.
+    // oxlint-disable-next-line unicorn/no-useless-spread
     for (const listener of [...this.listeners]) listener();
   }
 
@@ -539,6 +588,11 @@ export class SessionAuthEngine {
     params: URLSearchParams,
     redirectUri: string,
   ): Promise<void> {
+    // Fence the exchange like a refresh. A sign-out that lands while the
+    // authorization code is being redeemed sees no stored session yet, so it
+    // cannot revoke anything; without this the exchange response would install
+    // fresh credentials right after the user signed out.
+    const generation = this.authGeneration;
     const code = params.get("code") ?? "";
     const state = params.get("state") ?? "";
     // Login-CSRF binding: only the browser tab that started this sign-in holds
@@ -560,6 +614,8 @@ export class SessionAuthEngine {
     }
     try {
       const devicePublicKey = await this.options.deviceBinding?.getPublicKey();
+      // Nothing has been minted yet, so simply abandoning the code is enough.
+      if (generation !== this.authGeneration) return;
       const result = await this.retrying(() =>
         this.options.transport.action(this.options.api.callback, {
           code,
@@ -568,6 +624,10 @@ export class SessionAuthEngine {
           ...(devicePublicKey === undefined ? {} : { devicePublicKey }),
         }),
       );
+      if (generation !== this.authGeneration) {
+        await this.revokeAbandonedSession(result.sessionToken);
+        return;
+      }
       this.options.storage.writeSession({
         token: result.sessionToken,
         sessionId: result.sessionId,
@@ -593,6 +653,29 @@ export class SessionAuthEngine {
       // previous session survives in storage, restore() picks it up.
       await this.restore();
       this.navigateReplace(this.options.afterSignIn);
+    }
+  }
+
+  /**
+   * Kill a session the server minted for a sign-in the client has since
+   * abandoned. Without this the row — and the Logto grant behind it — would
+   * outlive every credential anyone holds for it.
+   */
+  private async revokeAbandonedSession(sessionToken: string): Promise<void> {
+    try {
+      const deviceProof = await this.options.deviceBinding?.sign(sessionToken);
+      await this.options.transport.action(this.options.api.signOut, {
+        sessionToken,
+        ...(deviceProof === undefined ? {} : { deviceProof }),
+      });
+    } catch (error) {
+      this.reportError(
+        new Error(
+          "convex-logto: signed out during sign-in, but the session the server " +
+            "had already created could not be revoked. It expires on its own.",
+          { cause: error },
+        ),
+      );
     }
   }
 

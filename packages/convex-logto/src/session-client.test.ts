@@ -343,6 +343,47 @@ describe("SessionStorageArea", () => {
     expect(store.readIdToken()).toBe("next-token");
   });
 
+  it("does not report durable removal for an area that never accepted a write", async () => {
+    // "Block all cookies", a sandboxed iframe, or blocked site data: every
+    // access throws, so the credential only ever lived in memory. Reporting its
+    // removal would wedge sign-in, sign-out and refresh for the whole page.
+    const blocked = () => {
+      throw new Error("storage blocked");
+    };
+    vi.stubGlobal("localStorage", {
+      getItem: blocked,
+      setItem: blocked,
+      removeItem: blocked,
+    });
+    const store = new SessionStorageArea("ns", "local");
+    store.writeSession({ token: "t", sessionId: "s" });
+    expect(store.readSession()).toEqual({ token: "t", sessionId: "s" });
+
+    store.clearAll();
+
+    expect(store.readSession()).toBeNull();
+    expect(store.readIdToken()).toBeNull();
+    await expect(store.flush()).resolves.toBeUndefined();
+  });
+
+  it("does not fail sign-out over a spent transaction stash", async () => {
+    const values = new Map<string, string>();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => void values.set(key, value),
+      removeItem: () => {
+        throw new Error("storage unavailable");
+      },
+    });
+    const store = new SessionStorageArea("ns", "local");
+    store.stashTransaction({ state: "s1" });
+
+    store.clearAll();
+
+    // The stash holds the OIDC `state`, not a bearer — not a credential leak.
+    await expect(store.flush()).resolves.toBeUndefined();
+  });
+
   it("clearAll removes every artifact", () => {
     const store = new SessionStorageArea("ns", "session");
     store.writeSession({ token: "t", sessionId: "s" });
@@ -641,6 +682,53 @@ describe("callback", () => {
       redirectUri: "http://localhost:5173/callback",
       devicePublicKey,
     });
+  });
+
+  it("a sign-out mid-exchange discards and revokes the minted session", async () => {
+    const { engine, storage, handlers } = makeHarness();
+    setURL("http://localhost:5173/callback?code=c1&state=s1");
+    storage.stashTransaction({ state: "s1" });
+    const exchange = deferred<ReturnType<typeof sessionResult>>();
+    handlers.callback.mockReturnValue(exchange.promise);
+    handlers.signOut.mockResolvedValue({});
+
+    engine.start();
+    await vi.waitFor(() => expect(handlers.callback).toHaveBeenCalled());
+    // The exchange is in flight, so no session is stored yet: sign-out has
+    // nothing local to revoke and must not be undone by the response.
+    await engine.signOut();
+    exchange.resolve(sessionResult(7));
+    await vi.waitFor(() =>
+      expect(handlers.signOut).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionToken: "session-token-7" }),
+      ),
+    );
+
+    expect(storage.readSession()).toBeNull();
+    expect(storage.readIdToken()).toBeNull();
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+  });
+
+  it("a cross-tab sign-out mid-exchange discards the minted session", async () => {
+    const { engine, storage, handlers } = makeHarness();
+    setURL("http://localhost:5173/callback?code=c1&state=s1");
+    storage.stashTransaction({ state: "s1" });
+    const exchange = deferred<ReturnType<typeof sessionResult>>();
+    handlers.callback.mockReturnValue(exchange.promise);
+    handlers.signOut.mockResolvedValue({});
+
+    engine.start();
+    await vi.waitFor(() => expect(handlers.callback).toHaveBeenCalled());
+    engine.handleExternalSignOut();
+    exchange.resolve(sessionResult(8));
+    await vi.waitFor(() =>
+      expect(handlers.signOut).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionToken: "session-token-8" }),
+      ),
+    );
+
+    expect(storage.readSession()).toBeNull();
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
   });
 
   it("an unsafe server returnTo falls back to afterSignIn", async () => {
