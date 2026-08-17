@@ -507,7 +507,7 @@ async function deviceProofFixture(sessionToken: string) {
   };
 }
 
-function idToken() {
+function idToken(overrides: Record<string, unknown> = {}) {
   const payload = toBase64Url(
     new TextEncoder().encode(
       JSON.stringify({
@@ -515,6 +515,7 @@ function idToken() {
         aud: "app-1",
         sub: "subject-1",
         exp: 2_000_000_000,
+        ...overrides,
       }),
     ),
   );
@@ -756,6 +757,87 @@ describe("bounded token endpoint", () => {
           >,
         ),
       ).toBe("lib:killSession");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("keeps every session when LOGTO_ENDPOINT drifts from Logto's issuer", async () => {
+    // The operator repointed the deployment at a new custom domain while Logto
+    // still issues the old `iss`. Credentials are fine, so Logto refreshes and
+    // rotates happily — deleting the row here would destroy every session in
+    // the deployment, one refresh at a time.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id_token: idToken({ iss: "https://old.example.com/oidc" }),
+          refresh_token: "rotated-token",
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const { promise, runMutation } = tokenEndpointRefreshHarness();
+    try {
+      await expect(promise).rejects.toMatchObject({
+        data: { kind: "transient", code: "id_token_mismatch" },
+      });
+      expect(runMutation).toHaveBeenCalledTimes(2);
+      expect(
+        getFunctionName(
+          runMutation.mock.calls[1]?.[0] as FunctionReference<
+            "mutation",
+            "internal"
+          >,
+        ),
+      ).toBe("lib:persistRotatedRefreshToken");
+      // The rotation must be stored: presenting the superseded token again
+      // would trip Logto's reuse detection and destroy the whole grant.
+      expect(runMutation.mock.calls[1]?.[1]).toMatchObject({
+        refreshToken: "rotated-token",
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("accepts the spec-legal array form of aud", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id_token: idToken({ aud: ["app-1"] }) }), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { promise, runMutation } = tokenEndpointRefreshHarness();
+    try {
+      await expect(promise).resolves.toMatchObject({
+        idToken: expect.any(String),
+      });
+      expect(
+        getFunctionName(
+          runMutation.mock.calls[1]?.[0] as FunctionReference<
+            "mutation",
+            "internal"
+          >,
+        ),
+      ).toBe("lib:completeRefresh");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("keeps the session when a 2xx body is not the JSON we expected", async () => {
+    // A proxy or WAF interstitial in front of the token endpoint. An unreadable
+    // 2xx already preserved the row; a readable non-JSON one used to delete it.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<html>checking your browser</html>", {
+        headers: { "Content-Type": "text/html" },
+      }),
+    );
+    const { promise, runMutation } = tokenEndpointRefreshHarness();
+    try {
+      await expect(promise).rejects.toMatchObject({
+        data: { kind: "transient", code: "no_id_token" },
+      });
+      expectRefreshClaimRetained(runMutation);
     } finally {
       fetchSpy.mockRestore();
     }
