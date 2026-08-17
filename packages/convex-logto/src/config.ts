@@ -1,7 +1,13 @@
 import { type FunctionReference, queryGeneric } from "convex/server";
 import { v } from "convex/values";
+import {
+  buildLogtoEndpointUrl,
+  normalizeLogtoEndpoint,
+  type LogtoEndpointPolicy,
+  type LogtoPublicEndpointConfig,
+} from "./component/endpoint";
 
-export type LogtoAuthConfigOptions = {
+export type LogtoAuthConfigOptions = LogtoEndpointPolicy & {
   /** Logto endpoint, e.g. `https://auth.example.com`. Defaults to `LOGTO_ENDPOINT`. */
   endpoint?: string;
   /** Logto SPA application App ID (the ID token's `aud`). Defaults to `LOGTO_APP_ID`. */
@@ -18,15 +24,10 @@ export function readEndpointAndAppId(options: LogtoAuthConfigOptions = {}): {
   endpoint: string;
   appId: string;
 } {
-  // Trim stray whitespace and drop trailing slashes so the endpoint normalizes
-  // to a single canonical form (e.g. `https://auth.example.com`), regardless of
-  // how the env var was pasted.
-  const endpoint = (options.endpoint ?? process.env.LOGTO_ENDPOINT)
-    ?.trim()
-    .replace(/\/+$/, "");
+  const rawEndpoint = (options.endpoint ?? process.env.LOGTO_ENDPOINT)?.trim();
   const appId = (options.appId ?? process.env.LOGTO_APP_ID)?.trim();
-  if (!endpoint || !appId) {
-    const missing = [!endpoint && "LOGTO_ENDPOINT", !appId && "LOGTO_APP_ID"]
+  if (!rawEndpoint || !appId) {
+    const missing = [!rawEndpoint && "LOGTO_ENDPOINT", !appId && "LOGTO_APP_ID"]
       .filter(Boolean)
       .join(" and ");
     throw new Error(
@@ -35,16 +36,7 @@ export function readEndpointAndAppId(options: LogtoAuthConfigOptions = {}): {
         `or pass it to this function.`,
     );
   }
-  // The package appends `/oidc` itself, so the endpoint must be the base URL.
-  // Setting it to the issuer URL is a common paste error that would otherwise
-  // produce `.../oidc/oidc` and a confusing JWKS-discovery failure.
-  if (endpoint.endsWith("/oidc")) {
-    throw new Error(
-      `convex-logto: LOGTO_ENDPOINT should be your Logto base URL ` +
-        `(e.g. https://auth.example.com), not the /oidc issuer URL — ` +
-        `drop the trailing "/oidc".`,
-    );
-  }
+  const endpoint = normalizeLogtoEndpoint(rawEndpoint, options);
   return { endpoint, appId };
 }
 
@@ -65,16 +57,17 @@ export function logtoAuthConfig(
   const { endpoint, appId } = readEndpointAndAppId(options);
   // `endpoint` is already trimmed and trailing-slash-stripped by readEndpointAndAppId.
   return {
-    domain: `${endpoint}/oidc`,
+    domain: buildLogtoEndpointUrl(endpoint, ""),
     applicationID: appId,
   };
 }
 
-/** Public, non-secret Logto config the frontend needs to start sign-in. */
-export type LogtoPublicConfig = {
-  endpoint: string;
-  appId: string;
-};
+/**
+ * Public, non-secret Logto config the frontend needs to start sign-in.
+ * `allowInsecureHttp` is only for an explicitly accepted, non-loopback
+ * self-hosted HTTP deployment; loopback HTTP needs no opt-in.
+ */
+export type LogtoPublicConfig = LogtoPublicEndpointConfig;
 
 /** Reference to the query produced by {@link logtoConfigQuery}. */
 export type LogtoConfigQueryRef = FunctionReference<
@@ -85,19 +78,29 @@ export type LogtoConfigQueryRef = FunctionReference<
 >;
 
 /**
- * A public Convex query that serves `{ endpoint, appId }` from this deployment's
- * env, so the frontend can fetch its Logto config instead of carrying its own
- * copy. Configure Logto in one place per environment — the Convex deployment.
+ * A public Convex query that serves `{ endpoint, appId, allowInsecureHttp? }`
+ * from this deployment's env/options, so the frontend can fetch its Logto
+ * config instead of carrying its own copy. Configure Logto in one place per
+ * environment — the Convex deployment.
  *
  * @example
  * // convex/logto.ts
  * import { logtoConfigQuery } from "convex-logto";
  * export const config = logtoConfigQuery();
  */
-export function logtoConfigQuery() {
+export function logtoConfigQuery(options: LogtoAuthConfigOptions = {}) {
   return queryGeneric({
     args: {},
-    returns: v.object({ endpoint: v.string(), appId: v.string() }),
-    handler: (): LogtoPublicConfig => readEndpointAndAppId(),
+    returns: v.object({
+      endpoint: v.string(),
+      appId: v.string(),
+      allowInsecureHttp: v.optional(v.boolean()),
+    }),
+    handler: (): LogtoPublicConfig => ({
+      ...readEndpointAndAppId(options),
+      ...(options.allowInsecureHttp === true
+        ? { allowInsecureHttp: true }
+        : {}),
+    }),
   });
 }

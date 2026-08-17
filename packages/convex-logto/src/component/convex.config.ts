@@ -2,7 +2,7 @@ import { defineComponent } from "convex/server";
 
 /**
  * The convex-logto session component: holds Logto refresh tokens server-side
- * (confidential client), rotates one-time session tokens, and pushes session
+ * (confidential client), rotates application session tokens, and pushes session
  * revocation reactively. Install in `convex/convex.config.ts`:
  *
  * @example

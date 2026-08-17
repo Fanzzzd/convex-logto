@@ -1,48 +1,57 @@
 # convex-logto
 
-Bridges a Logto instance into Convex auth. Two integration shapes share one package: a browser-side OIDC bridge, and a server-side session manager running inside the user's Convex deployment.
+Vocabulary for the Logto-to-Convex authentication boundary.
 
 ## Language
 
 ### Integration shapes
 
 **Bridge mode**:
-The integration where `@logto/react` owns the OIDC flow and token storage in the browser, and this library only bridges the ID token into Convex.
+An integration shape in which the frontend owns the Logto authorization flow and Convex receives the resulting ID token.
 _Avoid_: SPA mode, legacy mode
 
 **Session mode**:
-The integration where the session component owns the OIDC flow server-side (confidential client) and the browser holds only short-lived credentials.
+An integration shape in which the application backend owns durable Logto authorization state and the frontend holds short-lived application credentials.
 _Avoid_: BFF mode, component mode
 
-### Session mode concepts
+### Session concepts
 
 **Session component**:
-The Convex component that holds Logto refresh tokens, performs the code exchange and refreshes, and manages sessions in its own private tables.
+The session-mode boundary that owns application Sessions and server-held Logto credentials.
 
 **Session**:
-One browser sign-in. Owns exactly one Logto grant and one rotating chain of session tokens, and is killed as a unit.
+An application sign-in context associated with a subject and Logto authorization state. Multiple Sessions may correspond to one Logto SSO session.
 _Avoid_: family, token chain
 
+**Logto SSO session**:
+Logto's identity-provider login context, optionally identified by the OIDC `sid`. It is distinct from an application Session.
+
 **Session token**:
-The one-time credential a browser holds for its session. Rotates on every refresh; only the current token (or the previous one inside the reuse window) is accepted.
-_Avoid_: refresh token (that's Logto's, held server-side)
+A rotating application credential for a Session, issued as a sequence of generations. It is distinct from a Logto refresh token and is not strictly single-use during the Reuse window.
+_Avoid_: refresh token, one-time token
+
+**Session-token generation**:
+One value in a Session token's rotating sequence.
 
 **Sign-in transaction**:
-The server-held state + PKCE verifier record that lives between building the sign-in URL and the code exchange. Consumed exactly once.
-_Avoid_: sign-in session (Logto SDK's term for its browser-side equivalent)
+A time-bounded authorization attempt that correlates sign-in initiation with callback completion.
+_Avoid_: sign-in session
 
 **Reuse window**:
-The short grace period (default 10s) during which re-presenting the immediately-previous session token returns the cached rotation result instead of triggering reuse handling.
+The grace period in which a recently superseded Session-token generation is treated as an honest concurrent presentation.
 
 **Reuse handling**:
-What happens when a session token older than the reuse window is presented: the session is killed and its Logto grant revoked.
+The containment policy applied when a superseded Session-token generation is presented after its Reuse window.
 _Avoid_: family kill
 
 **Reactive revocation**:
-Pushing a session's death to connected clients instantly via a Convex subscription, instead of waiting for the short bearer to expire.
+Revocation state delivered to a connected client before its Short bearer expires.
 
 **Short bearer**:
-The Logto ID token handed to Convex over the WebSocket. The only credential Convex ever sees; its TTL is the hard revocation boundary.
+The short-lived Logto ID token Convex accepts as an application request credential.
+
+**Subject-level active-session assertion**:
+A check that an authenticated bearer's subject has at least one active Session. It does not bind the bearer to a particular Session.
 
 **Federated sign-out**:
-Sign-out that also ends the Logto SSO session (redirect to the end-session endpoint), so the next sign-in requires credentials. The default; non-federated sign-out leaves the SSO session alive.
+Sign-out that also ends the current user agent's Logto SSO session. It does not end sessions on other devices or guarantee a credential prompt on the next sign-in.

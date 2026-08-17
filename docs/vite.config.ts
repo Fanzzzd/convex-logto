@@ -4,9 +4,36 @@ import tailwindcss from "@tailwindcss/vite";
 import mdx from "fumadocs-mdx/vite";
 import { nitro } from "nitro/vite";
 import { defineConfig } from "vite";
-import tsconfigPaths from "vite-tsconfig-paths";
 
 export default defineConfig({
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: "react-vendor",
+              test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+              priority: 30,
+            },
+            {
+              name: "tanstack-vendor",
+              test: /node_modules[\\/]@tanstack[\\/]/,
+              priority: 20,
+            },
+            {
+              name: "fumadocs-vendor",
+              test: /node_modules[\\/](fumadocs-core|fumadocs-ui)[\\/]/,
+              priority: 10,
+            },
+          ],
+        },
+        // Manual groups can otherwise move side-effectful framework modules
+        // ahead of their dependencies.
+        strictExecutionOrder: true,
+      },
+    },
+  },
   server: {
     port: 3000,
   },
@@ -20,7 +47,6 @@ export default defineConfig({
   plugins: [
     mdx(),
     tailwindcss(),
-    tsconfigPaths(),
     tanstackStart({
       prerender: {
         enabled: true,

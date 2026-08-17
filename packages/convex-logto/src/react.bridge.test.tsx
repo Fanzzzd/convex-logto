@@ -21,12 +21,14 @@ const mockLogto = {
   isAuthenticated: false,
   isLoading: false,
   error: undefined as Error | undefined,
-  getIdToken: vi.fn(async (): Promise<string | undefined> => "id-token"),
-  getAccessToken: vi.fn(async (): Promise<string | undefined> => "at"),
-  clearAccessToken: vi.fn(async () => {}),
-  getIdTokenClaims: vi.fn(async () => undefined),
-  signIn: vi.fn(async () => {}),
-  signOut: vi.fn(async () => {}),
+  getIdToken: vi.fn<() => Promise<string | undefined>>(async () => "id-token"),
+  getAccessToken: vi.fn<() => Promise<string | undefined>>(async () => "at"),
+  clearAccessToken: vi.fn<() => Promise<void>>(async () => {}),
+  getIdTokenClaims: vi.fn<() => Promise<undefined>>(async () => undefined),
+  signIn: vi.fn<(redirectUri?: string) => Promise<void>>(async () => {}),
+  signOut: vi.fn<(postLogoutRedirectUri?: string) => Promise<void>>(
+    async () => {},
+  ),
 };
 
 vi.mock("@logto/react", () => ({
@@ -66,7 +68,8 @@ vi.mock("convex/react", () => ({
 // --- harness ----------------------------------------------------------------
 
 const config = { endpoint: "https://example.logto.app", appId: "app123" };
-const fakeClient = {} as never;
+const fakeClientValue = {};
+const fakeClient = fakeClientValue as never;
 
 type AuthApi = ReturnType<typeof useLogtoAuth>;
 let capturedApi: AuthApi | null = null;
@@ -145,7 +148,10 @@ afterEach(async () => {
   capturedApi = null;
 });
 
-const flush = () => act(async () => void (await Promise.resolve()));
+const flush = () =>
+  act(async () => {
+    await Promise.resolve();
+  });
 
 // --- callback gating (C1 / C7) ---------------------------------------------
 
@@ -184,7 +190,7 @@ it("default /callback does not pend when callbackPath points elsewhere", async (
 it("benign callback (user cancelled) returns to the stashed returnTo via navigate", async () => {
   setUrl("http://localhost:3000/callback?state=s456&error=access_denied");
   sessionStorage.setItem("convex-logto:returnTo", "/deep/page");
-  const navigate = vi.fn();
+  const navigate = vi.fn<(to: string) => void>();
   await renderProvider({ navigate });
   await flush();
   expect(navigate).toHaveBeenCalledWith("/deep/page");
@@ -194,8 +200,8 @@ it("benign callback (user cancelled) returns to the stashed returnTo via navigat
 
 it("setup-error callback reports via onAuthError and recovers (no render throw)", async () => {
   setUrl("http://localhost:3000/callback?state=s456&error=invalid_scope");
-  const navigate = vi.fn();
-  const onAuthError = vi.fn();
+  const navigate = vi.fn<(to: string) => void>();
+  const onAuthError = vi.fn<(error: Error) => void>();
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
     await renderProvider({ navigate, onAuthError });
@@ -211,7 +217,7 @@ it("setup-error callback reports via onAuthError and recovers (no render throw)"
 it("a hostile stash value is discarded, not navigated to", async () => {
   setUrl("http://localhost:3000/callback?state=s456&error=access_denied");
   sessionStorage.setItem("convex-logto:returnTo", "//evil.example.com");
-  const navigate = vi.fn();
+  const navigate = vi.fn<(to: string) => void>();
   await renderProvider({ navigate });
   await flush();
   expect(navigate).toHaveBeenCalledWith("/");
@@ -245,7 +251,7 @@ it("signIn({ returnTo }) stashes the destination and uses the callback redirect"
 it.each(["//evil.example.com", "https://evil.example.com", "back\\slash"])(
   "signIn reports and rejects unsafe returnTo %s",
   async (returnTo) => {
-    const onAuthError = vi.fn();
+    const onAuthError = vi.fn<(error: Error) => void>();
     const consoleError = vi
       .spyOn(console, "error")
       .mockImplementation(() => {});
@@ -266,7 +272,7 @@ it.each(["//evil.example.com", "https://evil.example.com", "back\\slash"])(
 
 it("reports an SDK-stored initiation error once when signIn() is discarded", async () => {
   const failure = new Error("OIDC discovery unreachable");
-  const onAuthError = vi.fn();
+  const onAuthError = vi.fn<(error: Error) => void>();
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   mockLogto.signIn.mockImplementation(async () => {
     // @logto/react's proxy catches the real rejection, stores this error in
@@ -298,7 +304,7 @@ it("reports an SDK-stored initiation error once when signIn() is discarded", asy
 
 it("reports and rethrows a direct signIn rejection exactly once", async () => {
   const failure = new Error("future SDK rejection");
-  const onAuthError = vi.fn();
+  const onAuthError = vi.fn<(error: Error) => void>();
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   mockLogto.signIn.mockRejectedValue(failure);
   try {
@@ -315,8 +321,8 @@ it("reports and rethrows a direct signIn rejection exactly once", async () => {
 it("does not double-report callback errors through the initiation observer", async () => {
   setUrl("http://localhost:3000/callback?code=c123&state=s456");
   mockLogto.error = new Error("callback exchange failed");
-  const navigate = vi.fn();
-  const onAuthError = vi.fn();
+  const navigate = vi.fn<(to: string) => void>();
+  const onAuthError = vi.fn<(error: Error) => void>();
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
     await renderProvider({ probe: true, navigate, onAuthError });

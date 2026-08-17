@@ -15,7 +15,7 @@ It uses Logto's **ID token** over OIDC, so Convex auto-discovers the signing key
 Two modes share the same backend identity model:
 
 - **Bridge mode** (the default, shown below): Logto's SPA SDK signs in the browser; the package bridges its ID token into Convex. Zero server-side state.
-- **[Session mode](#session-mode)**: a Convex component holds the Logto refresh token server-side and rotates one-time session tokens with the browser — smallest browser attack surface, live session revocation, and no Logto SDK in the bundle.
+- **[Session mode](#session-mode)**: a Convex component holds the Logto refresh token server-side and rotates an application session token with the browser — smallest browser attack surface, live session revocation, and no Logto SDK in the bundle.
 
 Whichever mode you choose, apply the [SPA security baseline][security-baseline-docs] to the scripts and dependencies that share its browser origin.
 
@@ -65,6 +65,14 @@ And in your frontend env (`.env.local`) — both are **public** OAuth values (th
 VITE_LOGTO_ENDPOINT=https://auth.example.com
 VITE_LOGTO_APP_ID=your-app-id
 ```
+
+The endpoint may include a reverse-proxy path prefix, but it must be the Logto
+base URL (not the `/oidc` issuer URL) and may not contain credentials, a query,
+or a fragment. HTTPS is required except for loopback development. An existing
+HTTP-only, non-loopback self-hosted deployment can explicitly opt in with
+`allowInsecureHttp: true` on `logtoAuthConfig`, the frontend `config` (or
+`logtoConfigQuery`), and `logtoSessionApi` where applicable; terminating TLS is
+strongly preferred.
 
 ### 3. Wire Convex
 
@@ -145,7 +153,11 @@ That is the whole auth setup. Many apps need nothing more.
 
 ## Multiple environments
 
-Because the frontend pulls config from the backend, **the only thing that varies per environment is the Convex deployment it points at** (which you already set via `VITE_CONVEX_URL`). The frontend has no Logto env vars to manage.
+When you use the runtime `configQuery` mode described above, **the only thing
+that varies per environment is the Convex deployment the frontend points at**
+(which you already set via `VITE_CONVEX_URL`). In that mode the frontend has no
+Logto env vars to manage. With the default static `config`, keep the two public
+Logto values in each frontend environment as shown in the quick start.
 
 Create one Logto app per environment (dev / staging / prod — best practice, so tokens can't cross environments), then set each deployment's env once:
 
@@ -159,16 +171,19 @@ npx convex env set --prod LOGTO_APP_ID   <prod-app-id>
 # staging: target that deployment the same way
 ```
 
-Same code everywhere. The only thing that changes per environment is which Convex deployment `VITE_CONVEX_URL` points at — there's no Logto config to duplicate or keep in sync.
+With `configQuery`, the same frontend artifact works everywhere: only the
+deployment selected by `VITE_CONVEX_URL` changes, and each deployment serves its
+own public Logto configuration.
 
 ## Session mode
 
 Keep the Logto refresh token out of the browser entirely: a Convex component
 becomes the OAuth client (a Logto **Traditional web** app — client secret stays
 on the server), and the browser holds only a short-lived ID token plus a
-**one-time session token** that rotates on every refresh (the server stores its
-hash; presenting a spent token outside a small grace window kills the session
-and revokes the Logto grant). Session liveness is a Convex subscription, so
+**rotating session token** issued in generations (the server stores only hashes;
+the current generation and a bounded set of recently superseded generations may
+be accepted during the reuse window). Presenting a superseded token after that
+window triggers reuse containment. Session liveness is a Convex subscription, so
 sign-out elsewhere, token-theft detection, or a webhook suspension drops auth
 **live**, not at token expiry. Works on any static host — no cookie domain, no
 server for the frontend, no `@logto/react`.
@@ -213,17 +228,18 @@ root.render(
 Config lives on the deployment (`LOGTO_ENDPOINT`, `LOGTO_APP_ID`,
 `LOGTO_CLIENT_SECRET`); `useLogtoAuth()` from `convex-logto/react-session` has
 the bridge actions plus `signOutEverywhere()`. Full guide — threat model, token
-dance, server-side revocation with `assertUserHasActiveSession` — in the
+dance, subject-level revocation enforcement with
+`assertSubjectHasActiveSession` — in the
 [Session mode docs][session-mode-docs] and the runnable
 [`vite-react-session`][session-example] example.
 
-`signOutEverywhere()` atomically derives the caller subject from its rotating
-session token, deletes every matching component session, and then ends the
-calling device's Logto SSO session. Other devices drop through reactive
-revocation; their separate Logto browser cookies cannot be erased by the RP and
-can be used to start a new sign-in. Deleted refresh tokens become unreachable
-and their grants expire at Logto's TTL rather than triggering an N-request RFC
-7009 loop.
+`signOutEverywhere()` derives the caller subject from its rotating session token
+and atomically records subject-wide logical revocation. `sessionValid` rejects
+the affected sessions immediately; physical rows are then removed in bounded
+batches. Other devices drop through reactive revocation, while their separate
+Logto browser cookies cannot be erased by the RP and can be used to start a new
+sign-in. The returned `count` is the number of physical session rows removed by
+the completed cleanup, not the moment at which revocation became effective.
 
 Apps with a same-site server endpoint can additionally mount
 `createLogtoSessionCookieHandler()` and pass
@@ -236,11 +252,13 @@ TanStack Start, and Convex custom-domain mounts, plus the cookie/device-binding
 exclusion.
 
 Alternatively, opt into `deviceBinding` on the provider to require an ECDSA
-proof from a non-extractable IndexedDB-held key on every refresh, making a
-copied session token useless off-device. It is intentionally off by default,
-fails loudly without IndexedDB, and cannot be combined with cookie transport;
-key eviction causes a clean re-authentication. See the session-mode guide for
-the exact threat model and the cross-browser DBSC re-evaluation trigger.
+proof from a non-extractable IndexedDB-held key whenever the rotating token is
+used for refresh or revocation. A copied session token alone cannot refresh or
+force sign-out from another device. Device binding is intentionally off by
+default, fails loudly without IndexedDB, and cannot be combined with cookie
+transport; key eviction causes a clean re-authentication. See the session-mode
+guide for the exact threat model and the cross-browser DBSC re-evaluation
+trigger.
 
 For Expo, import `ConvexLogtoSessionProvider` from
 `convex-logto/native-session` and install `expo-secure-store` plus
@@ -252,7 +270,8 @@ reactive revocation. Native intentionally has no cookie-transport or software
 
 Register `registerLogtoBackchannelLogout(http, { sessions: components.logto })`
 to verify Logto OIDC Logout Tokens and propagate IdP-side sign-out through the
-same reactive revocation path (one `sid` session, or every session for `sub`).
+same reactive revocation path (every component Session mapped to the Logout
+Token's `sid`, or subject-wide revocation for `sub` when `sid` is absent).
 
 [session-mode-docs]: https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/session-mode.mdx
 [session-example]: https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session
@@ -304,7 +323,7 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 | Export | From | Purpose |
 | --- | --- | --- |
 | `logtoAuthConfig(opts?)` | `convex-logto` | Provider entry for `auth.config.ts`. Reads `LOGTO_ENDPOINT` / `LOGTO_APP_ID`. |
-| `logtoConfigQuery()` | `convex-logto` | Public query serving `{ endpoint, appId }` to the frontend. |
+| `logtoConfigQuery(opts?)` | `convex-logto` | Public query serving `{ endpoint, appId, allowInsecureHttp? }` to the frontend. |
 | `logtoSync<DataModel>(handlers)` | `convex-logto` | Returns `{ sync }`, an internal mutation mapping user events to your tables. |
 | `registerLogtoWebhook(http, sync, opts?)` | `convex-logto` | Registers the verified webhook route. Reads `LOGTO_WEBHOOK_SIGNING_KEY`; `sessions` option adds dedupe + session revocation. |
 | `registerLogtoBackchannelLogout(http, opts)` | `convex-logto` | Session mode: registers a verified OIDC back-channel logout route with `sid` / `sub` revocation. |
@@ -312,7 +331,8 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 | `verifyLogtoLogoutToken(token, opts?)` | `convex-logto` | Low-level RS256/PS256 Logout Token verification against Logto's JWKS. |
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
 | `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](#session-mode): builds the six public auth functions backed by the session component. |
-| `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Session mode: throw unless the caller still has a live (unrevoked) session. |
+| `assertSubjectHasActiveSession(ctx, component)` | `convex-logto` | Session mode: throw unless the authenticated subject has at least one active component Session; this does not bind the current bearer to one Session. A bounded scan can transiently throw `session_liveness_scan_incomplete` while bulk cleanup progresses. |
+| `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Deprecated compatibility alias for `assertSubjectHasActiveSession`. |
 | `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Four-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
 | `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Static `config` or backend `configQuery`. |
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |

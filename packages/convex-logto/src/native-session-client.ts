@@ -89,11 +89,14 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
   }
 
   readSession(): StoredSession | null {
-    const value = this.read<StoredSession>("session");
-    return value &&
+    const value = this.read("session");
+    return value !== null &&
+      typeof value === "object" &&
+      "token" in value &&
       typeof value.token === "string" &&
+      "sessionId" in value &&
       typeof value.sessionId === "string"
-      ? value
+      ? { token: value.token, sessionId: value.sessionId }
       : null;
   }
 
@@ -102,7 +105,7 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
   }
 
   readIdToken(): string | null {
-    const value = this.read<unknown>("idToken");
+    const value = this.read("idToken");
     return typeof value === "string" ? value : null;
   }
 
@@ -115,9 +118,14 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
   }
 
   takeTransaction(): StoredTransaction | null {
-    const value = this.read<StoredTransaction>("txn");
+    const value = this.read("txn");
     this.remove("txn");
-    return value && typeof value.state === "string" ? value : null;
+    return value !== null &&
+      typeof value === "object" &&
+      "state" in value &&
+      typeof value.state === "string"
+      ? { state: value.state }
+      : null;
   }
 
   clearAll(): void {
@@ -146,18 +154,20 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
       names.map((name) => this.secureStore.getItemAsync(this.key(name))),
     );
     for (let index = 0; index < names.length; index++) {
+      const name = names[index];
       const raw = stored[index];
-      if (raw !== null && raw !== undefined) {
-        this.values.set(names[index]!, raw);
+      if (name !== undefined && raw !== null && raw !== undefined) {
+        this.values.set(name, raw);
       }
     }
   }
 
-  private read<T>(name: StoredName): T | null {
+  private read(name: StoredName): unknown {
     const raw = this.values.get(name);
     if (raw === undefined) return null;
     try {
-      return JSON.parse(raw) as T;
+      const value: unknown = JSON.parse(raw);
+      return value;
     } catch {
       return null;
     }

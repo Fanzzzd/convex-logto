@@ -10,9 +10,9 @@ import { ConvexError, v } from "convex/values";
 import {
   DEFAULT_REUSE_WINDOW_MS,
   buildEndSessionUrl,
-  hashToken,
   sessionReuseDetectedError,
 } from "./component/core.js";
+import type { LogtoEndpointPolicy } from "./component/endpoint.js";
 import { readEndpointAndAppId } from "./config";
 
 // --- component reference typing ---------------------------------------------
@@ -93,8 +93,10 @@ export type LogtoSessionComponent = {
         appId: string;
         clientSecret: string;
         sessionToken: string;
+        deviceProof?: string;
         postLogoutRedirectUri?: string;
         federated?: boolean;
+        reuseWindowMs?: number;
       },
       { endSessionUrl?: string }
     >;
@@ -111,20 +113,25 @@ export type LogtoSessionComponent = {
       boolean
     >;
     killSubjectSessions: FunctionReference<
-      "mutation",
+      "action",
       "internal",
       { subject: string },
       number
     >;
     killSubjectSessionsByToken: FunctionReference<
-      "mutation",
+      "action",
       "internal",
-      { presentedHash: string; now: number; reuseWindowMs: number },
+      {
+        sessionToken: string;
+        deviceProof?: string;
+        now: number;
+        reuseWindowMs: number;
+      },
       | { outcome: "signed-out"; count: number; subject: string }
       | { outcome: "reuse" }
     >;
     killSessionsBySid: FunctionReference<
-      "mutation",
+      "action",
       "internal",
       { sid: string },
       number
@@ -183,7 +190,11 @@ export type LogtoSessionApi = {
   signOut: FunctionReference<
     "action",
     "public",
-    { sessionToken: string; postLogoutRedirectUri?: string },
+    {
+      sessionToken: string;
+      deviceProof?: string;
+      postLogoutRedirectUri?: string;
+    },
     { endSessionUrl?: string }
   >;
   /**
@@ -193,7 +204,11 @@ export type LogtoSessionApi = {
   signOutEverywhere?: FunctionReference<
     "action",
     "public",
-    { sessionToken: string; postLogoutRedirectUri?: string },
+    {
+      sessionToken: string;
+      deviceProof?: string;
+      postLogoutRedirectUri?: string;
+    },
     { endSessionUrl?: string; count: number }
   >;
   sessionValid: FunctionReference<
@@ -204,7 +219,7 @@ export type LogtoSessionApi = {
   >;
 };
 
-export type LogtoSessionApiOptions = {
+export type LogtoSessionApiOptions = LogtoEndpointPolicy & {
   /**
    * Extra OIDC scopes beyond the built-in `openid offline_access profile email`.
    * Server-configured — the browser can't request scopes on its own.
@@ -213,8 +228,8 @@ export type LogtoSessionApiOptions = {
   /** API resource indicators to request access for (Logto API resources). */
   resources?: string[];
   /**
-   * How long (ms) the immediately-previous session token stays accepted after a
-   * rotation, absorbing multi-tab races and network retries. Default 10s.
+   * How long (ms) recently superseded Session-token generations stay accepted,
+   * absorbing multi-tab races and network retries. Default 10s.
    */
   reuseWindowMs?: number;
   /** Logto endpoint. Defaults to `LOGTO_ENDPOINT`. */
@@ -295,12 +310,20 @@ export function logtoSessionApi(
   >;
   signOut: RegisteredAction<
     "public",
-    { sessionToken: string; postLogoutRedirectUri?: string },
+    {
+      sessionToken: string;
+      deviceProof?: string;
+      postLogoutRedirectUri?: string;
+    },
     Promise<{ endSessionUrl?: string }>
   >;
   signOutEverywhere: RegisteredAction<
     "public",
-    { sessionToken: string; postLogoutRedirectUri?: string },
+    {
+      sessionToken: string;
+      deviceProof?: string;
+      postLogoutRedirectUri?: string;
+    },
     Promise<{ endSessionUrl?: string; count: number }>
   >;
   sessionValid: RegisteredQuery<
@@ -370,6 +393,7 @@ export function logtoSessionApi(
     signOut: actionGeneric({
       args: {
         sessionToken: v.string(),
+        deviceProof: v.optional(v.string()),
         postLogoutRedirectUri: v.optional(v.string()),
       },
       returns: v.object({ endSessionUrl: v.optional(v.string()) }),
@@ -377,13 +401,16 @@ export function logtoSessionApi(
         return await ctx.runAction(component.lib.signOut, {
           ...readSessionConfig(options),
           sessionToken: args.sessionToken,
+          deviceProof: args.deviceProof,
           postLogoutRedirectUri: args.postLogoutRedirectUri,
+          reuseWindowMs: options.reuseWindowMs,
         });
       },
     }),
     signOutEverywhere: actionGeneric({
       args: {
         sessionToken: v.string(),
+        deviceProof: v.optional(v.string()),
         postLogoutRedirectUri: v.optional(v.string()),
       },
       returns: v.object({
@@ -392,10 +419,11 @@ export function logtoSessionApi(
       }),
       handler: async (ctx, args) => {
         const { endpoint, appId } = readSessionConfig(options);
-        const result = await ctx.runMutation(
+        const result = await ctx.runAction(
           component.lib.killSubjectSessionsByToken,
           {
-            presentedHash: await hashToken(args.sessionToken),
+            sessionToken: args.sessionToken,
+            deviceProof: args.deviceProof,
             now: Date.now(),
             reuseWindowMs: options.reuseWindowMs ?? DEFAULT_REUSE_WINDOW_MS,
           },
@@ -434,20 +462,25 @@ type SessionCheckCtx = {
 };
 
 /**
- * Server-side revocation enforcement: throw unless the calling user is
- * authenticated AND still has a live session in the component. An ID token is
- * valid until it expires; this closes the window where a revoked user's last
- * token is still cryptographically fine.
+ * Subject-level revocation enforcement: throw unless the authenticated
+ * identity's subject has at least one active session in the component.
+ *
+ * This deliberately does not claim that the current ID token came from that
+ * session, nor can it bind a bearer to one particular browser session. Use it
+ * when subject-wide revocation is the policy boundary. If more than eight
+ * candidate Sessions remain while bounded revocation cleanup is still
+ * progressing, this throws the transient
+ * `session_liveness_scan_incomplete` error instead of guessing.
  *
  * @example
  * export const sensitive = mutation({
  *   handler: async (ctx) => {
- *     await assertUserHasActiveSession(ctx, components.logto);
+ *     await assertSubjectHasActiveSession(ctx, components.logto);
  *     // ...
  *   },
  * });
  */
-export async function assertUserHasActiveSession(
+export async function assertSubjectHasActiveSession(
   ctx: SessionCheckCtx,
   component: LogtoSessionComponent,
 ): Promise<void> {
@@ -466,7 +499,13 @@ export async function assertUserHasActiveSession(
     throw new ConvexError({
       kind: "terminal" as const,
       code: "session_revoked",
-      message: "This session has been revoked. Sign in again.",
+      message: "No active session remains for this subject. Sign in again.",
     });
   }
 }
+
+/**
+ * @deprecated Use {@link assertSubjectHasActiveSession}. The old name implied
+ * a per-bearer guarantee that an ID token cannot provide.
+ */
+export const assertUserHasActiveSession = assertSubjectHasActiveSession;

@@ -1,14 +1,55 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript", "react", "import"],
+  "plugins": ["typescript", "react", "import", "vitest", "unicorn"],
   "categories": {
     "correctness": "error",
-    "suspicious": "warn"
+    "suspicious": "error"
+  },
+  "options": {
+    "typeAware": true,
+    "reportUnusedDisableDirectives": "error"
   },
   "rules": {
+    "no-restricted-properties": [
+      "error",
+      {
+        "object": "Reflect",
+        "property": "apply",
+        "message": "Call typed functions directly instead of bypassing their call signature."
+      },
+      {
+        "object": "Reflect",
+        "property": "get",
+        "message": "Use typed property access or validate dynamic input at its boundary."
+      }
+    ],
     "react/react-in-jsx-scope": "off",
+    "typescript/consistent-type-assertions": [
+      "error",
+      {
+        "assertionStyle": "as",
+        "objectLiteralTypeAssertions": "never",
+        "arrayLiteralTypeAssertions": "never"
+      }
+    ],
+    "typescript/no-explicit-any": "error",
+    "typescript/no-non-null-assertion": "error",
+    "typescript/no-unnecessary-type-assertion": "error",
+    "typescript/no-unsafe-function-type": "error",
+    "typescript/no-unsafe-type-assertion": "error",
+    "typescript/no-wrapper-object-types": "error",
+    "typescript/prefer-as-const": "error",
+    "unicorn/no-useless-fallback-in-spread": "error",
+    "vitest/no-restricted-vi-methods": [
+      "error",
+      {
+        "mock": "Use a real dependency seam or a focused export spy instead of module mocking.",
+        "doMock": "Use a real dependency seam or a focused export spy instead of module mocking.",
+        "unstable_mockModule": "Use a real dependency seam or a focused export spy instead of module mocking."
+      }
+    ],
     "no-underscore-dangle": [
-      "warn",
+      "error",
       { "allow": ["_id", "_creationTime", "_args", "_returnType"] }
     ]
   },
@@ -16,5 +57,37 @@
     "browser": true,
     "es2024": true
   },
-  "ignorePatterns": ["dist"]
+  "overrides": [
+    {
+      "files": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/*.test-d.ts"],
+      "rules": {
+        "vitest/expect-expect": "off",
+        "vitest/no-conditional-expect": "off",
+        "vitest/require-mock-type-parameters": "off",
+        "typescript/consistent-type-assertions": "off",
+        "typescript/no-base-to-string": "off",
+        "typescript/no-non-null-assertion": "off",
+        "typescript/no-unnecessary-type-assertion": "off",
+        "typescript/no-unsafe-type-assertion": "off",
+        "typescript/unbound-method": "off",
+        "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
+      "files": [
+        "src/react.bridge.test.tsx",
+        "src/react.config-loading.test.tsx"
+      ],
+      "rules": {
+        "vitest/no-restricted-vi-methods": "off"
+      }
+    },
+    {
+      "files": ["src/session-device.ts"],
+      "rules": {
+        "unicorn/prefer-add-event-listener": "off"
+      }
+    }
+  ],
+  "ignorePatterns": ["dist", "src/component/_generated"]
 }

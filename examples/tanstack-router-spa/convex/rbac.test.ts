@@ -14,9 +14,8 @@ type TestT = ReturnType<typeof makeT>;
 const ALICE = { subject: "logto|alice", email: "alice@example.com", name: "Alice" };
 
 // A Logto webhook delivery for the user-sync mutation (`internal.logto.sync`).
-// `data` is the User entity for create/update/suspension, but `null` for
-// `User.Deleted` — there the id rides in the Management API route `params`, passed
-// via `extra`.
+// `data` is normally the User entity. For the older/documented `User.Deleted`
+// shape it is `null`, and the id rides in Management API route `params`.
 const hook = (
   event: string,
   data: Record<string, unknown> | null,
@@ -91,9 +90,7 @@ describe("RBAC example", () => {
     expect(await rowFor(t, ALICE.subject)).toBeNull();
 
     // Onboarding (authenticated) is the sole creator.
-    await t
-      .withIdentity(ALICE)
-      .mutation(api.users.completeOnboarding, { role: "user" });
+    await t.withIdentity(ALICE).mutation(api.users.completeOnboarding, { role: "user" });
     expect(await rowFor(t, ALICE.subject)).toMatchObject({
       role: "user",
       status: "active",
@@ -152,8 +149,8 @@ describe("RBAC example", () => {
     const asAlice = t.withIdentity(ALICE);
     await asAlice.mutation(api.users.completeOnboarding, { role: "admin" });
 
-    // Real `User.Deleted` shape: `data` is null; the id is in the route params
-    // (`DELETE /users/:userId`), NOT in `data.id`.
+    // Older/documented `User.Deleted` shape: `data` is null; the id is in the
+    // `DELETE /users/:userId` route params.
     await t.mutation(
       internal.logto.sync,
       hook("User.Deleted", null, { params: { userId: ALICE.subject } }),
@@ -170,22 +167,22 @@ describe("RBAC example", () => {
   test("a webhook that pins down no user id is rejected", async () => {
     const t = makeT();
     // `User.Deleted` with neither `data` nor a `params.userId` can't name a user.
-    await expect(
-      t.mutation(internal.logto.sync, hook("User.Deleted", null)),
-    ).rejects.toThrow();
+    await expect(t.mutation(internal.logto.sync, hook("User.Deleted", null))).rejects.toThrow();
   });
 
-  test("a delete resolves its user from params even if data is a stray {}", async () => {
+  test("a delete with stray data is rejected without tombstoning the user", async () => {
     const t = makeT();
     const asAlice = t.withIdentity(ALICE);
     await asAlice.mutation(api.users.completeOnboarding, { role: "user" });
 
-    // Defensive: a malformed delete with an id-less `data: {}` must still tombstone
-    // via `params.userId`, never dispatch an id-less user that silently no-ops.
-    await t.mutation(
-      internal.logto.sync,
-      hook("User.Deleted", {}, { params: { userId: ALICE.subject } }),
-    );
-    expect((await rowFor(t, ALICE.subject))?.status).toBe("deleted");
+    // A signature authenticates the sender, not the payload semantics. Never
+    // turn malformed entity data into a destructive delete.
+    await expect(
+      t.mutation(
+        internal.logto.sync,
+        hook("User.Deleted", {}, { params: { userId: ALICE.subject } }),
+      ),
+    ).rejects.toThrow();
+    expect((await rowFor(t, ALICE.subject))?.status).toBe("active");
   });
 });

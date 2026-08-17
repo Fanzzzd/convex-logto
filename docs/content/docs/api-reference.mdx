@@ -8,7 +8,7 @@ description: Every export from convex-logto and its web, native, and session-mod
 | Export | From | Purpose |
 | --- | --- | --- |
 | `logtoAuthConfig(opts?)` | `convex-logto` | Provider entry for `auth.config.ts`. Reads `LOGTO_ENDPOINT` / `LOGTO_APP_ID`. |
-| `logtoConfigQuery()` | `convex-logto` | Public query serving `{ endpoint, appId }` to the frontend (runtime-config mode). |
+| `logtoConfigQuery(opts?)` | `convex-logto` | Public query serving `{ endpoint, appId, allowInsecureHttp? }` to the frontend (runtime-config mode). |
 | `logtoSync<DataModel>(handlers)` | `convex-logto` | Returns `{ sync }`, an internal mutation mapping user events to your tables. |
 | `registerLogtoWebhook(http, sync, opts?)` | `convex-logto` | Registers the verified webhook route. Reads `LOGTO_WEBHOOK_SIGNING_KEY`. |
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
@@ -16,7 +16,8 @@ description: Every export from convex-logto and its web, native, and session-mod
 | `createLogtoBackchannelLogoutHandler(opts)` | `convex-logto` | Builds the same Convex HTTP action without registering a path. |
 | `verifyLogtoLogoutToken(token, opts?)` | `convex-logto` | Low-level Web Crypto/JWKS validation for an OIDC Logout Token. |
 | `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](/docs/session-mode): builds the six public auth functions backed by the session component. |
-| `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Session mode: throw unless the caller still has a live (unrevoked) session. |
+| `assertSubjectHasActiveSession(ctx, component)` | `convex-logto` | Session mode: require at least one active component Session for the authenticated subject; does not bind this bearer to one Session. |
+| `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Deprecated compatibility alias for `assertSubjectHasActiveSession`. |
 | `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Four-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
 | `createLogtoSessionCookieTransport(api, opts?)` | `convex-logto` | Framework-free browser adapter used by the session provider's `cookieTransport` prop. |
 | `assertLogtoSessionCookieCompatibility(opts)` | `convex-logto` | Loud Safari/device-binding compatibility guard. |
@@ -36,24 +37,31 @@ description: Every export from convex-logto and its web, native, and session-mod
 ### `logtoAuthConfig(opts?)`
 
 Provider entry for `convex/auth.config.ts`. Reads `LOGTO_ENDPOINT` and
-`LOGTO_APP_ID` from the deployment env.
+`LOGTO_APP_ID` from the deployment env. Endpoints must be absolute HTTPS URLs
+without credentials, a query, or a fragment. Loopback HTTP is allowed for local
+development; a non-loopback self-hosted HTTP deployment must explicitly pass
+`allowInsecureHttp: true` (and accepts the resulting transport risk).
 
 ```ts title="convex/auth.config.ts"
 import { logtoAuthConfig } from "convex-logto";
 export default { providers: [logtoAuthConfig()] };
 ```
 
-### `logtoConfigQuery()`
+### `logtoConfigQuery(opts?)`
 
-A public Convex query that serves `{ endpoint, appId }` to the frontend, for
-apps that resolve their Logto config at runtime (`configQuery` mode — e.g.
-multi-tenant, one artifact for many environments). Most apps should pass static
-`config` instead.
+A public Convex query that serves `{ endpoint, appId, allowInsecureHttp? }` to
+the frontend, for apps that resolve their Logto config at runtime
+(`configQuery` mode — e.g. multi-tenant, one artifact for many environments).
+Most apps should pass static `config` instead.
 
 ```ts title="convex/logto.ts"
 import { logtoConfigQuery } from "convex-logto";
 export const config = logtoConfigQuery();
 ```
+
+It applies the same endpoint policy as `logtoAuthConfig`. If you explicitly opt
+an HTTP-only self-hosted deployment in with `allowInsecureHttp: true`, pass the
+same option here so runtime-loaded browser/native config carries that policy.
 
 ### `logtoSync<DataModel>(handlers)`
 
@@ -130,22 +138,26 @@ export const {
 ```
 
 Options: `scopes` / `resources` (server-configured — the browser can't request
-its own), `reuseWindowMs` (default 10s), and `endpoint` / `appId` /
-`clientSecret` env overrides.
+its own), `reuseWindowMs` (default 10s), `endpoint` / `appId` / `clientSecret`
+env overrides, and the same narrowly scoped `allowInsecureHttp` compatibility
+escape hatch described above.
 
-`signOutEverywhere({ sessionToken, postLogoutRedirectUri? })` hashes the token,
-derives its subject inside the component, atomically deletes every session for
-that subject, and returns `{ count, endSessionUrl }`. The subject is never a
-public argument. The immediately previous token is accepted only inside
-`reuseWindowMs`; presenting it later deletes only that stale session and raises
-the normal terminal reuse error. The action intentionally does not issue one
-RFC 7009 request per deleted row; their now-unreachable grants expire at
-Logto's TTL.
+`signOutEverywhere({ sessionToken, postLogoutRedirectUri? })` derives the subject
+inside the component and atomically records subject-wide logical revocation.
+Physical rows are removed in bounded batches and the action returns
+`{ count, endSessionUrl }` after cleanup completes. The subject is never a
+public argument. Current and bounded recent token generations are accepted
+during their reuse windows; presenting a known superseded generation later
+contains only that stale Session and raises the normal terminal reuse error.
+If an action exceeds its bounded cleanup budget, the marker remains effective
+and retrying continues deletion. `count` is the number of physical rows removed
+by a completed cleanup, not the point when revocation became effective.
 
-The generated `callback` and `refresh` actions also accept optional
-device-binding fields used internally by `ConvexLogtoSessionProvider`
-(`devicePublicKey` and `deviceProof`). Existing callers and unbound sessions do
-not send them and retain the pre-binding behavior.
+The generated `callback`, `refresh`, `signOut`, and `signOutEverywhere` actions
+also accept optional device-binding fields used internally by
+`ConvexLogtoSessionProvider` (`devicePublicKey` and `deviceProof`). A bound
+Session verifies proof before refresh or revocation state changes. Existing
+callers and unbound Sessions do not send them and retain the unbound behavior.
 
 ### `createLogtoSessionCookieHandler(opts)`
 
@@ -161,7 +173,8 @@ as a standard `(Request) => Promise<Response>` handler. Options are:
 
 The four final path segments are `sign-in`, `callback`, `token`, and `sign-out`.
 Actual calls require POST, `x-convex-logto-csrf: 1`, and an allowed `Origin`;
-approved preflights receive credentialed CORS headers. `signOutEverywhere` uses
+approved preflights receive credentialed CORS headers. Bodies are streamed
+through a 64 KiB limit; oversized requests return `413`. `signOutEverywhere` uses
 an internal selector on the existing `sign-out` route, so enabling it does not
 add a fifth route. The cookie is fixed to
 `__Host-convex-logto-session=<encoded-token>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=16416000`
@@ -182,12 +195,18 @@ transport already removes the off-device token-exfiltration path. The
 compatibility error applies on every browser; Safari ITP key eviction is an
 additional reason for the same exclusion.
 
-### `assertUserHasActiveSession(ctx, component)`
+### `assertSubjectHasActiveSession(ctx, component)`
 
 Throws (`ConvexError`, `code: "unauthenticated" | "session_revoked"`) unless the
-calling user is authenticated **and** still has a live session in the component.
-Use in sensitive functions so revocation bites immediately instead of at ID
-token expiry.
+caller is authenticated **and** that identity's subject has at least one active
+Session in the component. This is a subject-wide revocation policy check. It
+does not prove that the current bearer came from one particular Session. To
+keep every query below Convex's transaction limits, it examines at most eight
+candidate Sessions; if additional candidates remain while bounded revocation
+cleanup is progressing, it throws the transient
+`session_liveness_scan_incomplete` error instead of guessing. Callers may retry
+that error.
+`assertUserHasActiveSession` is retained as a deprecated compatibility alias.
 
 ## Frontend (`convex-logto/react`)
 
@@ -212,7 +231,7 @@ to resolve it from the backend at runtime. Exactly one of the two.
 | Prop | Required | Purpose |
 | --- | --- | --- |
 | `client` | yes | Your `ConvexReactClient`. |
-| `config` | one of | Static `{ endpoint, appId }` — both public values, from build-time env. |
+| `config` | one of | Static `{ endpoint, appId, allowInsecureHttp? }` — both OAuth values are public; HTTPS is required except loopback or explicit insecure opt-in. |
 | `configQuery` | one of | Ref to the `logtoConfigQuery()` export, e.g. `api.logto.config`, for runtime-resolved config. |
 | `fallback` | — | Rendered while `configQuery` loads (children mount once, when ready). Default `null`. No effect with static `config`. |
 | `callbackPath` | — | The route that finishes the OIDC redirect. Default `/callback`. Must match a registered Redirect URI's path; only this exact path runs callback handling. |
@@ -265,8 +284,8 @@ in the bundle — it talks to the functions from `logtoSessionApi(...)`.
 | `callbackPath` | — | Route that finishes the redirect. Default `/callback`; exact match against the registered Redirect URI's path. |
 | `afterSignIn` | — | Where to land after sign-in. Default `/`. `signIn({ returnTo })` overrides it. |
 | `navigate` | — | Your router's navigate (prefer replace-style) for soft post-sign-in navigation. Falls back to a hard `location.replace`. |
-| `tokenStorage` | — | Where the ID token persists: `"session"` (default, per-tab; reload without a round-trip), `"memory"` (strictest), `"local"`. |
-| `deviceBinding` | — | Opt into ECDSA P-256 proof of possession backed by a non-extractable IndexedDB-held key. Default `false`; cannot be combined with `cookieTransport`. |
+| `tokenStorage` | — | Where the ID token persists: `"session"` (default, per-tab; reload without refresh only with its paired component-session marker), `"memory"` (strictest), `"local"`. Orphan ID tokens are cleared. |
+| `deviceBinding` | — | Opt into ECDSA P-256 proof of possession for refresh and revocation, backed by a non-extractable IndexedDB-held key. Default `false`; cannot be combined with `cookieTransport`. |
 | `cookieTransport` | — | `{ endpoint?, fetch?, deviceBinding? }`; use the same-site handler instead of exposing the rotating session token to JavaScript. Its reserved `deviceBinding` flag only activates the shared incompatibility assertion. |
 | `initialToken` / `initialSessionId` | — | Paired SSR seed returned by `handler.getInitialToken(request)`. |
 | `reactiveRevocation` | — | Subscribe to session liveness; drop auth live on revocation. Default `true`. |
@@ -277,8 +296,9 @@ There is no callback component to add — the provider completes the exchange on
 
 With `deviceBinding`, the provider fails loudly if IndexedDB is unavailable,
 sends only the public key during callback, and signs each rotating session token
-before refresh. Key eviction makes the next refresh terminal and causes a clean
-re-authentication; unbound sessions remain the default and are unaffected. See
+before refresh or revocation. Key eviction makes the next protected operation
+terminal and causes a clean re-authentication; unbound Sessions remain the
+default and are unaffected. See
 the [session-mode threat model and DBSC re-evaluation note](/docs/session-mode#device-binding-optional).
 
 ### `useLogtoAuth()` (session)
@@ -290,14 +310,14 @@ signOutEverywhere }`.
   full-page redirect. `returnTo` must be a same-origin path. A failed action is
   delivered to `onAuthError` before the promise rejects, so `void signIn()`
   remains observable.
-- `signOut({ postLogoutRedirectUri?, federated? })` — kills the session and
-  revokes the Logto grant server-side, clears every tab, then (unless
+- `signOut({ postLogoutRedirectUri?, federated? })` — ends the component
+  Session, clears tabs sharing the same localStorage transport, then (unless
   `federated: false`) ends the Logto SSO session and returns to
   `postLogoutRedirectUri` (default: your origin, which must be a registered
   Post sign-out redirect URI).
 - `signOutEverywhere({ postLogoutRedirectUri? })` — derives the caller subject
-  from its session token, atomically kills all of that subject's sessions, and
-  always completes federated sign-out for this device. Older app modules that
+  from its session token, records logical revocation before bounded row cleanup,
+  and always completes federated sign-out for this device. Older app modules that
   have not re-exported the action fail with an explicit deployment fix.
 
 ## Native session mode (`convex-logto/native-session`)
@@ -336,7 +356,8 @@ component session for the caller subject, and ends this device's Logto browser
 SSO session.
 
 The ID token is persisted in SecureStore to make a fresh cold start a
-zero-round-trip authenticate. This is the native equivalent of choosing web
+zero-refresh authenticate while its paired component-session marker remains.
+An orphan bearer is cleared. This is the native equivalent of choosing web
 `tokenStorage="local"`, but the bearer stays inside the OS encrypted keystore.
 See [Expo (React Native)](/docs/react-native#native-session-mode) for setup and
 the web/native differences.
@@ -369,7 +390,7 @@ and resolves when the deep link returns.
 | Prop | Required | Purpose |
 | --- | --- | --- |
 | `client` | yes | Your `ConvexReactClient`. |
-| `config` | one of | Static `{ endpoint, appId }` — both public values, from build-time env. |
+| `config` | one of | Static `{ endpoint, appId, allowInsecureHttp? }` — both OAuth values are public; HTTPS is required except loopback or explicit insecure opt-in. |
 | `configQuery` | one of | Ref to the `logtoConfigQuery()` export, for runtime-resolved config. |
 | `redirectUri` | **yes** | Native callback URI — your `app.json` `scheme` plus a path (e.g. `io.logto://callback`), registered on the Logto app. The default for `signIn()`. |
 | `fallback` | — | Rendered while `configQuery` loads, before the Convex provider mounts. Default `null`. |

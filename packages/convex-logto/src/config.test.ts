@@ -101,6 +101,84 @@ describe("logtoAuthConfig", () => {
       logtoAuthConfig({ endpoint: "https://x.com/oidc/", appId: "a" }),
     ).toThrow(/\/oidc/);
   });
+
+  it("rejects a percent-encoded trailing /oidc path segment", () => {
+    expect(() =>
+      logtoAuthConfig({
+        endpoint: "https://x.com/reverse-proxy%2Foidc",
+        appId: "a",
+      }),
+    ).toThrow(/\/oidc/);
+  });
+
+  it("preserves a normalized reverse-proxy path prefix", () => {
+    expect(
+      logtoAuthConfig({
+        endpoint: "https://auth.example.com/logto/../tenant-a///",
+        appId: "a",
+      }).domain,
+    ).toBe("https://auth.example.com/tenant-a/oidc");
+  });
+
+  it.each(["javascript:alert(1)", "data:text/plain,hello", "ftp://x.com"])(
+    "rejects a non-HTTP endpoint: %s",
+    (endpoint) => {
+      expect(() => logtoAuthConfig({ endpoint, appId: "a" })).toThrow(
+        /https?:/i,
+      );
+    },
+  );
+
+  it.each([
+    "https://alice@auth.example.com",
+    "https://alice:secret@auth.example.com",
+  ])("rejects endpoint credentials: %s", (endpoint) => {
+    expect(() => logtoAuthConfig({ endpoint, appId: "a" })).toThrow(
+      /credentials/i,
+    );
+  });
+
+  it.each([
+    "https://auth.example.com?tenant=a",
+    "https://auth.example.com#tenant-a",
+    "https://auth.example.com?",
+    "https://auth.example.com#",
+  ])("rejects endpoint query strings and fragments: %s", (endpoint) => {
+    expect(() => logtoAuthConfig({ endpoint, appId: "a" })).toThrow(
+      /query|fragment/i,
+    );
+  });
+
+  it.each([
+    "http://localhost:3001",
+    "http://localhost.:3001",
+    "http://tenant.localhost:3001/logto",
+    "http://127.0.0.42:3001",
+    "http://[::1]:3001",
+  ])("allows HTTP only for loopback by default: %s", (endpoint) => {
+    expect(logtoAuthConfig({ endpoint, appId: "a" }).domain).toMatch(
+      /^http:\/\//,
+    );
+  });
+
+  it("requires an explicit opt-in for non-loopback HTTP", () => {
+    expect(() =>
+      logtoAuthConfig({ endpoint: "http://logto.internal", appId: "a" }),
+    ).toThrow(/allowInsecureHttp/);
+    expect(
+      logtoAuthConfig({
+        endpoint: "http://logto.internal/logto",
+        appId: "a",
+        allowInsecureHttp: true,
+      }).domain,
+    ).toBe("http://logto.internal/logto/oidc");
+  });
+
+  it("does not mistake a DNS name starting with 127 for an IPv4 loopback", () => {
+    expect(() =>
+      logtoAuthConfig({ endpoint: "http://127.example.com", appId: "a" }),
+    ).toThrow(/allowInsecureHttp/);
+  });
 });
 
 describe("logtoConfigQuery", () => {
@@ -111,5 +189,29 @@ describe("logtoConfigQuery", () => {
     expect(() => logtoConfigQuery()).not.toThrow();
     expect(logtoConfigQuery()).toBeDefined();
     restoreEnv("LOGTO_ENDPOINT", saved);
+  });
+
+  it("propagates an explicit insecure-HTTP policy to runtime-loaded config", () => {
+    const query = logtoConfigQuery({
+      endpoint: "http://logto.internal/prefix/",
+      appId: "app-1",
+      allowInsecureHttp: true,
+    });
+    const handler = (
+      query as unknown as Record<
+        string,
+        () => {
+          endpoint: string;
+          appId: string;
+          allowInsecureHttp?: boolean;
+        }
+      >
+    )["_handler"]!;
+
+    expect(handler()).toEqual({
+      endpoint: "http://logto.internal/prefix",
+      appId: "app-1",
+      allowInsecureHttp: true,
+    });
   });
 });

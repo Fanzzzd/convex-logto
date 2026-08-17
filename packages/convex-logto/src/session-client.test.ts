@@ -11,6 +11,7 @@ import {
   SessionAuthEngine,
   SessionStorageArea,
   type SessionSnapshot,
+  type SessionStorageAdapter,
   type SessionTransport,
   type StoredSession,
   type TokenStorageKind,
@@ -89,6 +90,7 @@ function makeHarness(options?: {
   cookieBootstrap?: { initialSessionId?: string | null };
   deviceBinding?: SessionDeviceBinding;
   sessionApi?: LogtoSessionApi;
+  storage?: SessionStorageAdapter;
 }) {
   const handlers: Handlers = {
     signIn: vi.fn(),
@@ -101,10 +103,9 @@ function makeHarness(options?: {
     action: (ref: unknown, args: unknown) =>
       handlers[(ref as { fn: keyof Handlers }).fn](args),
   } as SessionTransport;
-  const storage = new SessionStorageArea(
-    "test",
-    options?.tokenStorage ?? "session",
-  );
+  const storage =
+    options?.storage ??
+    new SessionStorageArea("test", options?.tokenStorage ?? "session");
   if (options?.storedSession) storage.writeSession(options.storedSession);
   if (options?.storedIdToken) storage.writeIdToken(options.storedIdToken);
   const initialSession = options?.cookieBootstrap
@@ -152,6 +153,48 @@ const sessionResult = (n: number, sub = "user1") => ({
   sessionId: `session-id-${n}`,
 });
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let settle: ((value: T) => void) | undefined;
+  const promise = new Promise<T>((resolve) => {
+    settle = resolve;
+  });
+  return {
+    promise,
+    resolve(value) {
+      if (settle === undefined) throw new Error("deferred was not initialized");
+      settle(value);
+    },
+  };
+}
+
+function persistentStorageStub(
+  entries: ReadonlyArray<readonly [string, string]>,
+  failedRemovalAttempts: number,
+): {
+  values: Map<string, string>;
+  storage: Pick<Storage, "getItem" | "setItem" | "removeItem">;
+} {
+  const values = new Map(entries);
+  let removalAttempts = 0;
+  return {
+    values,
+    storage: {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => void values.set(key, value),
+      removeItem: (key) => {
+        removalAttempts += 1;
+        if (removalAttempts <= failedRemovalAttempts) {
+          throw new Error("storage removal unavailable");
+        }
+        values.delete(key);
+      },
+    },
+  };
+}
+
 const devicePublicKey = {
   kty: "EC" as const,
   crv: "P-256" as const,
@@ -176,6 +219,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -208,6 +252,136 @@ describe("SessionStorageArea", () => {
     store.stashTransaction({ state: "s1" });
     expect(store.takeTransaction()).toEqual({ state: "s1" });
     expect(store.takeTransaction()).toBeNull();
+  });
+
+  it("sticks to memory when localStorage rejects a session write", () => {
+    let writeAttempts = 0;
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: () => {
+        writeAttempts += 1;
+        throw new Error("quota exceeded");
+      },
+      removeItem: () => undefined,
+    });
+    const store = new SessionStorageArea("ns", "session");
+
+    store.writeSession({ token: "t", sessionId: "s" });
+
+    expect(store.readSession()).toEqual({ token: "t", sessionId: "s" });
+    expect(writeAttempts).toBe(1);
+  });
+
+  it("reports failed durable removal and clears it after a successful retry", async () => {
+    const values = new Map<string, string>();
+    let removeAttempts = 0;
+    let removalFails = true;
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => void values.set(key, value),
+      removeItem: (key: string) => {
+        removeAttempts += 1;
+        if (removalFails) throw new Error("storage unavailable");
+        values.delete(key);
+      },
+    });
+    const store = new SessionStorageArea("ns", "session");
+    store.writeSession({ token: "t", sessionId: "s" });
+
+    store.clearAll();
+
+    expect(store.readSession()).toBeNull();
+    expect(removeAttempts).toBe(1);
+    await expect(store.flush()).rejects.toThrow(/durably remove/);
+
+    removalFails = false;
+    store.clearAll();
+    await expect(store.flush()).resolves.toBeUndefined();
+    expect(values.get("convex-logto:ns:session")).toBeUndefined();
+    expect(removeAttempts).toBe(2);
+  });
+
+  it("sticks to memory when the real getItem fails after the probe", () => {
+    let artifactReads = 0;
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => {
+        if (key.endsWith(":probe")) return null;
+        artifactReads += 1;
+        throw new Error("storage read unavailable");
+      },
+      setItem: () => undefined,
+      removeItem: () => undefined,
+    });
+    const store = new SessionStorageArea("ns", "session");
+
+    expect(store.readSession()).toBeNull();
+    expect(store.readSession()).toBeNull();
+    expect(artifactReads).toBe(1);
+  });
+
+  it("cleans a non-string ID token without throwing", () => {
+    const store = new SessionStorageArea("ns", "session");
+    sessionStorage.setItem(
+      "convex-logto:ns:idToken",
+      JSON.stringify({ exp: "not-a-token" }),
+    );
+
+    expect(store.readIdToken()).toBeNull();
+    expect(sessionStorage.getItem("convex-logto:ns:idToken")).toBeNull();
+  });
+
+  it("removes malformed JSON without disabling the browser storage area", () => {
+    const key = "convex-logto:ns:idToken";
+    sessionStorage.setItem(key, "{");
+    const store = new SessionStorageArea("ns", "session");
+
+    expect(store.readIdToken()).toBeNull();
+    expect(sessionStorage.getItem(key)).toBeNull();
+
+    store.writeIdToken("next-token");
+    expect(sessionStorage.getItem(key)).toBe('"next-token"');
+    expect(store.readIdToken()).toBe("next-token");
+  });
+
+  it("does not report durable removal for an area that never accepted a write", async () => {
+    // "Block all cookies", a sandboxed iframe, or blocked site data: every
+    // access throws, so the credential only ever lived in memory. Reporting its
+    // removal would wedge sign-in, sign-out and refresh for the whole page.
+    const blocked = () => {
+      throw new Error("storage blocked");
+    };
+    vi.stubGlobal("localStorage", {
+      getItem: blocked,
+      setItem: blocked,
+      removeItem: blocked,
+    });
+    const store = new SessionStorageArea("ns", "local");
+    store.writeSession({ token: "t", sessionId: "s" });
+    expect(store.readSession()).toEqual({ token: "t", sessionId: "s" });
+
+    store.clearAll();
+
+    expect(store.readSession()).toBeNull();
+    expect(store.readIdToken()).toBeNull();
+    await expect(store.flush()).resolves.toBeUndefined();
+  });
+
+  it("does not fail sign-out over a spent transaction stash", async () => {
+    const values = new Map<string, string>();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => void values.set(key, value),
+      removeItem: () => {
+        throw new Error("storage unavailable");
+      },
+    });
+    const store = new SessionStorageArea("ns", "local");
+    store.stashTransaction({ state: "s1" });
+
+    store.clearAll();
+
+    // The stash holds the OIDC `state`, not a bearer — not a credential leak.
+    await expect(store.flush()).resolves.toBeUndefined();
   });
 
   it("clearAll removes every artifact", () => {
@@ -244,10 +418,59 @@ describe("mount", () => {
     });
   });
 
+  it("SSR initialToken without its paired session cannot authenticate", () => {
+    const { engine, storage } = makeHarness({ initialToken: freshToken() });
+
+    expect(engine.getServerSnapshot().status).toBe("restoring");
+    expect(engine.getSnapshot().status).toBe("restoring");
+    expect(storage.readIdToken()).toBeNull();
+  });
+
   it("nothing stored → unauthenticated, no network", async () => {
     const { engine, handlers } = makeHarness();
     engine.start();
     expect((await settled(engine)).status).toBe("unauthenticated");
+    expect(handlers.refresh).not.toHaveBeenCalled();
+  });
+
+  it("a corrupt stored ID token still settles unauthenticated", async () => {
+    sessionStorage.setItem(
+      "convex-logto:test:idToken",
+      JSON.stringify({ exp: "not-a-token" }),
+    );
+    const { engine, storage } = makeHarness();
+
+    engine.start();
+
+    expect((await settled(engine)).status).toBe("unauthenticated");
+    expect(storage.readIdToken()).toBeNull();
+  });
+
+  it("a restore storage failure is reported and still settles", async () => {
+    const storage = new SessionStorageArea("test", "session");
+    vi.spyOn(storage, "readIdToken").mockImplementation(() => {
+      throw new Error("storage failed during restore");
+    });
+    const { engine, onAuthError } = makeHarness({ storage });
+
+    engine.start();
+
+    await vi.waitFor(() => {
+      expect(engine.getSnapshot().status).toBe("unauthenticated");
+    });
+    expect(onAuthError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "storage failed during restore" }),
+    );
+  });
+
+  it("an orphaned fresh ID token cannot authenticate the mount", async () => {
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeIdToken(freshToken());
+
+    engine.start();
+
+    expect((await settled(engine)).status).toBe("unauthenticated");
+    expect(storage.readIdToken()).toBeNull();
     expect(handlers.refresh).not.toHaveBeenCalled();
   });
 
@@ -461,6 +684,53 @@ describe("callback", () => {
     });
   });
 
+  it("a sign-out mid-exchange discards and revokes the minted session", async () => {
+    const { engine, storage, handlers } = makeHarness();
+    setURL("http://localhost:5173/callback?code=c1&state=s1");
+    storage.stashTransaction({ state: "s1" });
+    const exchange = deferred<ReturnType<typeof sessionResult>>();
+    handlers.callback.mockReturnValue(exchange.promise);
+    handlers.signOut.mockResolvedValue({});
+
+    engine.start();
+    await vi.waitFor(() => expect(handlers.callback).toHaveBeenCalled());
+    // The exchange is in flight, so no session is stored yet: sign-out has
+    // nothing local to revoke and must not be undone by the response.
+    await engine.signOut();
+    exchange.resolve(sessionResult(7));
+    await vi.waitFor(() =>
+      expect(handlers.signOut).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionToken: "session-token-7" }),
+      ),
+    );
+
+    expect(storage.readSession()).toBeNull();
+    expect(storage.readIdToken()).toBeNull();
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+  });
+
+  it("a cross-tab sign-out mid-exchange discards the minted session", async () => {
+    const { engine, storage, handlers } = makeHarness();
+    setURL("http://localhost:5173/callback?code=c1&state=s1");
+    storage.stashTransaction({ state: "s1" });
+    const exchange = deferred<ReturnType<typeof sessionResult>>();
+    handlers.callback.mockReturnValue(exchange.promise);
+    handlers.signOut.mockResolvedValue({});
+
+    engine.start();
+    await vi.waitFor(() => expect(handlers.callback).toHaveBeenCalled());
+    engine.handleExternalSignOut();
+    exchange.resolve(sessionResult(8));
+    await vi.waitFor(() =>
+      expect(handlers.signOut).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionToken: "session-token-8" }),
+      ),
+    );
+
+    expect(storage.readSession()).toBeNull();
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+  });
+
   it("an unsafe server returnTo falls back to afterSignIn", async () => {
     const { engine, storage, handlers, navigate } = makeHarness({
       afterSignIn: "/home",
@@ -554,6 +824,16 @@ describe("fetchAccessToken", () => {
     expect(handlers.refresh).not.toHaveBeenCalled();
   });
 
+  it("refuses an orphaned fresh ID token without a session", async () => {
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeIdToken(freshToken());
+
+    expect(await engine.fetchAccessToken(false)).toBeNull();
+    expect(storage.readIdToken()).toBeNull();
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+    expect(handlers.refresh).not.toHaveBeenCalled();
+  });
+
   it("a forced fetch never re-serves the token it just served", async () => {
     const { engine, storage, handlers } = makeHarness();
     const tokenA = freshToken();
@@ -641,6 +921,19 @@ describe("signIn", () => {
     expect(handlers.signIn).not.toHaveBeenCalled();
   });
 
+  it("refuses an unsafe authorization URL returned by the server", async () => {
+    const { engine, storage, handlers, onAuthError } = makeHarness();
+    handlers.signIn.mockResolvedValue({
+      url: "javascript:globalThis.compromised=true//?state=st-1",
+    });
+
+    await expect(engine.signIn()).rejects.toThrow(/unsafe javascript: scheme/);
+
+    expect(window.location.assign).not.toHaveBeenCalled();
+    expect(storage.takeTransaction()).toBeNull();
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+  });
+
   it("reports and rejects a sign-in action failure exactly once", async () => {
     const failure = new Error("Convex unreachable");
     const { engine, handlers, onAuthError } = makeHarness();
@@ -672,6 +965,42 @@ describe("signIn", () => {
 });
 
 describe("signOut", () => {
+  it("signs a bound token before clearing it and sends the proof", async () => {
+    const deviceBinding = fakeDeviceBinding("proof-for-t1");
+    const { engine, storage, handlers } = makeHarness({ deviceBinding });
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    deviceBinding.sign.mockImplementation((token: string) => {
+      expect(token).toBe("t1");
+      expect(storage.readSession()).toEqual({ token: "t1", sessionId: "s1" });
+      return Promise.resolve("proof-for-t1");
+    });
+
+    await engine.signOut({ federated: false });
+
+    expect(handlers.signOut).toHaveBeenCalledWith({
+      sessionToken: "t1",
+      deviceProof: "proof-for-t1",
+      postLogoutRedirectUri: "http://localhost:5173",
+    });
+    expect(storage.readSession()).toBeNull();
+  });
+
+  it("clears locally but never downgrades to proofless sign-out when signing fails", async () => {
+    const failure = new Error("device key unavailable");
+    const deviceBinding = fakeDeviceBinding();
+    deviceBinding.sign.mockRejectedValue(failure);
+    const { engine, storage, handlers, onAuthError } = makeHarness({
+      deviceBinding,
+    });
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+
+    await engine.signOut({ federated: false });
+
+    expect(storage.readSession()).toBeNull();
+    expect(handlers.signOut).not.toHaveBeenCalled();
+    expect(onAuthError).toHaveBeenCalledWith(failure);
+  });
+
   it("clears storage FIRST, revokes server-side, then ends the SSO session", async () => {
     const { engine, storage, handlers } = makeHarness();
     storage.writeSession({ token: "t1", sessionId: "s1" });
@@ -705,6 +1034,182 @@ describe("signOut", () => {
     expect(window.location.assign).not.toHaveBeenCalled();
   });
 
+  it("rejects loudly when browser cleanup and server revocation both fail", async () => {
+    const sessionKey = "convex-logto:test:session";
+    const idTokenKey = "convex-logto:test:idToken";
+    const localValues = new Map([
+      [sessionKey, JSON.stringify({ token: "t1", sessionId: "s1" })],
+    ]);
+    const sessionValues = new Map([[idTokenKey, JSON.stringify(freshToken())]]);
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => localValues.get(key) ?? null,
+      setItem: () => {
+        throw new Error("localStorage write unavailable");
+      },
+      removeItem: () => {
+        throw new Error("localStorage removal unavailable");
+      },
+    });
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => sessionValues.get(key) ?? null,
+      setItem: () => {
+        throw new Error("sessionStorage write unavailable");
+      },
+      removeItem: () => {
+        throw new Error("sessionStorage removal unavailable");
+      },
+    });
+    const { engine, handlers } = makeHarness();
+    handlers.signOut.mockRejectedValue(new Error("network unavailable"));
+
+    await expect(engine.signOut({ federated: false })).rejects.toMatchObject({
+      name: "SessionSignOutError",
+      code: "local_cleanup_and_server_revocation_failed",
+      serverSessionStatus: "revocation_failed",
+    });
+
+    expect(handlers.signOut).toHaveBeenCalledTimes(1);
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+    expect(localValues.get(sessionKey)).toContain('"t1"');
+    expect(sessionValues.get(idTokenKey)).toContain("eyJ");
+
+    const { engine: coldEngine } = makeHarness();
+    coldEngine.start();
+    expect((await settled(coldEngine)).status).toBe("authenticated");
+  });
+
+  it("resolves a dead-server sign-out only after browser cleanup succeeds on retry", async () => {
+    const sessionKey = "convex-logto:test:session";
+    const idTokenKey = "convex-logto:test:idToken";
+    const local = persistentStorageStub(
+      [[sessionKey, JSON.stringify({ token: "t1", sessionId: "s1" })]],
+      1,
+    );
+    const session = persistentStorageStub(
+      [[idTokenKey, JSON.stringify(freshToken())]],
+      1,
+    );
+    vi.stubGlobal("localStorage", local.storage);
+    vi.stubGlobal("sessionStorage", session.storage);
+    const { engine, handlers } = makeHarness();
+    handlers.signOut.mockRejectedValue(new Error("network unavailable"));
+
+    await expect(engine.signOut({ federated: false })).resolves.toBeUndefined();
+
+    expect(local.values.has(sessionKey)).toBe(false);
+    expect(session.values.has(idTokenKey)).toBe(false);
+    const { engine: coldEngine, handlers: coldHandlers } = makeHarness();
+    coldEngine.start();
+    expect((await settled(coldEngine)).status).toBe("unauthenticated");
+    expect(coldHandlers.refresh).not.toHaveBeenCalled();
+  });
+
+  it("prioritizes durable browser cleanup failure after successful revocation", async () => {
+    const sessionKey = "convex-logto:test:session";
+    const idTokenKey = "convex-logto:test:idToken";
+    const local = persistentStorageStub(
+      [[sessionKey, JSON.stringify({ token: "t1", sessionId: "s1" })]],
+      Number.POSITIVE_INFINITY,
+    );
+    const session = persistentStorageStub(
+      [[idTokenKey, JSON.stringify(freshToken())]],
+      Number.POSITIVE_INFINITY,
+    );
+    vi.stubGlobal("localStorage", local.storage);
+    vi.stubGlobal("sessionStorage", session.storage);
+    const { engine, handlers } = makeHarness();
+    handlers.signOut.mockResolvedValue({});
+
+    await expect(engine.signOut({ federated: false })).rejects.toMatchObject({
+      name: "SessionSignOutError",
+      code: "local_cleanup_failed",
+      serverSessionStatus: "revoked",
+    });
+
+    expect(handlers.signOut).toHaveBeenCalledTimes(1);
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+  });
+
+  it("rejects when a surviving session token could refresh after reload", async () => {
+    const sessionKey = "convex-logto:test:session";
+    const idTokenKey = "convex-logto:test:idToken";
+    const local = persistentStorageStub(
+      [[sessionKey, JSON.stringify({ token: "t1", sessionId: "s1" })]],
+      Number.POSITIVE_INFINITY,
+    );
+    const session = persistentStorageStub(
+      [[idTokenKey, JSON.stringify(freshToken())]],
+      0,
+    );
+    vi.stubGlobal("localStorage", local.storage);
+    vi.stubGlobal("sessionStorage", session.storage);
+    const { engine, handlers } = makeHarness();
+    handlers.signOut.mockRejectedValue(new Error("network unavailable"));
+
+    await expect(engine.signOut({ federated: false })).rejects.toMatchObject({
+      code: "local_cleanup_and_server_revocation_failed",
+    });
+
+    expect(session.values.has(idTokenKey)).toBe(false);
+    const { engine: coldEngine, handlers: coldHandlers } = makeHarness();
+    coldHandlers.refresh.mockResolvedValue(sessionResult(2));
+    coldEngine.start();
+    expect((await settled(coldEngine)).status).toBe("authenticated");
+    expect(coldHandlers.refresh).toHaveBeenCalledWith({ sessionToken: "t1" });
+  });
+
+  it("rejects an ID-token cleanup failure even though reload fails closed", async () => {
+    const sessionKey = "convex-logto:test:session";
+    const idTokenKey = "convex-logto:test:idToken";
+    const local = persistentStorageStub(
+      [[sessionKey, JSON.stringify({ token: "t1", sessionId: "s1" })]],
+      0,
+    );
+    const session = persistentStorageStub(
+      [[idTokenKey, JSON.stringify(freshToken())]],
+      Number.POSITIVE_INFINITY,
+    );
+    vi.stubGlobal("localStorage", local.storage);
+    vi.stubGlobal("sessionStorage", session.storage);
+    const { engine, handlers } = makeHarness();
+    handlers.signOut.mockRejectedValue(new Error("network unavailable"));
+
+    await expect(engine.signOut({ federated: false })).rejects.toMatchObject({
+      code: "local_cleanup_and_server_revocation_failed",
+    });
+
+    expect(local.values.has(sessionKey)).toBe(false);
+    expect(session.values.has(idTokenKey)).toBe(true);
+    const { engine: coldEngine, handlers: coldHandlers } = makeHarness();
+    coldEngine.start();
+    expect((await settled(coldEngine)).status).toBe("unauthenticated");
+    expect(coldHandlers.refresh).not.toHaveBeenCalled();
+  });
+
+  it("still clears the live snapshot and revokes remotely when clearAll throws", async () => {
+    const cleanupError = new Error("storage clear unavailable");
+    const remoteError = new Error("network unavailable");
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    storage.writeIdToken(freshToken());
+    engine.start();
+    expect((await settled(engine)).status).toBe("authenticated");
+    vi.spyOn(storage, "clearAll").mockImplementation(() => {
+      throw cleanupError;
+    });
+    handlers.signOut.mockRejectedValue(remoteError);
+
+    await expect(engine.signOut({ federated: false })).rejects.toMatchObject({
+      name: "SessionSignOutError",
+      code: "local_cleanup_and_server_revocation_failed",
+      serverSessionStatus: "revocation_failed",
+      cause: { serverRevocationError: remoteError },
+    });
+
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+    expect(handlers.signOut).toHaveBeenCalledTimes(1);
+  });
+
   it("federated: false skips the SSO redirect", async () => {
     const { engine, storage, handlers } = makeHarness();
     storage.writeSession({ token: "t1", sessionId: "s1" });
@@ -715,14 +1220,106 @@ describe("signOut", () => {
     expect(window.location.assign).not.toHaveBeenCalled();
   });
 
+  it("refuses an end-session URL containing credentials", async () => {
+    const { engine, storage, handlers, onAuthError } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    handlers.signOut.mockResolvedValue({
+      endSessionUrl: "https://alice@auth.example.com/oidc/session/end",
+    });
+
+    await expect(engine.signOut()).rejects.toThrow(/credentials/);
+
+    expect(storage.readSession()).toBeNull();
+    expect(window.location.assign).not.toHaveBeenCalled();
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+  });
+
   it("signOut with nothing stored is a no-op locally and remotely", async () => {
     const { engine, handlers } = makeHarness();
     await engine.signOut();
     expect(handlers.signOut).not.toHaveBeenCalled();
   });
+
+  it("an old in-flight refresh cannot restore credentials after sign-out", async () => {
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    storage.writeIdToken(staleToken());
+    const pendingRefresh = deferred<ReturnType<typeof sessionResult>>();
+    handlers.refresh.mockReturnValue(pendingRefresh.promise);
+    handlers.signOut.mockResolvedValue({});
+
+    const refreshing = engine.fetchAccessToken(false);
+    await vi.waitFor(() => expect(handlers.refresh).toHaveBeenCalledTimes(1));
+    await engine.signOut({ federated: false });
+    pendingRefresh.resolve(sessionResult(2));
+
+    expect(await refreshing).toBeNull();
+    expect(storage.readSession()).toBeNull();
+    expect(storage.readIdToken()).toBeNull();
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+  });
 });
 
 describe("signOutEverywhere", () => {
+  it("sends device proof before revoking every bound session", async () => {
+    const deviceBinding = fakeDeviceBinding("proof-for-t1");
+    const { engine, storage, handlers } = makeHarness({ deviceBinding });
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    handlers.signOutEverywhere.mockResolvedValue({ count: 1 });
+
+    await engine.signOutEverywhere();
+
+    expect(handlers.signOutEverywhere).toHaveBeenCalledWith({
+      sessionToken: "t1",
+      deviceProof: "proof-for-t1",
+      postLogoutRedirectUri: "http://localhost:5173",
+    });
+  });
+
+  it("rejects without a proofless fallback when bound signing fails", async () => {
+    const failure = new Error("device key unavailable");
+    const deviceBinding = fakeDeviceBinding();
+    deviceBinding.sign.mockRejectedValue(failure);
+    const { engine, storage, handlers, onAuthError } = makeHarness({
+      deviceBinding,
+    });
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+
+    await expect(engine.signOutEverywhere()).rejects.toBe(failure);
+
+    expect(storage.readSession()).toBeNull();
+    expect(handlers.signOutEverywhere).not.toHaveBeenCalled();
+    expect(onAuthError).toHaveBeenCalledWith(failure);
+  });
+
+  it("prioritizes combined cleanup failure over the remote fatal error", async () => {
+    const remoteError = new Error("subject revocation unavailable");
+    const sessionKey = "convex-logto:test:session";
+    const idTokenKey = "convex-logto:test:idToken";
+    const local = persistentStorageStub(
+      [[sessionKey, JSON.stringify({ token: "t1", sessionId: "s1" })]],
+      Number.POSITIVE_INFINITY,
+    );
+    const session = persistentStorageStub(
+      [[idTokenKey, JSON.stringify(freshToken())]],
+      Number.POSITIVE_INFINITY,
+    );
+    vi.stubGlobal("localStorage", local.storage);
+    vi.stubGlobal("sessionStorage", session.storage);
+    const { engine, handlers } = makeHarness();
+    handlers.signOutEverywhere.mockRejectedValue(remoteError);
+
+    await expect(engine.signOutEverywhere()).rejects.toMatchObject({
+      name: "SessionSignOutError",
+      code: "local_cleanup_and_server_revocation_failed",
+      serverSessionStatus: "revocation_failed",
+      cause: { serverRevocationError: remoteError },
+    });
+
+    expect(handlers.signOutEverywhere).toHaveBeenCalledTimes(1);
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+  });
+
   it("clears local state first, kills the subject sessions, then navigates to Logto", async () => {
     const { engine, storage, handlers } = makeHarness();
     storage.writeSession({ token: "t1", sessionId: "s1" });

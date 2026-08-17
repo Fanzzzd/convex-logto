@@ -19,7 +19,7 @@ const freshPayload = (overrides: Record<string, unknown> = {}) => ({
 });
 const body = JSON.stringify(freshPayload());
 
-const sign = (key: string, payload: Buffer | string) =>
+const sign = (key: string, payload: Uint8Array | string) =>
   createHmac("sha256", key).update(payload).digest("hex");
 
 describe("verifyLogtoSignature", () => {
@@ -105,7 +105,10 @@ describe("verifyLogtoSignature", () => {
 // Convex attaches the raw `(ctx, request) => Response` as `._handler`, which lets
 // us drive the handler directly without a Convex runtime.
 type RouteHandler = (
-  ctx: { runMutation: (ref: unknown, args: unknown) => Promise<unknown> },
+  ctx: {
+    runMutation: (ref: unknown, args: unknown) => Promise<unknown>;
+    runAction?: (ref: unknown, args: unknown) => Promise<unknown>;
+  },
   request: Request,
 ) => Promise<Response>;
 
@@ -126,12 +129,18 @@ function captureWebhookRoute(
   return handler;
 }
 
-const post = (signature: string, payload: string) =>
-  new Request("http://convex.test/logto/webhook", {
+const post = (signature: string, payload: BodyInit, contentLength?: string) => {
+  const headers = new Headers();
+  if (signature) headers.set("logto-signature-sha-256", signature);
+  if (contentLength !== undefined) {
+    headers.set("Content-Length", contentLength);
+  }
+  return new Request("http://convex.test/logto/webhook", {
     method: "POST",
-    headers: signature ? { "logto-signature-sha-256": signature } : {},
+    headers,
     body: payload,
   });
+};
 
 describe("registerLogtoWebhook route", () => {
   it("returns 500 when the signing key is empty/unset", async () => {
@@ -183,6 +192,28 @@ describe("registerLogtoWebhook route", () => {
     expect(runMutation).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["missing hookId", { hookId: undefined }],
+    ["wrong profile field type", { data: { id: "u1", primaryEmail: 42 } }],
+    [
+      "wrong suspension flag type",
+      {
+        event: "User.SuspensionStatus.Updated",
+        data: { id: "u1", isSuspended: "true" },
+      },
+    ],
+  ])("returns 400 on a malformed known payload (%s)", async (_name, patch) => {
+    const handler = captureWebhookRoute({ signingKey });
+    const malformed = JSON.stringify(freshPayload(patch));
+    const runMutation = vi.fn();
+    const res = await handler(
+      { runMutation },
+      post(sign(signingKey, malformed), malformed),
+    );
+    expect(res.status).toBe(400);
+    expect(runMutation).not.toHaveBeenCalled();
+  });
+
   it("returns 200 and dispatches the parsed payload on a valid delivery", async () => {
     const handler = captureWebhookRoute({ signingKey });
     const runMutation = vi.fn().mockResolvedValue(null);
@@ -210,17 +241,43 @@ describe("registerLogtoWebhook route", () => {
     expect(runMutation).toHaveBeenCalledTimes(1);
   });
 
-  it("returns 413 on an oversized body without touching crypto or handlers", async () => {
+  it.each([
+    ["without Content-Length", undefined],
+    ["with a falsely small Content-Length", "1"],
+  ])(
+    "returns 413 on an oversized body %s without touching handlers",
+    async (_name, contentLength) => {
+      const handler = captureWebhookRoute({ signingKey });
+      const huge = JSON.stringify(
+        freshPayload({ padding: "x".repeat(1024 * 1024) }),
+      );
+      const runMutation = vi.fn();
+      const res = await handler(
+        { runMutation },
+        post(sign(signingKey, huge), huge, contentLength),
+      );
+      expect(res.status).toBe(413);
+      expect(runMutation).not.toHaveBeenCalled();
+    },
+  );
+
+  it("returns 400 when the request body stream fails", async () => {
     const handler = captureWebhookRoute({ signingKey });
-    const huge = JSON.stringify(
-      freshPayload({ padding: "x".repeat(1024 * 1024) }),
-    );
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("read failed"));
+      },
+    });
+    const failingRequest = new Request("http://convex.test/logto/webhook", {
+      method: "POST",
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
     const runMutation = vi.fn();
-    const res = await handler(
-      { runMutation },
-      post(sign(signingKey, huge), huge),
-    );
-    expect(res.status).toBe(413);
+
+    const response = await handler({ runMutation }, failingRequest);
+
+    expect(response.status).toBe(400);
     expect(runMutation).not.toHaveBeenCalled();
   });
 
@@ -297,6 +354,11 @@ function sessionsHarness(overrides?: {
     calls.push({ fn, args });
     return handlers[fn]!(args);
   });
+  const runAction = vi.fn((ref: unknown, args: unknown) => {
+    const fn = (ref as { fn?: string }).fn ?? "kill";
+    calls.push({ fn, args });
+    return handlers[fn]!(args);
+  });
   const http = httpRouter();
   registerLogtoWebhook(http, SYNC_REF as never, {
     signingKey,
@@ -308,14 +370,15 @@ function sessionsHarness(overrides?: {
       RouteHandler
     >
   )["_handler"]!;
-  return { handler, runMutation, handlers, calls };
+  return { handler, runMutation, runAction, handlers, calls };
 }
 
 describe("registerLogtoWebhook with sessions", () => {
   it("claims the delivery by body hash, then dispatches", async () => {
-    const { handler, runMutation, handlers, calls } = sessionsHarness();
+    const { handler, runMutation, runAction, handlers, calls } =
+      sessionsHarness();
     const res = await handler(
-      { runMutation },
+      { runMutation, runAction },
       post(sign(signingKey, body), body),
     );
     expect(res.status).toBe(200);
@@ -328,11 +391,11 @@ describe("registerLogtoWebhook with sessions", () => {
   });
 
   it("answers 200 on a duplicate delivery WITHOUT re-running sync", async () => {
-    const { handler, runMutation, handlers } = sessionsHarness({
+    const { handler, runMutation, runAction, handlers } = sessionsHarness({
       record: vi.fn().mockResolvedValue(false),
     });
     const res = await handler(
-      { runMutation },
+      { runMutation, runAction },
       post(sign(signingKey, body), body),
     );
     expect(res.status).toBe(200);
@@ -341,7 +404,8 @@ describe("registerLogtoWebhook with sessions", () => {
   });
 
   it("User.Deleted kills the subject's sessions before sync runs", async () => {
-    const { handler, runMutation, handlers, calls } = sessionsHarness();
+    const { handler, runMutation, runAction, handlers, calls } =
+      sessionsHarness();
     const deleted = JSON.stringify(
       freshPayload({
         event: "User.Deleted",
@@ -350,7 +414,7 @@ describe("registerLogtoWebhook with sessions", () => {
       }),
     );
     const res = await handler(
-      { runMutation },
+      { runMutation, runAction },
       post(sign(signingKey, deleted), deleted),
     );
     expect(res.status).toBe(200);
@@ -358,12 +422,58 @@ describe("registerLogtoWebhook with sessions", () => {
     expect(calls.map((c) => c.fn)).toEqual(["record", "kill", "sync"]);
   });
 
+  it("accepts current User.Deleted payloads with matching entity and route ids", async () => {
+    const { handler, runMutation, runAction, handlers, calls } =
+      sessionsHarness();
+    const deleted = JSON.stringify(
+      freshPayload({
+        event: "User.Deleted",
+        data: {
+          id: "u-current",
+          primaryEmail: "former@example.com",
+          name: "Former User",
+        },
+        params: { userId: "u-current" },
+      }),
+    );
+
+    const response = await handler(
+      { runMutation, runAction },
+      post(sign(signingKey, deleted), deleted),
+    );
+
+    expect(response.status).toBe(200);
+    expect(handlers.kill).toHaveBeenCalledWith({ subject: "u-current" });
+    expect(calls.map((c) => c.fn)).toEqual(["record", "kill", "sync"]);
+  });
+
+  it("rejects User.Deleted when data.id and params.userId disagree", async () => {
+    const { handler, runMutation, runAction, handlers } = sessionsHarness();
+    const contradictoryDelete = JSON.stringify(
+      freshPayload({
+        event: "User.Deleted",
+        data: { id: "data-user" },
+        params: { userId: "params-user" },
+      }),
+    );
+
+    const response = await handler(
+      { runMutation, runAction },
+      post(sign(signingKey, contradictoryDelete), contradictoryDelete),
+    );
+
+    expect(response.status).toBe(400);
+    expect(handlers.record).not.toHaveBeenCalled();
+    expect(handlers.kill).not.toHaveBeenCalled();
+    expect(handlers.sync).not.toHaveBeenCalled();
+  });
+
   it("suspension ON kills sessions; suspension OFF does not", async () => {
     for (const [isSuspended, killed] of [
       [true, true],
       [false, false],
     ] as const) {
-      const { handler, runMutation, handlers } = sessionsHarness();
+      const { handler, runMutation, runAction, handlers } = sessionsHarness();
       const suspended = JSON.stringify(
         freshPayload({
           event: "User.SuspensionStatus.Updated",
@@ -371,7 +481,7 @@ describe("registerLogtoWebhook with sessions", () => {
         }),
       );
       const res = await handler(
-        { runMutation },
+        { runMutation, runAction },
         post(sign(signingKey, suspended), suspended),
       );
       expect(res.status).toBe(200);
@@ -381,11 +491,11 @@ describe("registerLogtoWebhook with sessions", () => {
   });
 
   it("releases the dedupe claim when sync fails, so Logto's retry re-runs it", async () => {
-    const { handler, runMutation, handlers } = sessionsHarness({
+    const { handler, runMutation, runAction, handlers } = sessionsHarness({
       sync: vi.fn().mockRejectedValue(new Error("handler exploded")),
     });
     await expect(
-      handler({ runMutation }, post(sign(signingKey, body), body)),
+      handler({ runMutation, runAction }, post(sign(signingKey, body), body)),
     ).rejects.toThrow("handler exploded");
     expect(handlers.forget).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -412,6 +522,56 @@ const callSync = (
   (sync as unknown as Record<string, SyncHandler>)["_handler"](ctx, {
     payload,
   });
+
+describe("Logto payload shapes", () => {
+  it("accepts a User.Created whose lastSignInAt is null", async () => {
+    // `users.last_sign_in_at` is nullable: a user who has never signed in
+    // serialises as null. Rejecting it would drop a signed, authentic delivery.
+    const handler = captureWebhookRoute({ signingKey });
+    const payload = JSON.stringify(
+      freshPayload({
+        data: {
+          id: "user_abc",
+          primaryEmail: "a@b.com",
+          lastSignInAt: null,
+          createdAt: 1_700_000_000_000,
+        },
+      }),
+    );
+    const runMutation = vi.fn();
+    const res = await handler(
+      { runMutation },
+      post(sign(signingKey, payload), payload),
+    );
+
+    expect(res.status).toBe(200);
+    expect(runMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a User.Deleted with no data key, using the route params", async () => {
+    // A 204 delete route serialises no `data` at all. Dropping it would skip
+    // the session revocation that deletion is supposed to trigger.
+    const handler = captureWebhookRoute({ signingKey });
+    const payload = JSON.stringify({
+      hookId: "h1",
+      event: "User.Deleted",
+      createdAt: new Date().toISOString(),
+      path: "/users/:userId",
+      method: "DELETE",
+      status: 204,
+      params: { userId: "user_abc" },
+      matchedRoute: "/users/:userId",
+    });
+    const runMutation = vi.fn();
+    const res = await handler(
+      { runMutation },
+      post(sign(signingKey, payload), payload),
+    );
+
+    expect(res.status).toBe(200);
+    expect(runMutation).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("logtoSync dispatch", () => {
   it("dispatches an event to its handler with (ctx, user, payload)", async () => {
@@ -456,6 +616,54 @@ describe("logtoSync dispatch", () => {
     expect(got).toEqual({ id: "u2" });
   });
 
+  it("passes the pre-deletion User through when its id matches route params", async () => {
+    let got: unknown;
+    const { sync } = logtoSync({
+      "User.Deleted": async (_ctx, user) => {
+        got = user;
+      },
+    });
+    const user = {
+      id: "u-current",
+      primaryEmail: "former@example.com",
+      name: "Former User",
+    };
+
+    await callSync(
+      sync,
+      { db: {} },
+      {
+        event: "User.Deleted",
+        hookId: "h",
+        createdAt: "t",
+        data: user,
+        params: { userId: "u-current" },
+      },
+    );
+
+    expect(got).toBe(user);
+  });
+
+  it("rejects contradictory User.Deleted ids before dispatching", async () => {
+    const handler = vi.fn();
+    const { sync } = logtoSync({ "User.Deleted": handler });
+
+    await expect(
+      callSync(
+        sync,
+        { db: {} },
+        {
+          event: "User.Deleted",
+          hookId: "h",
+          createdAt: "t",
+          data: { id: "data-user" },
+          params: { userId: "params-user" },
+        },
+      ),
+    ).rejects.toThrow(/known Logto User\.\* event/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it("is a no-op (resolves null) when no handler is mapped for the event", async () => {
     const { sync } = logtoSync({});
     await expect(
@@ -484,5 +692,23 @@ describe("logtoSync dispatch", () => {
         },
       ),
     ).rejects.toThrow(/known Logto User\.\* event/);
+  });
+
+  it("throws before dispatching a known event with a malformed user", async () => {
+    const handler = vi.fn();
+    const { sync } = logtoSync({ "User.Created": handler });
+    await expect(
+      callSync(
+        sync,
+        { db: {} },
+        {
+          event: "User.Created",
+          hookId: "h",
+          createdAt: "t",
+          data: { id: "u1", primaryEmail: 42 },
+        },
+      ),
+    ).rejects.toThrow(/known Logto User\.\* event/);
+    expect(handler).not.toHaveBeenCalled();
   });
 });

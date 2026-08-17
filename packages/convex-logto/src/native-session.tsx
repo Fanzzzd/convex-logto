@@ -24,7 +24,7 @@ import {
   createNativeSessionAuthFlow,
   NativeSessionStorageArea,
 } from "./native-session-client";
-import { SessionAuthEngine, type SessionTransport } from "./session-client";
+import { SessionAuthEngine } from "./session-client";
 import type { LogtoSessionApi } from "./session";
 
 const SessionContext = createContext<{
@@ -83,7 +83,7 @@ export function ConvexLogtoSessionProvider({
       SecureStore,
     );
     return new SessionAuthEngine({
-      transport: client as SessionTransport,
+      transport: client,
       api: sessionApi,
       storage,
       callbackPath: "",

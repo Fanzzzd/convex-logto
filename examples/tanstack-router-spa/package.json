@@ -5,13 +5,14 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit",
+    "check-types": "tsc --noEmit",
+    "typecheck": "pnpm check-types",
     "test": "vitest run"
   },
   "dependencies": {
     "@logto/react": "^4.0.14",
     "@tanstack/react-router": "^1.170.15",
-    "convex": "^1.41.0",
+    "convex": "^1.44.0",
     "convex-logto": "workspace:*",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
@@ -23,7 +24,7 @@
     "@vitejs/plugin-react": "^6.0.2",
     "convex-test": "^0.0.53",
     "typescript": "~5.8.3",
-    "vite": "^8.0.16",
-    "vitest": "^3.2.6"
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
   }
 }

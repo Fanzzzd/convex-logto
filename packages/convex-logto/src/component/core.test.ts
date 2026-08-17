@@ -14,6 +14,7 @@ import {
   generatePkce,
   generateToken,
   hashToken,
+  isOutcomeUnknownError,
   rotateTokenHashes,
   terminal,
   toBase64Url,
@@ -168,6 +169,45 @@ it("buildEndSessionUrl includes the post-logout redirect only when given", () =>
   );
 });
 
+it("URL builders preserve a reverse-proxy endpoint path prefix", () => {
+  const authorize = new URL(
+    buildAuthorizeUrl({
+      endpoint: "https://auth.example.com/logto",
+      appId: "app1",
+      redirectUri: "https://app.example.com/callback",
+      state: "state-1",
+      challenge: "challenge-1",
+    }),
+  );
+  expect(authorize.pathname).toBe("/logto/oidc/auth");
+
+  const endSession = new URL(
+    buildEndSessionUrl({
+      endpoint: "https://auth.example.com/logto",
+      appId: "app1",
+    }),
+  );
+  expect(endSession.pathname).toBe("/logto/oidc/session/end");
+});
+
+it("URL builders reject an endpoint that bypassed public config validation", () => {
+  expect(() =>
+    buildAuthorizeUrl({
+      endpoint: "javascript:globalThis.compromised=true//x",
+      appId: "app1",
+      redirectUri: "https://app.example.com/callback",
+      state: "state-1",
+      challenge: "challenge-1",
+    }),
+  ).toThrow(/https?:/i);
+  expect(() =>
+    buildEndSessionUrl({
+      endpoint: "https://alice@auth.example.com",
+      appId: "app1",
+    }),
+  ).toThrow(/credentials/i);
+});
+
 // --- ID token decoding -------------------------------------------------------
 
 function fakeIdToken(payload: Record<string, unknown>): string {
@@ -273,14 +313,38 @@ describe("decideRefresh", () => {
     });
   });
 
-  it("current token with a STALE claim → refresh (crashed action doesn't wedge the session)", () => {
+  it("current token with an expired claim → require reauthentication instead of double-spending the refresh token", () => {
     expect(decide("current", { refreshingSince: NOW - 16_000 })).toEqual({
-      outcome: "refresh",
+      outcome: "claim-expired",
     });
   });
 
-  it("previous token inside the window with a fresh cached ID token → cached", () => {
+  it("recent superseded generation with a fresh cached ID token → cached", () => {
     expect(decide("previous", {})).toEqual({ outcome: "cached" });
+  });
+
+  it("indexed generation uses its stored expiry instead of the legacy rotation timestamp", () => {
+    expect(
+      decideRefresh({
+        presentedHash: "older-generation",
+        session: { ...base, rotatedAt: undefined },
+        now: NOW,
+        reuseWindowMs: DEFAULT_REUSE_WINDOW_MS,
+        presentedTokenExpiresAt: NOW + 1,
+      }),
+    ).toEqual({ outcome: "cached" });
+  });
+
+  it("indexed generation expiry boundary is exclusive", () => {
+    expect(
+      decideRefresh({
+        presentedHash: "older-generation",
+        session: base,
+        now: NOW,
+        reuseWindowMs: DEFAULT_REUSE_WINDOW_MS,
+        presentedTokenExpiresAt: NOW,
+      }),
+    ).toEqual({ outcome: "reuse" });
   });
 
   it("rotation via a previous match keeps the superseded current token valid", () => {
@@ -300,19 +364,19 @@ describe("decideRefresh", () => {
     ).toEqual({ outcome: "cached" });
   });
 
-  it("previous token inside the window but cached ID token near expiry → refresh-previous", () => {
+  it("recent superseded token with a stale cache → refresh-superseded", () => {
     expect(decide("previous", { lastIdTokenExp: NOW + 30_000 })).toEqual({
-      outcome: "refresh-previous",
+      outcome: "refresh-superseded",
     });
   });
 
-  it("previous token inside the window while a claim is held → in-flight", () => {
+  it("recent superseded generation while a claim is held → in-flight", () => {
     expect(decide("previous", { refreshingSince: NOW - 1_000 })).toEqual({
       outcome: "in-flight",
     });
   });
 
-  it("previous token OUTSIDE the window → reuse (kill the session)", () => {
+  it("superseded generation outside the Reuse window → reuse", () => {
     expect(
       decide("previous", { rotatedAt: NOW - DEFAULT_REUSE_WINDOW_MS - 1 }),
     ).toEqual({
@@ -320,7 +384,7 @@ describe("decideRefresh", () => {
     });
   });
 
-  it("previous token with no recorded rotation time → reuse", () => {
+  it("legacy previous field with no rotation time → reuse", () => {
     expect(decide("previous", { rotatedAt: undefined })).toEqual({
       outcome: "reuse",
     });
@@ -351,17 +415,48 @@ it("terminal/transient build ConvexErrors with the crossing data shape", () => {
 });
 
 it.each([
-  [400, "terminal"],
-  [401, "terminal"],
-  [500, "transient"],
-  [502, "transient"],
-  [429, "transient"],
-])("classifyTokenEndpointFailure(%i) → %s", (status, kind) => {
-  expect(classifyTokenEndpointFailure(status, {}).data.kind).toBe(kind);
+  // Only a rejected *grant* is terminal. Everything else keeps the session.
+  [400, "invalid_grant", "terminal"],
+  [400, "invalid_request", "transient"],
+  [400, "unsupported_grant_type", "transient"],
+  [401, "invalid_client", "transient"],
+  [401, "unauthorized_client", "transient"],
+  [429, undefined, "transient"],
+  [500, undefined, "transient"],
+  [502, undefined, "transient"],
+])("classifyTokenEndpointFailure(%i, %s) → %s", (status, error, kind) => {
+  expect(
+    classifyTokenEndpointFailure(status, error === undefined ? {} : { error })
+      .data.kind,
+  ).toBe(kind);
 });
+
+it.each([400, 401])(
+  "classifyTokenEndpointFailure(%i) without an error code keeps the session",
+  (status) => {
+    // Deleting every session of a deployment is irreversible; an answer we
+    // cannot attribute must not trigger it.
+    expect(classifyTokenEndpointFailure(status, {}).data.kind).toBe(
+      "transient",
+    );
+  },
+);
 
 it("classifyTokenEndpointFailure surfaces Logto's error code", () => {
   expect(
     classifyTokenEndpointFailure(400, { error: "invalid_grant" }).data.code,
   ).toBe("invalid_grant");
+  expect(
+    classifyTokenEndpointFailure(401, { error: "invalid_client" }).data.code,
+  ).toBe("invalid_client");
 });
+
+it.each([500, 502, 503])(
+  "classifyTokenEndpointFailure(%i) marks the refresh outcome unknown",
+  (status) => {
+    // The request reached Logto, which may have rotated the grant already.
+    expect(
+      isOutcomeUnknownError(classifyTokenEndpointFailure(status, {})),
+    ).toBe(true);
+  },
+);

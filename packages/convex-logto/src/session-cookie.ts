@@ -2,6 +2,8 @@ import { getFunctionName, type FunctionReference } from "convex/server";
 import { ConvexError } from "convex/values";
 import { isSafeReturnTo } from "./callback";
 import { SESSION_GC_AFTER_MS } from "./component/core.js";
+import { normalizeHttpNavigationUrl } from "./component/endpoint.js";
+import { readBoundedBody } from "./component/http_body.js";
 import type { SessionTransport, StoredSession } from "./session-client";
 import type { LogtoSessionApi } from "./session";
 
@@ -99,14 +101,23 @@ type SessionError = {
 
 type CookieRoute = "sign-in" | "callback" | "token" | "sign-out";
 
-const COOKIE_ROUTES = new Set<CookieRoute>([
-  "sign-in",
-  "callback",
-  "token",
-  "sign-out",
-]);
-
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" } as const;
+const MAX_COOKIE_BODY_BYTES = 64 * 1024;
+const MAX_COOKIE_RESPONSE_BYTES = 256 * 1024;
+const COOKIE_TRANSPORT_TIMEOUT_MS = 10 * 1000;
+
+function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCookieRoute(value: string): value is CookieRoute {
+  return (
+    value === "sign-in" ||
+    value === "callback" ||
+    value === "token" ||
+    value === "sign-out"
+  );
+}
 
 function normalizeBasePath(basePath: string): string {
   const value = basePath.trim();
@@ -196,9 +207,7 @@ function routeFor(request: Request, basePath: string): CookieRoute | null {
   const prefix = basePath === "/" ? "/" : `${basePath}/`;
   if (!pathname.startsWith(prefix)) return null;
   const route = pathname.slice(prefix.length);
-  return COOKIE_ROUTES.has(route as CookieRoute)
-    ? (route as CookieRoute)
-    : null;
+  return isCookieRoute(route) ? route : null;
 }
 
 function corsHeaders(origin: string): Headers {
@@ -232,14 +241,14 @@ function jsonResponse(
 }
 
 function errorData(error: unknown): SessionError | null {
-  const data =
+  const data: unknown =
     error instanceof ConvexError
       ? error.data
-      : typeof error === "object" && error !== null && "data" in error
-        ? (error as { data?: unknown }).data
+      : isRecord(error)
+        ? error.data
         : undefined;
-  if (typeof data !== "object" || data === null) return null;
-  const { kind, code, message } = data as Record<string, unknown>;
+  if (!isRecord(data)) return null;
+  const { kind, code, message } = data;
   return (kind === "terminal" || kind === "transient") &&
     typeof code === "string" &&
     typeof message === "string"
@@ -289,14 +298,27 @@ function actionErrorResponse(
 
 async function readJsonObject(
   request: Request,
-): Promise<Record<string, unknown>> {
-  const text = await request.text();
-  if (text === "") return {};
-  const parsed: unknown = JSON.parse(text);
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error("request body must be a JSON object");
+): Promise<
+  | { ok: true; body: Record<string, unknown> }
+  | { ok: false; reason: "too_large" | "malformed" }
+> {
+  const bodyResult = await readBoundedBody(request, MAX_COOKIE_BODY_BYTES);
+  if (!bodyResult.ok) {
+    return {
+      ok: false,
+      reason: bodyResult.reason === "too_large" ? "too_large" : "malformed",
+    };
   }
-  return parsed as Record<string, unknown>;
+  const text = new TextDecoder().decode(bodyResult.bytes);
+  if (text === "") return { ok: true, body: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { ok: false, reason: "malformed" };
+  }
+  if (!isRecord(parsed)) return { ok: false, reason: "malformed" };
+  return { ok: true, body: parsed };
 }
 
 function requiredString(body: Record<string, unknown>, name: string): string {
@@ -401,16 +423,20 @@ export function createLogtoSessionCookieHandler(
     request: Request,
     origin: string,
   ): Promise<Response> => {
-    let body: Record<string, unknown>;
-    try {
-      body = await readJsonObject(request);
-    } catch {
+    const bodyResult = await readJsonObject(request);
+    if (!bodyResult.ok) {
       return jsonResponse(
-        { error: "Malformed JSON request body" },
-        { status: 400 },
+        {
+          error:
+            bodyResult.reason === "too_large"
+              ? "Request body is too large"
+              : "Malformed JSON request body",
+        },
+        { status: bodyResult.reason === "too_large" ? 413 : 400 },
         origin,
       );
     }
+    const body = bodyResult.body;
 
     try {
       switch (route) {
@@ -479,15 +505,16 @@ export function createLogtoSessionCookieHandler(
                 "sessionApi must export signOutEverywhere before using this operation",
               );
             }
-            const result = everywhere
-              ? await options.action(signOutEverywhere!, {
-                  sessionToken,
-                  postLogoutRedirectUri,
-                })
-              : await options.action(options.sessionApi.signOut, {
-                  sessionToken,
-                  postLogoutRedirectUri,
-                });
+            const result =
+              everywhere && signOutEverywhere !== undefined
+                ? await options.action(signOutEverywhere, {
+                    sessionToken,
+                    postLogoutRedirectUri,
+                  })
+                : await options.action(options.sessionApi.signOut, {
+                    sessionToken,
+                    postLogoutRedirectUri,
+                  });
             return jsonResponse(result, { headers }, origin);
           } catch (error) {
             if (error instanceof RequestValidationError) throw error;
@@ -509,6 +536,7 @@ export function createLogtoSessionCookieHandler(
           }
         }
       }
+      throw new Error("convex-logto: unsupported cookie route.");
     } catch (error) {
       if (error instanceof RequestValidationError) {
         return jsonResponse({ error: error.message }, { status: 400 }, origin);
@@ -643,13 +671,31 @@ function endpointRoute(endpoint: string, route: CookieRoute): string {
   return `${endpoint}/${route}`;
 }
 
-async function parseFetchResponse(response: Response): Promise<unknown> {
-  const body = (await response.json().catch(() => ({}))) as {
-    error?: unknown;
-  };
+async function parseFetchResponse(
+  response: Response,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const bodyResult = await readBoundedBody(
+    response,
+    MAX_COOKIE_RESPONSE_BYTES,
+    signal,
+  );
+  if (!bodyResult.ok) {
+    throw new Error(
+      bodyResult.reason === "too_large"
+        ? "convex-logto: session cookie handler response is too large."
+        : "convex-logto: could not read the session cookie handler response.",
+    );
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder().decode(bodyResult.bytes));
+  } catch {
+    body = {};
+  }
   if (response.ok) return body;
-  if (typeof body.error === "object" && body.error !== null) {
-    const { kind, code, message } = body.error as Record<string, unknown>;
+  if (isRecord(body) && isRecord(body.error)) {
+    const { kind, code, message } = body.error;
     if (
       (kind === "terminal" || kind === "transient") &&
       typeof code === "string" &&
@@ -661,6 +707,104 @@ async function parseFetchResponse(response: Response): Promise<unknown> {
   throw new Error(
     `convex-logto: session cookie handler responded ${response.status}.`,
   );
+}
+
+function invalidCookieResponse(): Error {
+  return new Error(
+    "convex-logto: session cookie handler returned an invalid response.",
+  );
+}
+
+function parseNavigationUrl(value: unknown, description: string): string {
+  if (typeof value !== "string") throw invalidCookieResponse();
+  try {
+    return normalizeHttpNavigationUrl(value, description);
+  } catch {
+    // Do not expose whether the same-site handler returned a malformed URL,
+    // credentials, or an unsafe scheme. The transport boundary has one public
+    // malformed-success error contract.
+    throw invalidCookieResponse();
+  }
+}
+
+function parseSignInResponse(value: unknown): { url: string } {
+  if (!isRecord(value)) throw invalidCookieResponse();
+  return { url: parseNavigationUrl(value.url, "authorization") };
+}
+
+function parseCallbackResponse(value: unknown): {
+  idToken: string;
+  sessionId: string;
+  returnTo?: string;
+} {
+  if (
+    !isRecord(value) ||
+    typeof value.idToken !== "string" ||
+    value.idToken === "" ||
+    typeof value.sessionId !== "string" ||
+    value.sessionId === "" ||
+    (value.returnTo !== undefined &&
+      (typeof value.returnTo !== "string" || !isSafeReturnTo(value.returnTo)))
+  ) {
+    throw invalidCookieResponse();
+  }
+  return value.returnTo === undefined
+    ? { idToken: value.idToken, sessionId: value.sessionId }
+    : {
+        idToken: value.idToken,
+        sessionId: value.sessionId,
+        returnTo: value.returnTo,
+      };
+}
+
+function parseTokenResponse(value: unknown): {
+  idToken: string;
+  sessionId: string;
+} {
+  if (
+    !isRecord(value) ||
+    typeof value.idToken !== "string" ||
+    value.idToken === "" ||
+    typeof value.sessionId !== "string" ||
+    value.sessionId === ""
+  ) {
+    throw invalidCookieResponse();
+  }
+  return { idToken: value.idToken, sessionId: value.sessionId };
+}
+
+function parseSignOutResponse(value: unknown): {
+  endSessionUrl?: string;
+} {
+  if (!isRecord(value)) throw invalidCookieResponse();
+  return value.endSessionUrl === undefined
+    ? {}
+    : {
+        endSessionUrl: parseNavigationUrl(value.endSessionUrl, "end-session"),
+      };
+}
+
+function parseSignOutEverywhereResponse(value: unknown): {
+  count: number;
+  endSessionUrl?: string;
+} {
+  const result = parseSignOutResponse(value);
+  if (
+    !isRecord(value) ||
+    typeof value.count !== "number" ||
+    !Number.isSafeInteger(value.count) ||
+    value.count < 0
+  ) {
+    throw invalidCookieResponse();
+  }
+  return { count: value.count, ...result };
+}
+
+function readPostLogoutRedirectUri(args: unknown): string | undefined {
+  if (!isRecord(args)) throw invalidCookieResponse();
+  const value = args.postLogoutRedirectUri;
+  if (value === undefined || typeof value === "string") return value;
+  throw invalidCookieResponse();
 }
 
 /**
@@ -691,16 +835,38 @@ export function createLogtoSessionCookieTransport(
   };
 
   const post = async (route: CookieRoute, body: unknown): Promise<unknown> => {
-    const response = await fetcher(endpointRoute(endpoint, route), {
-      method: "POST",
-      credentials: "include",
-      headers: {
-        "Content-Type": "application/json",
-        [LOGTO_SESSION_CSRF_HEADER]: LOGTO_SESSION_CSRF_VALUE,
-      },
-      body: JSON.stringify(body),
+    const controller = new AbortController();
+    const timeoutError = new Error(
+      "convex-logto: session cookie handler request timed out.",
+    );
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timeoutId = setTimeout(() => {
+        // Settle the caller even when an injected Fetch implementation ignores
+        // AbortSignal. Standard Fetch also observes the abort and cancels IO.
+        reject(timeoutError);
+        controller.abort(timeoutError);
+      }, COOKIE_TRANSPORT_TIMEOUT_MS);
     });
-    return await parseFetchResponse(response);
+    const operation = (async () => {
+      const response = await fetcher(endpointRoute(endpoint, route), {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          [LOGTO_SESSION_CSRF_HEADER]: LOGTO_SESSION_CSRF_VALUE,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) throw timeoutError;
+      return await parseFetchResponse(response, controller.signal);
+    })();
+    try {
+      return await Promise.race([operation, timeout]);
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    }
   };
 
   return {
@@ -710,44 +876,39 @@ export function createLogtoSessionCookieTransport(
     ): Promise<Action["_returnType"]> => {
       const actionName = getFunctionName(action);
       if (actionName === actionNames.signIn) {
-        return (await post("sign-in", args)) as Action["_returnType"];
+        return parseSignInResponse(await post("sign-in", args));
       }
       if (actionName === actionNames.callback) {
-        const result = (await post("callback", args)) as {
-          idToken: string;
-          sessionId: string;
-          returnTo?: string;
-        };
+        const result = parseCallbackResponse(await post("callback", args));
         return {
           ...result,
           sessionToken: COOKIE_SESSION_MARKER,
-        } as Action["_returnType"];
+        };
       }
       if (actionName === actionNames.refresh) {
-        const result = (await post("token", {})) as {
-          idToken: string;
-          sessionId: string;
-        };
+        const result = parseTokenResponse(await post("token", {}));
         return {
           ...result,
           sessionToken: COOKIE_SESSION_MARKER,
-        } as Action["_returnType"];
+        };
       }
       if (actionName === actionNames.signOut) {
-        return (await post("sign-out", {
-          postLogoutRedirectUri: (args as { postLogoutRedirectUri?: string })
-            .postLogoutRedirectUri,
-        })) as Action["_returnType"];
+        return parseSignOutResponse(
+          await post("sign-out", {
+            postLogoutRedirectUri: readPostLogoutRedirectUri(args),
+          }),
+        );
       }
       if (
         actionNames.signOutEverywhere !== undefined &&
         actionName === actionNames.signOutEverywhere
       ) {
-        return (await post("sign-out", {
-          postLogoutRedirectUri: (args as { postLogoutRedirectUri?: string })
-            .postLogoutRedirectUri,
-          everywhere: true,
-        })) as Action["_returnType"];
+        return parseSignOutEverywhereResponse(
+          await post("sign-out", {
+            postLogoutRedirectUri: readPostLogoutRedirectUri(args),
+            everywhere: true,
+          }),
+        );
       }
       throw new Error(
         "convex-logto: the cookie transport received an unknown session action.",

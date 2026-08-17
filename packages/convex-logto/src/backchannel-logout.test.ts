@@ -68,6 +68,7 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -93,13 +94,16 @@ async function logoutToken(options: {
   algorithm?: SupportedAlgorithm;
   headerAlgorithm?: string;
   signingAlgorithm?: SupportedAlgorithm;
+  kid?: string;
 }): Promise<string> {
   const algorithm = options.algorithm ?? "RS256";
   const signingAlgorithm = options.signingAlgorithm ?? algorithm;
   const fixture = signingAlgorithm === "RS256" ? rs256 : ps256;
   const header = encodedJson({
     alg: options.headerAlgorithm ?? algorithm,
-    kid: algorithm === "RS256" ? rs256.publicJwk.kid : ps256.publicJwk.kid,
+    kid:
+      options.kid ??
+      (algorithm === "RS256" ? rs256.publicJwk.kid : ps256.publicJwk.kid),
     typ: "logout+jwt",
   });
   const payload = encodedJson(
@@ -132,7 +136,10 @@ const sessions = {
 } as unknown as LogtoSessionComponent;
 
 type RouteHandler = (
-  ctx: { runMutation: (ref: unknown, args: unknown) => Promise<unknown> },
+  ctx: {
+    runMutation: (ref: unknown, args: unknown) => Promise<unknown>;
+    runAction?: (ref: unknown, args: unknown) => Promise<unknown>;
+  },
   request: Request,
 ) => Promise<Response>;
 
@@ -166,6 +173,11 @@ function harness(options?: {
     calls.push({ fn, args });
     return handlers[fn]!(args);
   });
+  const runAction = vi.fn((ref: unknown, args: unknown) => {
+    const fn = (ref as { fn: string }).fn;
+    calls.push({ fn, args });
+    return handlers[fn]!(args);
+  });
   const http = httpRouter();
   registerLogtoBackchannelLogout(http, {
     sessions,
@@ -180,16 +192,29 @@ function harness(options?: {
     "_handler"
   ];
   if (!handler) throw new Error("Back-channel route handler was not captured");
-  return { endpoint, fetchMock, handlers, calls, runMutation, handler };
+  return {
+    endpoint,
+    fetchMock,
+    handlers,
+    calls,
+    runMutation,
+    runAction,
+    handler,
+  };
 }
 
 function post(
   body: BodyInit,
   contentType = "application/x-www-form-urlencoded",
+  contentLength?: string,
 ) {
+  const headers = new Headers({ "Content-Type": contentType });
+  if (contentLength !== undefined) {
+    headers.set("Content-Length", contentLength);
+  }
   return new Request("https://convex.example/logto/backchannel-logout", {
     method: "POST",
-    headers: { "Content-Type": contentType },
+    headers,
     body,
   });
 }
@@ -201,9 +226,9 @@ function logoutRequest(token: string): Request {
 async function expectInvalid(
   tokenFactory: (endpoint: string) => string | Promise<string>,
 ): Promise<void> {
-  const { endpoint, handler, runMutation } = harness();
+  const { endpoint, handler, runMutation, runAction } = harness();
   const response = await handler(
-    { runMutation },
+    { runMutation, runAction },
     logoutRequest(await tokenFactory(endpoint)),
   );
   expect(response.status).toBe(400);
@@ -216,12 +241,16 @@ async function expectInvalid(
 
 describe("Logto back-channel logout", () => {
   it("kills only sessions with the valid token's sid", async () => {
-    const { endpoint, handler, handlers, calls, runMutation } = harness({
-      customPath: "/oidc/logout",
-    });
+    const { endpoint, handler, handlers, calls, runMutation, runAction } =
+      harness({
+        customPath: "/oidc/logout",
+      });
     const token = await logoutToken({ endpoint });
 
-    const response = await handler({ runMutation }, logoutRequest(token));
+    const response = await handler(
+      { runMutation, runAction },
+      logoutRequest(token),
+    );
 
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
@@ -233,12 +262,15 @@ describe("Logto back-channel logout", () => {
   });
 
   it("kills every subject session when sid is absent", async () => {
-    const { endpoint, handler, handlers, runMutation } = harness();
+    const { endpoint, handler, handlers, runMutation, runAction } = harness();
     const payload = validPayload(endpoint);
     delete payload.sid;
     const token = await logoutToken({ endpoint, payload });
 
-    const response = await handler({ runMutation }, logoutRequest(token));
+    const response = await handler(
+      { runMutation, runAction },
+      logoutRequest(token),
+    );
 
     expect(response.status).toBe(200);
     expect(handlers.killSubject).toHaveBeenCalledWith({ subject: "user-1" });
@@ -246,22 +278,51 @@ describe("Logto back-channel logout", () => {
   });
 
   it("accepts PS256 logout tokens", async () => {
-    const { endpoint, handler, handlers, runMutation } = harness();
+    const { endpoint, handler, handlers, runMutation, runAction } = harness();
     const token = await logoutToken({ endpoint, algorithm: "PS256" });
 
-    const response = await handler({ runMutation }, logoutRequest(token));
+    const response = await handler(
+      { runMutation, runAction },
+      logoutRequest(token),
+    );
+
+    expect(response.status).toBe(200);
+    expect(handlers.killSid).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores malformed JWKS entries when a valid signing key follows", async () => {
+    const { endpoint, fetchMock, handler, handlers, runMutation, runAction } =
+      harness();
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          keys: [null, { kty: "RSA", n: 42, e: "AQAB" }, rs256.publicJwk],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const token = await logoutToken({ endpoint });
+
+    const response = await handler(
+      { runMutation, runAction },
+      logoutRequest(token),
+    );
 
     expect(response.status).toBe(200);
     expect(handlers.killSid).toHaveBeenCalledTimes(1);
   });
 
   it("answers 200 and performs no revocation for a replayed jti", async () => {
-    const { endpoint, handler, handlers, calls, runMutation } = harness({
-      record: false,
-    });
+    const { endpoint, handler, handlers, calls, runMutation, runAction } =
+      harness({
+        record: false,
+      });
     const token = await logoutToken({ endpoint });
 
-    const response = await handler({ runMutation }, logoutRequest(token));
+    const response = await handler(
+      { runMutation, runAction },
+      logoutRequest(token),
+    );
 
     expect(response.status).toBe(200);
     expect(handlers.killSid).not.toHaveBeenCalled();
@@ -380,24 +441,240 @@ describe("Logto back-channel logout", () => {
     expect(runMutation).not.toHaveBeenCalled();
   });
 
-  it("rejects a body larger than 1 MB before verification", async () => {
+  it.each([
+    ["without Content-Length", undefined],
+    ["with a falsely small Content-Length", "1"],
+  ])(
+    "rejects a body larger than 1 MB %s before verification",
+    async (_name, contentLength) => {
+      const { handler, fetchMock, runMutation } = harness();
+      const response = await handler(
+        { runMutation },
+        post(
+          new URLSearchParams({ logout_token: "x".repeat(1024 * 1024) }),
+          undefined,
+          contentLength,
+        ),
+      );
+      expect(response.status).toBe(413);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(runMutation).not.toHaveBeenCalled();
+    },
+  );
+
+  it("returns a controlled error when the request body stream fails", async () => {
     const { handler, fetchMock, runMutation } = harness();
-    const response = await handler(
-      { runMutation },
-      post(new URLSearchParams({ logout_token: "x".repeat(1024 * 1024) })),
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("read failed"));
+      },
+    });
+    const request = new Request(
+      "https://convex.example/logto/backchannel-logout",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: stream,
+        duplex: "half",
+      } as RequestInit,
     );
-    expect(response.status).toBe(413);
+
+    const response = await handler({ runMutation }, request);
+
+    expect(response.status).toBe(400);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(runMutation).not.toHaveBeenCalled();
   });
 
-  it("releases the jti claim when session revocation fails", async () => {
-    const { endpoint, handler, handlers, calls, runMutation } = harness({
-      killSidError: new Error("mutation failed"),
+  it("aborts a JWKS fetch that exceeds 10 seconds", async () => {
+    vi.useFakeTimers();
+    const { endpoint, fetchMock, handler, runMutation } = harness();
+    const token = await logoutToken({ endpoint });
+    let observedSignal: AbortSignal | undefined;
+    fetchMock.mockImplementationOnce((_input, init) => {
+      observedSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        observedSignal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("aborted", "AbortError")),
+          { once: true },
+        );
+      });
     });
+
+    const responsePromise = handler({ runMutation }, logoutRequest(token));
+    await vi.advanceTimersByTimeAsync(10_000);
+    const response = await responsePromise;
+
+    expect(response.status).toBe(400);
+    expect(observedSignal?.aborted).toBe(true);
+    expect(runMutation).not.toHaveBeenCalled();
+  });
+
+  it("keeps the JWKS timeout active while streaming the response body", async () => {
+    vi.useFakeTimers();
+    const { endpoint, fetchMock, handler, runMutation } = harness();
+    const token = await logoutToken({ endpoint });
+    let observedSignal: AbortSignal | undefined;
+    fetchMock.mockImplementationOnce((_input, init) => {
+      observedSignal = init?.signal ?? undefined;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          observedSignal?.addEventListener(
+            "abort",
+            () => controller.error(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        },
+      });
+      return Promise.resolve(new Response(stream));
+    });
+
+    const responsePromise = handler({ runMutation }, logoutRequest(token));
+    await vi.advanceTimersByTimeAsync(10_000);
+    const response = await responsePromise;
+
+    expect(response.status).toBe(400);
+    expect(observedSignal?.aborted).toBe(true);
+    expect(runMutation).not.toHaveBeenCalled();
+  });
+
+  it("clears the JWKS timeout after a successful response", async () => {
+    vi.useFakeTimers();
+    const { endpoint, handler, runMutation, runAction } = harness();
+    const token = await logoutToken({ endpoint });
+
+    const response = await handler(
+      { runMutation, runAction },
+      logoutRequest(token),
+    );
+
+    expect(response.status).toBe(200);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects an oversized JWKS response without a Content-Length header", async () => {
+    const { endpoint, fetchMock, handler, runMutation } = harness();
+    const response = new Response("x".repeat(256 * 1024 + 1));
+    expect(response.headers.get("Content-Length")).toBeNull();
+    fetchMock.mockResolvedValueOnce(response);
+    const token = await logoutToken({ endpoint });
+
+    const result = await handler({ runMutation }, logoutRequest(token));
+
+    expect(result.status).toBe(400);
+    expect(runMutation).not.toHaveBeenCalled();
+  });
+
+  it("rejects a JWKS containing more than 32 keys", async () => {
+    const { endpoint, fetchMock, handler, runMutation } = harness();
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          keys: Array.from({ length: 33 }, (_, index) => ({
+            ...rs256.publicJwk,
+            kid: `key-${index}`,
+          })),
+        }),
+      ),
+    );
     const token = await logoutToken({ endpoint });
 
     const response = await handler({ runMutation }, logoutRequest(token));
+
+    expect(response.status).toBe(400);
+    expect(runMutation).not.toHaveBeenCalled();
+  });
+
+  it("shares one forced JWKS refresh across concurrent unknown-kid misses", async () => {
+    vi.useFakeTimers();
+    const { endpoint, fetchMock, handler, runMutation, runAction } = harness();
+    const initialToken = await logoutToken({ endpoint });
+    expect(
+      (await handler({ runMutation, runAction }, logoutRequest(initialToken)))
+        .status,
+    ).toBe(200);
+    vi.setSystemTime(Date.now() + 60_001);
+
+    let releaseRefresh = () => {};
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let markRefreshStarted = () => {};
+    const refreshStarted = new Promise<void>((resolve) => {
+      markRefreshStarted = resolve;
+    });
+    let forcedFetches = 0;
+    fetchMock.mockImplementation(async () => {
+      forcedFetches += 1;
+      markRefreshStarted();
+      await refreshGate;
+      return new Response(JSON.stringify({ keys: [rs256.publicJwk] }));
+    });
+    const unknownToken = await logoutToken({ endpoint, kid: "unknown-key" });
+
+    const responses = [
+      handler({ runMutation, runAction }, logoutRequest(unknownToken)),
+      handler({ runMutation, runAction }, logoutRequest(unknownToken)),
+    ];
+    await refreshStarted;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(forcedFetches).toBe(1);
+    releaseRefresh();
+
+    await expect(Promise.all(responses)).resolves.toMatchObject([
+      { status: 400 },
+      { status: 400 },
+    ]);
+    expect(forcedFetches).toBe(1);
+  });
+
+  it("retries a conditional JWKS refresh after a failed fetch", async () => {
+    vi.useFakeTimers();
+    const { endpoint, fetchMock, handler, handlers, runMutation, runAction } =
+      harness();
+    const initialToken = await logoutToken({ endpoint });
+    expect(
+      (await handler({ runMutation, runAction }, logoutRequest(initialToken)))
+        .status,
+    ).toBe(200);
+    vi.setSystemTime(Date.now() + 60_001);
+    const rotatedJwk = { ...rs256.publicJwk, kid: "rotated-key" };
+    const rotatedToken = await logoutToken({
+      endpoint,
+      kid: rotatedJwk.kid,
+    });
+    fetchMock
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ keys: [rotatedJwk] })),
+      );
+
+    const failed = await handler(
+      { runMutation, runAction },
+      logoutRequest(rotatedToken),
+    );
+    const recovered = await handler(
+      { runMutation, runAction },
+      logoutRequest(rotatedToken),
+    );
+
+    expect(failed.status).toBe(400);
+    expect(recovered.status).toBe(200);
+    expect(handlers.killSid).toHaveBeenCalledTimes(2);
+  });
+
+  it("releases the jti claim when session revocation fails", async () => {
+    const { endpoint, handler, handlers, calls, runMutation, runAction } =
+      harness({
+        killSidError: new Error("action failed"),
+      });
+    const token = await logoutToken({ endpoint });
+
+    const response = await handler(
+      { runMutation, runAction },
+      logoutRequest(token),
+    );
 
     expect(response.status).toBe(400);
     expect(handlers.forget).toHaveBeenCalledWith({

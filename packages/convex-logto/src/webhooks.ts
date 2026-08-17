@@ -3,10 +3,12 @@ import {
   type GenericDataModel,
   type GenericMutationCtx,
   type HttpRouter,
+  type MutationBuilder,
   httpActionGeneric,
   internalMutationGeneric,
 } from "convex/server";
 import { v } from "convex/values";
+import { readBoundedBody } from "./component/http_body.js";
 import type { LogtoSessionComponent } from "./session";
 
 /** Subset of Logto's data-mutation User entity carried in webhook payloads. */
@@ -20,12 +22,12 @@ export type LogtoUserEntity = {
   customData?: Record<string, unknown>;
   identities?: Record<string, unknown>;
   isSuspended?: boolean;
-  lastSignInAt?: number;
-  createdAt?: number;
+  lastSignInAt?: number | null;
+  createdAt?: number | null;
   applicationId?: string | null;
 };
 
-/** The known User.* data-mutation events, each carrying a User entity. */
+/** The known User.* data-mutation events. */
 const LOGTO_USER_EVENTS = [
   "User.Created",
   "User.Data.Updated",
@@ -33,13 +35,8 @@ const LOGTO_USER_EVENTS = [
   "User.SuspensionStatus.Updated",
 ] as const;
 
-/** Logto data-mutation events that carry a User entity. */
+/** Supported Logto User data-mutation events. */
 export type LogtoUserEvent = (typeof LOGTO_USER_EVENTS)[number];
-
-/** Set form of {@link LOGTO_USER_EVENTS}, for membership-testing a payload. */
-const LOGTO_USER_EVENT_SET: ReadonlySet<LogtoUserEvent> = new Set(
-  LOGTO_USER_EVENTS,
-);
 
 /** Shape of a Logto data-mutation webhook delivery (User family). */
 export type LogtoWebhookPayload = {
@@ -56,9 +53,9 @@ export type LogtoWebhookPayload = {
   userAgent?: string;
   ip?: string;
   /**
-   * The affected User entity — but `null` for `User.Deleted`: Logto can't
-   * summarize a deletion as a single entity, so it sends `data: null` and the
-   * deleted user's id rides in the Management API `params` (`{ userId }`) instead.
+   * The affected User entity. Current Logto versions include the pre-deletion
+   * entity for `User.Deleted`; older versions and Logto's documented payload
+   * shape use `null` and put the deleted id in Management API `params.userId`.
    */
   data: LogtoUserEntity | null;
   /** Management API context, present for admin-triggered changes (e.g. deletion). */
@@ -71,6 +68,47 @@ export type LogtoWebhookPayload = {
 };
 
 const encoder = /* @__PURE__ */ new TextEncoder();
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isOptionalNullableString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === "string";
+}
+
+function isOptionalNullableFiniteNumber(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === null ||
+    (typeof value === "number" && Number.isFinite(value))
+  );
+}
+
+function isLogtoUserEntity(value: unknown): value is LogtoUserEntity {
+  if (!isRecord(value) || typeof value.id !== "string") return false;
+  return (
+    isOptionalNullableString(value.username) &&
+    isOptionalNullableString(value.primaryEmail) &&
+    isOptionalNullableString(value.primaryPhone) &&
+    isOptionalNullableString(value.name) &&
+    isOptionalNullableString(value.avatar) &&
+    (value.customData === undefined || isRecord(value.customData)) &&
+    (value.identities === undefined || isRecord(value.identities)) &&
+    (value.isSuspended === undefined ||
+      typeof value.isSuspended === "boolean") &&
+    // `users.last_sign_in_at` is nullable in Logto: a user who has never signed
+    // in serialises as `null`. Rejecting that would drop a signature-verified
+    // delivery — including the `User.Deleted` one that revokes their sessions.
+    isOptionalNullableFiniteNumber(value.lastSignInAt) &&
+    isOptionalNullableFiniteNumber(value.createdAt) &&
+    isOptionalNullableString(value.applicationId)
+  );
+}
+
+function isLogtoUserEvent(value: unknown): value is LogtoUserEvent {
+  return LOGTO_USER_EVENTS.some((event) => event === value);
+}
 
 function toHex(buffer: ArrayBuffer): string {
   let hex = "";
@@ -116,45 +154,65 @@ export async function verifyLogtoSignature(
   return timingSafeEqual(toHex(signature), expected);
 }
 
-/** The id from the User entity in `data` — present on every event but `User.Deleted`. */
+/** The id from the User entity in `data`, when that event carries an entity. */
 function entityId(payload: Record<string, unknown>): string | undefined {
   const data = payload.data;
-  if (typeof data === "object" && data !== null) {
-    const id = (data as Record<string, unknown>).id;
-    if (typeof id === "string") return id;
-  }
+  if (isRecord(data) && typeof data.id === "string") return data.id;
   return undefined;
 }
 
 /** The deleted user's id from the Management API route params (`DELETE /users/:userId`). */
 function paramsUserId(payload: Record<string, unknown>): string | undefined {
   const params = payload.params;
-  if (typeof params === "object" && params !== null) {
-    const userId = (params as Record<string, unknown>).userId;
-    if (typeof userId === "string") return userId;
+  if (isRecord(params) && typeof params.userId === "string") {
+    return params.userId;
   }
   return undefined;
 }
 
 function isLogtoWebhookPayload(value: unknown): value is LogtoWebhookPayload {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Record<string, unknown>;
+  if (!isRecord(value)) return false;
+  const candidate = value;
   const event = candidate.event;
   // Only accept the known User.* events; an unknown event would otherwise 200
   // silently with no handler, hiding a misconfigured hook.
+  if (!isLogtoUserEvent(event)) {
+    return false;
+  }
   if (
-    typeof event !== "string" ||
-    !LOGTO_USER_EVENT_SET.has(event as LogtoUserEvent)
+    typeof candidate.hookId !== "string" ||
+    typeof candidate.createdAt !== "string" ||
+    (candidate.userAgent !== undefined &&
+      typeof candidate.userAgent !== "string") ||
+    (candidate.ip !== undefined && typeof candidate.ip !== "string") ||
+    (candidate.path !== undefined && typeof candidate.path !== "string") ||
+    (candidate.method !== undefined && typeof candidate.method !== "string") ||
+    (candidate.status !== undefined &&
+      (typeof candidate.status !== "number" ||
+        !Number.isFinite(candidate.status))) ||
+    (candidate.params !== undefined && !isRecord(candidate.params)) ||
+    (candidate.matchedRoute !== undefined &&
+      typeof candidate.matchedRoute !== "string")
   ) {
     return false;
   }
-  // `User.Deleted` is the one event Logto sends with `data: null` — there the id
-  // rides in the route params. Every other User.* event must carry the full entity,
-  // so require it; that keeps a malformed `data: null` body from reaching a sync
-  // handler as a bare `{ id }` (which it could misread as "all fields were cleared").
-  return event === "User.Deleted"
-    ? entityId(candidate) !== undefined || paramsUserId(candidate) !== undefined
-    : entityId(candidate) !== undefined;
+  // Current Logto versions send the pre-deletion User; older/documented payloads
+  // send `data: null` with the id in route params. Accept both, but never accept
+  // malformed or contradictory entity/context data for a destructive event.
+  if (event === "User.Deleted") {
+    const dataUserId = entityId(candidate);
+    const routeUserId = paramsUserId(candidate);
+    return (
+      // A 204 delete route serialises no `data` key at all, so `undefined` and
+      // `null` must both mean "no entity, use the route params".
+      (candidate.data == null || isLogtoUserEntity(candidate.data)) &&
+      (dataUserId !== undefined || routeUserId !== undefined) &&
+      (dataUserId === undefined ||
+        routeUserId === undefined ||
+        dataUserId === routeUserId)
+    );
+  }
+  return isLogtoUserEntity(candidate.data);
 }
 
 /** A per-event sync handler. Runs in a Convex mutation, so `ctx.db` is available. */
@@ -208,8 +266,10 @@ export type LogtoSyncReference = FunctionReference<
 export function logtoSync<
   DataModel extends GenericDataModel = GenericDataModel,
 >(handlers: LogtoSyncHandlers<DataModel>) {
+  const internalMutation: MutationBuilder<DataModel, "internal"> =
+    internalMutationGeneric;
   return {
-    sync: internalMutationGeneric({
+    sync: internalMutation({
       args: { payload: v.any() },
       returns: v.null(),
       handler: async (ctx, args) => {
@@ -223,17 +283,19 @@ export function logtoSync<
         const payload = args.payload;
         const handler = handlers[payload.event];
         if (handler) {
-          // Use the entity Logto sent when it actually carries an id; `User.Deleted`
-          // has none (`data: null`), so synthesize one from the route params. Keyed
-          // on entityId, not `data ?? …`, so a stray `data: {}` can't slip through as
-          // an id-less user. (The guard guaranteed one of the two is present.)
-          const user: LogtoUserEntity =
-            entityId(payload) !== undefined
-              ? (payload.data as LogtoUserEntity)
-              : { id: paramsUserId(payload)! };
-          // `ctx` here is typed for the generic data model; the user's handlers
-          // are written against their concrete `DataModel`.
-          await handler(ctx as GenericMutationCtx<DataModel>, user, payload);
+          // Current Logto sends the pre-deletion entity; for the older/documented
+          // `data: null` shape, synthesize the minimal entity from route params.
+          let user = payload.data;
+          if (user === null) {
+            const id = paramsUserId(payload);
+            if (id === undefined) {
+              throw new Error(
+                "convex-logto: verified User.Deleted payload has no user id.",
+              );
+            }
+            user = { id };
+          }
+          await handler(ctx, user, payload);
         }
         return null;
       },
@@ -287,7 +349,7 @@ function isFreshDelivery(createdAt: unknown, now: number): boolean {
 
 /**
  * The subject whose sessions a delivery revokes, if any: a deleted user (id in
- * `data` or, for the usual `data: null` deletion, in the route params), or a
+ * `data` or, for an older/documented `data: null` deletion, in route params), or a
  * user whose suspension just flipped ON. Un-suspension revokes nothing.
  */
 function subjectToRevoke(payload: LogtoWebhookPayload): string | undefined {
@@ -341,10 +403,14 @@ export function registerLogtoWebhook(
           { status: 500 },
         );
       }
-      const rawBody = await request.arrayBuffer();
-      if (rawBody.byteLength > MAX_BODY_BYTES) {
+      const bodyResult = await readBoundedBody(request, MAX_BODY_BYTES);
+      if (!bodyResult.ok && bodyResult.reason === "too_large") {
         return new Response("Payload too large", { status: 413 });
       }
+      if (!bodyResult.ok) {
+        return new Response("Could not read webhook payload", { status: 400 });
+      }
+      const rawBody = bodyResult.bytes;
       const signature = request.headers.get(SIGNATURE_HEADER) ?? "";
       if (!(await verifyLogtoSignature(signingKey, rawBody, signature))) {
         return new Response("Invalid Logto webhook signature", { status: 401 });
@@ -386,7 +452,7 @@ export function registerLogtoWebhook(
         // if the app's own sync handler goes on to fail.
         const subject = sessions && subjectToRevoke(parsed);
         if (sessions && subject !== undefined) {
-          await ctx.runMutation(sessions.lib.killSubjectSessions, { subject });
+          await ctx.runAction(sessions.lib.killSubjectSessions, { subject });
         }
         await ctx.runMutation(sync, { payload: parsed });
       } catch (error) {

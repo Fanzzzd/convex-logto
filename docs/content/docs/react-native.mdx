@@ -9,7 +9,7 @@ There are two React Native entries:
   [`@logto/rn`](https://github.com/logto-io/react-native). The Logto SDK owns the
   refresh token.
 - **`convex-logto/native-session`** is session mode. The Convex component owns
-  the Logto refresh token; Expo SecureStore holds only a rotating one-time
+  the Logto refresh token; Expo SecureStore holds only a rotating application
   session token and a short-lived ID token.
 
 Both use the system browser and return through an app deep link, with no
@@ -259,18 +259,20 @@ in place. There is no `/callback` screen or router integration.
 Native session mode keeps the rotating session token, OAuth state stash, and
 **short-lived ID token** in deployment-namespaced SecureStore. Persisting the ID
 token is a deliberate cold-start choice: while it remains fresh, the app can
-authenticate immediately without spending the one-time session token; unlike
-AsyncStorage, the bearer remains under the iOS Keychain / Android encrypted
-keystore. A stale ID token causes the normal server refresh and rolls the
-SecureStore session token before Convex receives the new ID token.
+authenticate immediately without refresh only while the paired component
+Session marker remains. An orphan ID token is cleared. Unlike AsyncStorage, the
+bearer remains under the iOS Keychain / Android encrypted keystore. A stale ID
+token causes the normal server refresh and rolls the SecureStore session token
+before Convex receives the new ID token.
 
 Reactive revocation is on by default and uses the same `sessionValid`
 subscription as the web provider. `signOut()` clears SecureStore, revokes the
 server session, and opens Logto's end-session URL in the system browser unless
 `federated: false` is passed.
-`signOutEverywhere({ postLogoutRedirectUri? })` instead deletes every component
-session for the caller subject, lets the same subscription sign out other live
-devices, and always ends this device's Logto browser session.
+`signOutEverywhere({ postLogoutRedirectUri? })` instead records subject-wide
+logical revocation, removes physical Session rows in bounded batches, lets the
+same subscription sign out other live devices, and always ends this device's
+Logto browser session.
 
 ### Differences from web session mode
 
@@ -292,10 +294,6 @@ falls back to AsyncStorage or an unbound plaintext credential.
 
 ## Expo SDK and `@logto/rn` versions
 
-The published `@logto/rn@1.1.0` declares peer ranges for the older,
-independently-versioned Expo modules (`expo-* >=14 <16`). On **Expo SDK 54+** those
-modules are renumbered to the SDK version (e.g. `expo-crypto@56.x`), so `pnpm install`
-prints peer-dependency **warnings**. They are warnings, not errors — the SDK runs on
-54+ (Logto's own sample targets SDK 56) and they clear once Logto publishes updated
-peers. To avoid them entirely, use **Expo SDK 53** (RN 0.79), which is within the
-published ranges.
+This repository tests `@logto/rn@1.2` with Expo SDK 56. Keep the Logto adapter
+and Expo modules within their declared peer ranges when upgrading; no SDK 53
+downgrade is required for the versions shown in this guide.

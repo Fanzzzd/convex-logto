@@ -219,6 +219,18 @@ describe("native session adapters", () => {
     expect(secureStore.data.size).toBe(2);
   });
 
+  it("refuses an unsafe authorization URL before opening the native browser", async () => {
+    const { engine, handlers, webBrowser, onAuthError } = makeHarness();
+    handlers.signIn.mockResolvedValue({ url: "data:text/html,compromised" });
+    engine.start();
+    await settled(engine);
+
+    await expect(engine.signIn()).rejects.toThrow(/unsafe data: scheme/);
+
+    expect(webBrowser.openAuthSessionAsync).not.toHaveBeenCalled();
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+  });
+
   it("shares one native sign-in flow across concurrent calls", async () => {
     let finishBrowser!: (result: { type: string; url?: string }) => void;
     const webBrowser = fakeWebBrowser();
@@ -357,6 +369,24 @@ describe("native session adapters", () => {
       "io.logto://signed-out",
     );
     expect(engine.getSnapshot().status).toBe("unauthenticated");
+  });
+
+  it("refuses an unsafe end-session URL before opening the native browser", async () => {
+    const secureStore = fakeSecureStore();
+    await seedSession(secureStore, freshToken());
+    const { engine, handlers, webBrowser, onAuthError } = makeHarness({
+      secureStore,
+    });
+    handlers.signOut.mockResolvedValue({
+      endSessionUrl: "javascript:globalThis.compromised=true",
+    });
+    engine.start();
+    await settled(engine);
+
+    await expect(engine.signOut()).rejects.toThrow(/unsafe javascript: scheme/);
+
+    expect(webBrowser.openAuthSessionAsync).not.toHaveBeenCalled();
+    expect(onAuthError).toHaveBeenCalledTimes(1);
   });
 
   it("signs out every device and completes federated logout in the native browser", async () => {
