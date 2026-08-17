@@ -162,6 +162,21 @@ it("reports convex_authenticated once Convex accepts the token, and only once", 
   ).toHaveLength(1);
 });
 
+it("stays silent until a handler exists, then reports from that point", async () => {
+  // Opting out has to cost nothing, so the engine reads the handler per event
+  // rather than wrapping one that may never arrive. A handler passed later then
+  // sees the phases from then on — never a replayed bootstrap it missed.
+  await render(undefined, undefined);
+  expect(authEvents).toHaveLength(0);
+
+  convexAuthenticated = true;
+  await render(undefined, (event) => authEvents.push(event));
+
+  expect(authEvents.map((event) => event.phase)).toEqual([
+    "convex_authenticated",
+  ]);
+});
+
 it("keeps one engine when only the event handler's identity changes", async () => {
   await render(undefined, () => {});
   const first = capturedSignIn;

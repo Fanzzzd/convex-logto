@@ -7,7 +7,7 @@ import { ConvexError } from "convex/values";
 import {
   createAuthEventEmitter,
   type AuthEventEmitter,
-  type LogtoAuthEventHandler,
+  type LogtoAuthEventSink,
   type LogtoAuthEventSource,
 } from "./auth-events";
 import { classifySignInSearch, isSafeReturnTo } from "./callback";
@@ -504,10 +504,11 @@ export type SessionEngineOptions = {
   authFlow?: SessionAuthFlow;
   onAuthError?: (error: Error) => void;
   /**
-   * Opt-in phase timings for the auth bootstrap. Absent means the engine emits
-   * nothing at all.
+   * Opt-in phase timings for the auth bootstrap. Absent — or a slot holding
+   * `undefined` — means nothing is measured at all. React providers pass a slot
+   * so a handler can arrive on a later render without rebuilding the engine.
    */
-  onAuthEvent?: LogtoAuthEventHandler;
+  onAuthEvent?: LogtoAuthEventSink;
   /** Injectable for tests. */
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -789,12 +790,21 @@ export class SessionAuthEngine {
     }
   }
 
+  /**
+   * Storage was seeded with the server-rendered token, so a restore that reads
+   * it back is an SSR hand-off, not a warm cache from an earlier visit. Telling
+   * them apart is the whole point of `source` — they have different costs.
+   */
+  private cachedTokenSource(cached: string): LogtoAuthEventSource {
+    return cached === this.options.initialToken ? "ssr" : "cache";
+  }
+
   private async restore(): Promise<void> {
     const cached = this.options.storage.readIdToken();
     if (cached !== null && this.isFresh(cached)) {
       const session = this.options.storage.readSession();
       if (session !== null && session.sessionId !== "") {
-        this.setAuthenticated(cached, "cache");
+        this.setAuthenticated(cached, this.cachedTokenSource(cached));
         return;
       }
       if (session === null) {
@@ -816,7 +826,7 @@ export class SessionAuthEngine {
       // A transient refresh keeps storage intact: use the still-fresh cached
       // token as a degraded fallback. Terminal failures already cleared it.
       if (this.options.storage.readSession() !== null) {
-        this.setAuthenticated(cached, "cache");
+        this.setAuthenticated(cached, this.cachedTokenSource(cached));
         return;
       }
     }
@@ -1377,7 +1387,7 @@ export class SessionAuthEngine {
   /** Another tab signed out (our localStorage session key was removed). */
   handleExternalSignOut(): void {
     this.authGeneration += 1;
-    this.events("signed_out");
+    this.events("signed_out", { source: "cross-tab" });
     this.options.storage.clearIdToken();
     this.lastServed = null;
     this.setUnauthenticated();

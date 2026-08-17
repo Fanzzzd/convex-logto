@@ -51,6 +51,24 @@ export type LogtoAuthEvent = {
 
 export type LogtoAuthEventHandler = (event: LogtoAuthEvent) => void;
 
+/**
+ * A live handler slot — shaped like a React ref on purpose, so a provider can
+ * hand one straight to the engine.
+ *
+ * A provider cannot pass the handler itself: an inline arrow changes identity
+ * every render, and rebuilding the engine mid-session would drop the auth
+ * state. Reading through a slot keeps the engine stable while still honouring
+ * `onAuthEvent` appearing, changing, or going away on a later render — and
+ * while it holds `undefined`, nothing is measured.
+ */
+export type LogtoAuthEventHandlerSlot = {
+  readonly current: LogtoAuthEventHandler | undefined;
+};
+
+export type LogtoAuthEventSink =
+  | LogtoAuthEventHandler
+  | LogtoAuthEventHandlerSlot;
+
 export type AuthEventEmitter = (
   phase: LogtoAuthPhase,
   detail?: Omit<LogtoAuthEvent, "phase" | "elapsedMs">,
@@ -64,19 +82,32 @@ function monotonicNow(): number {
 }
 
 /**
- * Build an emitter whose `elapsedMs` counts from the moment it is created.
- * A throwing handler is contained here: telemetry must never be able to fail an
- * authentication, so it is reported to the console and otherwise ignored.
+ * Build an emitter whose `elapsedMs` counts from `bootstrap_start` — the event,
+ * not the construction of the emitter, which can happen an arbitrary React
+ * commit earlier.
+ *
+ * Opting out costs nothing: with no handler in the sink, an emit returns before
+ * it reads the clock or allocates an event. A throwing handler is contained
+ * here — telemetry must never be able to fail an authentication, so it is
+ * reported to the console and otherwise ignored.
  */
 export function createAuthEventEmitter(
-  handler: LogtoAuthEventHandler | undefined,
+  sink: LogtoAuthEventSink | undefined,
   now: () => number = monotonicNow,
 ): AuthEventEmitter {
-  if (handler === undefined) return NO_AUTH_EVENTS;
-  const start = now();
+  if (sink === undefined) return NO_AUTH_EVENTS;
+  const resolve: () => LogtoAuthEventHandler | undefined =
+    typeof sink === "function" ? () => sink : () => sink.current;
+  let start: number | undefined;
   return (phase, detail) => {
+    const handler = resolve();
+    if (handler === undefined) return;
+    const at = now();
+    // A handler attached after the bootstrap counts from the first event it
+    // sees: that is the only baseline it can honestly have.
+    if (phase === "bootstrap_start" || start === undefined) start = at;
     try {
-      handler({ phase, elapsedMs: now() - start, ...detail });
+      handler({ phase, elapsedMs: at - start, ...detail });
     } catch (error) {
       console.error("convex-logto: an onAuthEvent handler threw.", error);
     }

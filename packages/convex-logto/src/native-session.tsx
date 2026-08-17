@@ -24,7 +24,7 @@ import {
   createNativeSessionAuthFlow,
   NativeSessionStorageArea,
 } from "./native-session-client";
-import type { LogtoAuthEvent, LogtoAuthEventHandler } from "./auth-events";
+import type { LogtoAuthEventHandler } from "./auth-events";
 import { SessionAuthEngine } from "./session-client";
 import type {
   LogtoSessionApi,
@@ -101,8 +101,11 @@ export function ConvexLogtoSessionProvider({
   useEffect(() => {
     onAuthErrorRef.current = onAuthError;
     clientDescriptorRef.current = clientDescriptor;
-    onAuthEventRef.current = onAuthEvent;
   });
+  // Assigned during render, not in an effect: child effects run before the
+  // parent's, so the `convex_authenticated` watcher below would emit into a
+  // ref that still held the previous render's handler.
+  onAuthEventRef.current = onAuthEvent;
 
   const engine = useMemo(() => {
     const storage = new NativeSessionStorageArea(
@@ -125,7 +128,7 @@ export function ConvexLogtoSessionProvider({
       // the handler's presence in the memo's dependencies, and an app that
       // enables telemetry from an effect would rebuild the engine mid-mount.
       // The cost when no handler is set is one ref read per phase.
-      onAuthEvent: (event: LogtoAuthEvent) => onAuthEventRef.current?.(event),
+      onAuthEvent: onAuthEventRef,
     });
   }, [client, sessionApi, redirectUri]);
 

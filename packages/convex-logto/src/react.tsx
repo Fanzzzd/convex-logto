@@ -475,17 +475,15 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
     );
   }
 
-  // Opt-in phase timings. The emitter is built once per mount so `elapsedMs`
-  // counts from there, and reads the handler through a ref so an inline arrow
-  // never rebuilds anything.
+  // Opt-in phase timings. The emitter is built once per mount and reads the
+  // handler through a ref, so an inline arrow never rebuilds anything — and
+  // while the ref is empty (no `onAuthEvent`) an emit costs nothing.
   const onAuthEventRef = useRef(onAuthEvent);
-  useEffect(() => {
-    onAuthEventRef.current = onAuthEvent;
-  });
-  const events = useMemo(
-    () => createAuthEventEmitter((event) => onAuthEventRef.current?.(event)),
-    [],
-  );
+  // Assigned during render, not in an effect: child effects run before the
+  // parent's, so the `convex_authenticated` watcher below would emit into a
+  // ref that still held the previous render's handler.
+  onAuthEventRef.current = onAuthEvent;
+  const events = useMemo(() => createAuthEventEmitter(onAuthEventRef), []);
   useEffect(() => {
     events("bootstrap_start");
   }, [events]);

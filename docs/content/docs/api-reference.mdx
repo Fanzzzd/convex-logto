@@ -371,6 +371,8 @@ no clock is read.
   sessionApi={api.auth}
   onAuthEvent={(event) => analytics.track(event.phase, event.elapsedMs)}
 >
+  <App />
+</ConvexLogtoSessionProvider>
 ```
 
 An event is `{ phase, elapsedMs, source?, errorKind? }`. `elapsedMs` counts from
@@ -382,18 +384,24 @@ analytics backend as-is.
 | --- | --- |
 | `bootstrap_start` | The provider mounted; everything else is measured from here. |
 | `config_loaded` | Bridge mode with `configQuery`: the one config fetch resolved. |
-| `session_restored` | The mount settled authenticated. `source` is `cache`, `refresh`, `callback`, `ssr`, or `cross-tab`. |
+| `session_restored` | The mount settled authenticated. `source` is `cache` (a still-fresh stored token), `ssr` (the token the server rendered with), `refresh`, or `callback`. |
 | `unauthenticated` | The mount settled with no session. |
 | `convex_authenticated` | Convex accepted the token — the first authenticated query can run. Emitted once per mount, even if Convex later reconnects. |
 | `refresh_started` / `refresh_succeeded` | A token refresh, including silent ones long after mount. |
 | `refresh_failed` | With `errorKind`: `terminal` (the session is gone) or `transient` (retryable). |
 | `revoked` | The reactive `sessionValid` subscription reported the session dead. |
-| `signed_out` | This client signed out, or another tab did. |
+| `signed_out` | This client signed out, or another tab did (`source: "cross-tab"`). |
 
 Only the first settle reports `session_restored` / `unauthenticated`; later
 transitions have their own phases, so a long-lived tab never looks like it
 re-mounted. A handler that throws is caught and logged — telemetry can never fail
 an authentication.
+
+Bridge mode emits `bootstrap_start`, `config_loaded`, and `convex_authenticated`:
+the Logto SDK owns the credential lifecycle there, so the settle and refresh
+phases are session mode's. Passing the handler on a later render is fine — it is
+read per event, so nothing is rebuilt — and it then reports from that point on
+rather than replaying phases it missed.
 
 ## Native session mode (`convex-logto/native-session`)
 

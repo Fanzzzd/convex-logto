@@ -24,7 +24,7 @@ import {
   type SessionTransport,
   type TokenStorageKind,
 } from "./session-client";
-import type { LogtoAuthEvent, LogtoAuthEventHandler } from "./auth-events";
+import type { LogtoAuthEventHandler } from "./auth-events";
 import { createSessionDeviceBinding } from "./session-device";
 import {
   createCookieSessionMarker,
@@ -194,8 +194,11 @@ export function ConvexLogtoSessionProvider({
     navigateRef.current = navigate;
     onAuthErrorRef.current = onAuthError;
     clientDescriptorRef.current = clientDescriptor;
-    onAuthEventRef.current = onAuthEvent;
   });
+  // Assigned during render, not in an effect: child effects run before the
+  // parent's, so the `convex_authenticated` watcher below would emit into a
+  // ref that still held the previous render's handler.
+  onAuthEventRef.current = onAuthEvent;
 
   const engine = useMemo(() => {
     // Namespace storage by deployment so two dev apps on the same origin
@@ -239,7 +242,7 @@ export function ConvexLogtoSessionProvider({
       // the handler's presence in the memo's dependencies, and an app that
       // enables telemetry from an effect would rebuild the engine mid-mount.
       // The cost when no handler is set is one ref read per phase.
-      onAuthEvent: (event: LogtoAuthEvent) => onAuthEventRef.current?.(event),
+      onAuthEvent: onAuthEventRef,
     });
   }, [
     client,

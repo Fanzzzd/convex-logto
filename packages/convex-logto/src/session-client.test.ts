@@ -1760,6 +1760,22 @@ describe("auth phase events", () => {
   const phasesOf = (events: LogtoAuthEvent[]) =>
     events.map((event) => event.phase);
 
+  /** Resolves once the mount's one settle phase has been reported. */
+  async function settleEvent(events: LogtoAuthEvent[]): Promise<void> {
+    for (let i = 0; i < 50; i += 1) {
+      if (
+        events.some(
+          (event) =>
+            event.phase === "session_restored" ||
+            event.phase === "unauthenticated",
+        )
+      )
+        return;
+      await Promise.resolve();
+    }
+    throw new Error("no settle phase was reported");
+  }
+
   function eventHarness(options?: Parameters<typeof makeHarness>[0]) {
     const events: LogtoAuthEvent[] = [];
     const harness = makeHarness({
@@ -1883,6 +1899,58 @@ describe("auth phase events", () => {
     await engine.signOut({ federated: false });
 
     expect(phasesOf(events).slice(2)).toEqual(["revoked", "signed_out"]);
+  });
+
+  it("tells an SSR hand-off apart from a warm cache", async () => {
+    // Both read the token out of storage; only one of them cost the user a
+    // round-trip, so reporting SSR as `cache` would hide the difference.
+    const initialToken = freshToken();
+    const { engine, events } = eventHarness({
+      initialToken,
+      initialSession: { token: "t1", sessionId: "s1" },
+    });
+
+    engine.start();
+    // The SSR snapshot is already authenticated, so `settled` returns before the
+    // restore that reports the phase; wait for the event itself.
+    await settleEvent(events);
+
+    expect(events.at(-1)).toMatchObject({
+      phase: "session_restored",
+      source: "ssr",
+    });
+  });
+
+  it("still reports a genuine cache hit as cache when SSR seeded a session", async () => {
+    const { engine, events } = eventHarness({
+      initialSession: { token: "t1", sessionId: "s1" },
+      storedIdToken: freshToken(),
+    });
+
+    engine.start();
+    await settled(engine);
+
+    expect(events.at(-1)).toMatchObject({
+      phase: "session_restored",
+      source: "cache",
+    });
+  });
+
+  it("marks a sign-out another tab performed", async () => {
+    const { engine, events } = eventHarness({
+      storedSession: { token: "t1", sessionId: "s1" },
+      storedIdToken: freshToken(),
+    });
+    engine.start();
+    await settled(engine);
+
+    engine.handleExternalSignOut();
+
+    expect(events.at(-1)).toEqual({
+      phase: "signed_out",
+      elapsedMs: expect.any(Number),
+      source: "cross-tab",
+    });
   });
 
   it("reports convex_authenticated only when the provider says so", async () => {
