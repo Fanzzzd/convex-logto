@@ -322,7 +322,7 @@ closes the long-lived session-token exfiltration path rather than claiming to
 make arbitrary XSS harmless.
 
 The exported handler is a standard `(Request) => Promise<Response>` function
-with four routes under `/api/logto-session` by default:
+with five routes under `/api/logto-session` by default:
 
 | Route | Purpose |
 | --- | --- |
@@ -330,6 +330,7 @@ with four routes under `/api/logto-session` by default:
 | `callback` | Exchange the authorization code and set the first cookie. |
 | `token` | Rotate the cookie and return a fresh ID token. |
 | `sign-out` | Delete the component Session, expire the cookie, and optionally end SSO. |
+| `sessions` | List, rename, or revoke the caller's own sessions (`op` selects). Never expires the cookie — revoking another device must not sign this one out. |
 
 Every application request has one fixed CSRF policy: `POST`, the
 `x-convex-logto-csrf: 1` custom header, and an exact match in `allowedOrigins`.
