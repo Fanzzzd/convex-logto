@@ -40,3 +40,42 @@ if (window.location.pathname === "/callback") return <p>Finishing sign in…</p>
 ```
 
 Full app: [`examples/vite-react`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react).
+
+## Session mode
+
+[Session mode](/docs/session-mode) swaps the entry and the props; the mount point
+and callback route are the same two Vite-specific pieces.
+
+```tsx title="src/main.tsx"
+import { ConvexLogtoSessionProvider } from "convex-logto/react-session";
+import { api } from "../convex/_generated/api";
+
+root.render(
+  <ConvexLogtoSessionProvider client={convex} sessionApi={api.auth}>
+    <App />
+  </ConvexLogtoSessionProvider>,
+);
+```
+
+There is no `configQuery`: session mode keeps every Logto value on the Convex
+deployment, so nothing needs to reach the bundle. `sessionApi` is the module
+re-exporting `logtoSessionApi(...)` — `api.auth` above.
+
+The callback is still `/callback`, and the provider still owns it — but it now
+POSTs the code to Convex and replace-navigates to `afterSignIn` itself, so the
+view you render there is only ever a flash:
+
+```tsx title="src/App.tsx"
+if (window.location.pathname === "/callback") return <p>Finishing sign in…</p>;
+```
+
+<Callout>
+A plain Vite SPA usually ships to a static host, which has no same-site server to
+mount the [cookie transport](/docs/session-mode#httponly-cookie-transport-optional)
+on. That is fine: the default localStorage transport is the supported
+static-hosting path — the session token there is one-time, rotates on every use,
+and is stored server-side only as a hash. Add the cookie transport when you have a
+server on the same site, not before.
+</Callout>
+
+Full app: [`examples/vite-react-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session).
