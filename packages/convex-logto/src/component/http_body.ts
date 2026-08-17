@@ -1,6 +1,13 @@
-/** A successful bounded body read or the controlled reason it stopped. */
+/**
+ * A successful bounded body read or the controlled reason it stopped.
+ *
+ * The buffer is pinned to `ArrayBuffer` rather than the default
+ * `ArrayBufferLike`: every caller hands these bytes to `crypto.subtle`, whose
+ * `BufferSource` parameter excludes `SharedArrayBuffer`. TypeScript 7's lib
+ * definitions enforce that; 5.x accepted the wider type.
+ */
 export type BoundedBodyResult =
-  | { ok: true; bytes: Uint8Array }
+  | { ok: true; bytes: Uint8Array<ArrayBuffer> }
   | { ok: false; reason: "too_large" | "read_error" };
 
 type BodySource = Pick<Request, "body" | "headers">;
