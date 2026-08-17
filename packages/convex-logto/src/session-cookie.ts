@@ -5,7 +5,11 @@ import { SESSION_GC_AFTER_MS } from "./component/core.js";
 import { normalizeHttpNavigationUrl } from "./component/endpoint.js";
 import { readBoundedBody } from "./component/http_body.js";
 import type { SessionTransport, StoredSession } from "./session-client";
-import type { LogtoSessionApi } from "./session";
+import type {
+  LogtoSessionApi,
+  LogtoSessionClientDescriptor,
+  LogtoSessionSummary,
+} from "./session";
 
 /** Fixed host-only cookie used by the session cookie transport. */
 export const LOGTO_SESSION_COOKIE_NAME = "__Host-convex-logto-session";
@@ -99,7 +103,7 @@ type SessionError = {
   message: string;
 };
 
-type CookieRoute = "sign-in" | "callback" | "token" | "sign-out";
+type CookieRoute = "sign-in" | "callback" | "token" | "sign-out" | "sessions";
 
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" } as const;
 const MAX_COOKIE_BODY_BYTES = 64 * 1024;
@@ -115,7 +119,8 @@ function isCookieRoute(value: string): value is CookieRoute {
     value === "sign-in" ||
     value === "callback" ||
     value === "token" ||
-    value === "sign-out"
+    value === "sign-out" ||
+    value === "sessions"
   );
 }
 
@@ -266,6 +271,24 @@ function isMissingSignOutEverywhereAction(error: unknown): boolean {
 
 class RequestValidationError extends Error {}
 
+/**
+ * Same 409 shape `signOutEverywhere` uses, so a deployment whose app module
+ * predates these actions gets actionable guidance instead of a bare failure.
+ */
+function sessionManagementUnavailable(name: string, origin: string): Response {
+  return jsonResponse(
+    {
+      error: {
+        kind: "terminal",
+        code: "session_management_unavailable",
+        message: `convex-logto: sessionApi must re-export ${name} from logtoSessionApi(components.logto), then deploy the Convex functions.`,
+      } satisfies SessionError,
+    },
+    { status: 409 },
+    origin,
+  );
+}
+
 function actionErrorResponse(
   error: unknown,
   origin: string,
@@ -343,6 +366,24 @@ function optionalString(
   return value;
 }
 
+/**
+ * Like `optionalString`, but blank means "not provided" instead of an error.
+ * Use it for display fields the component itself treats that way — an emptied
+ * rename box must clear a label, not fail the request in cookie mode only.
+ */
+function optionalDisplayString(
+  body: Record<string, unknown>,
+  name: string,
+): string | undefined {
+  const value = body[name];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new RequestValidationError(`${name} must be a string when provided`);
+  }
+  const trimmed = value.trim();
+  return trimmed === "" ? undefined : trimmed;
+}
+
 function optionalBoolean(
   body: Record<string, unknown>,
   name: string,
@@ -353,6 +394,29 @@ function optionalBoolean(
     throw new RequestValidationError(`${name} must be a boolean when provided`);
   }
   return value;
+}
+
+/**
+ * The advisory, app-supplied client descriptor. Unknown keys are dropped rather
+ * than rejected: it is display data, and the component normalizes and truncates
+ * it again server-side.
+ */
+function optionalClientDescriptor(
+  body: Record<string, unknown>,
+): { platform?: string; os?: string; browser?: string } | undefined {
+  const value = body.client;
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw new RequestValidationError("client must be an object when provided");
+  }
+  const fields = (["platform", "os", "browser"] as const).flatMap((key) => {
+    // Blank is "absent" here so the handler and the browser engine agree on
+    // what it means; the component normalizes and truncates again either way.
+    // A blank field must never fail a sign-in that is otherwise fine.
+    const field = optionalDisplayString(value, key);
+    return field === undefined ? [] : [[key, field] as const];
+  });
+  return fields.length === 0 ? undefined : Object.fromEntries(fields);
 }
 
 function validateRedirectUri(value: string, requestOrigin: string): string {
@@ -391,7 +455,7 @@ export function assertLogtoSessionCookieCompatibility(options: {
 }
 
 /**
- * Build the same-site cookie transport's four-route standard-fetch handler.
+ * Build the same-site cookie transport's five-route standard-fetch handler.
  * The returned function can be exported directly as a Next.js POST/OPTIONS
  * handler or called from TanStack Start and Convex HTTP actions.
  */
@@ -477,6 +541,7 @@ export function createLogtoSessionCookieHandler(
               requiredString(body, "redirectUri"),
               origin,
             ),
+            client: optionalClientDescriptor(body),
           });
           return jsonResponse(
             {
@@ -555,6 +620,65 @@ export function createLogtoSessionCookieHandler(
             }
             return actionErrorResponse(error, origin, headers);
           }
+        }
+        case "sessions": {
+          const sessionToken = readCookie(request);
+          if (sessionToken === null) {
+            throw new ConvexError({
+              kind: "terminal" as const,
+              code: "session_cookie_missing",
+              message: "No session cookie is present. Sign in again.",
+            });
+          }
+          const op = requiredString(body, "op");
+          if (op === "list") {
+            const listSessions = options.sessionApi.listSessions;
+            if (listSessions === undefined) {
+              return sessionManagementUnavailable("listSessions", origin);
+            }
+            return jsonResponse(
+              await options.action(listSessions, { sessionToken }),
+              {},
+              origin,
+            );
+          }
+          if (op === "rename") {
+            const renameSession = options.sessionApi.renameSession;
+            if (renameSession === undefined) {
+              return sessionManagementUnavailable("renameSession", origin);
+            }
+            return jsonResponse(
+              {
+                renamed: await options.action(renameSession, {
+                  sessionToken,
+                  targetSessionId: requiredString(body, "targetSessionId"),
+                  // Absent means "clear it" — the op itself carries the intent.
+                  label: optionalDisplayString(body, "label"),
+                }),
+              },
+              {},
+              origin,
+            );
+          }
+          if (op === "revoke") {
+            const revokeSession = options.sessionApi.revokeSession;
+            if (revokeSession === undefined) {
+              return sessionManagementUnavailable("revokeSession", origin);
+            }
+            return jsonResponse(
+              {
+                revoked: await options.action(revokeSession, {
+                  sessionToken,
+                  targetSessionId: requiredString(body, "targetSessionId"),
+                }),
+              },
+              {},
+              origin,
+            );
+          }
+          throw new RequestValidationError(
+            "op must be one of list, rename, revoke",
+          );
         }
       }
       throw new Error("convex-logto: unsupported cookie route.");
@@ -838,6 +962,86 @@ function parseSignOutEverywhereResponse(value: unknown): {
   return { count: value.count, ...result };
 }
 
+function readTargetSessionId(args: unknown): string {
+  if (!isRecord(args)) throw invalidCookieResponse();
+  const value = args.targetSessionId;
+  if (typeof value !== "string" || value === "") throw invalidCookieResponse();
+  return value;
+}
+
+function readOptionalLabel(args: unknown): string | undefined {
+  if (!isRecord(args)) throw invalidCookieResponse();
+  const value = args.label;
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw invalidCookieResponse();
+  // "" clears the label on every other transport, so it must not be forwarded
+  // as a value this route would then reject.
+  return value.trim() === "" ? undefined : value;
+}
+
+function parseSessionListResponse(value: unknown): {
+  sessions: LogtoSessionSummary[];
+  truncated: boolean;
+} {
+  if (!isRecord(value) || typeof value.truncated !== "boolean") {
+    throw invalidCookieResponse();
+  }
+  const sessions: unknown = value.sessions;
+  if (!Array.isArray(sessions)) throw invalidCookieResponse();
+  return {
+    sessions: sessions.map((entry) => parseSessionSummary(entry)),
+    truncated: value.truncated,
+  };
+}
+
+function parseSessionSummary(value: unknown): LogtoSessionSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.sessionId !== "string" ||
+    typeof value.current !== "boolean" ||
+    typeof value.createdAt !== "number" ||
+    typeof value.lastRefreshedAt !== "number" ||
+    typeof value.deviceBound !== "boolean" ||
+    (value.label !== undefined && typeof value.label !== "string")
+  ) {
+    throw invalidCookieResponse();
+  }
+  const client = parseSessionClient(value.client);
+  return {
+    sessionId: value.sessionId,
+    current: value.current,
+    createdAt: value.createdAt,
+    lastRefreshedAt: value.lastRefreshedAt,
+    deviceBound: value.deviceBound,
+    ...(value.label === undefined ? {} : { label: value.label }),
+    ...(client === undefined ? {} : { client }),
+  };
+}
+
+function parseSessionClient(
+  value: unknown,
+): LogtoSessionClientDescriptor | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw invalidCookieResponse();
+  const fields = (["platform", "os", "browser"] as const).flatMap((key) => {
+    const field = value[key];
+    if (field === undefined) return [];
+    if (typeof field !== "string") throw invalidCookieResponse();
+    return [[key, field] as const];
+  });
+  return fields.length === 0 ? undefined : Object.fromEntries(fields);
+}
+
+function parseSessionMutationResponse(
+  value: unknown,
+  field: "renamed" | "revoked",
+): boolean {
+  if (!isRecord(value) || typeof value[field] !== "boolean") {
+    throw invalidCookieResponse();
+  }
+  return value[field];
+}
+
 function readPostLogoutRedirectUri(args: unknown): string | undefined {
   if (!isRecord(args)) throw invalidCookieResponse();
   const value = args.postLogoutRedirectUri;
@@ -870,6 +1074,18 @@ export function createLogtoSessionCookieTransport(
       sessionApi.signOutEverywhere === undefined
         ? undefined
         : getFunctionName(sessionApi.signOutEverywhere),
+    listSessions:
+      sessionApi.listSessions === undefined
+        ? undefined
+        : getFunctionName(sessionApi.listSessions),
+    renameSession:
+      sessionApi.renameSession === undefined
+        ? undefined
+        : getFunctionName(sessionApi.renameSession),
+    revokeSession:
+      sessionApi.revokeSession === undefined
+        ? undefined
+        : getFunctionName(sessionApi.revokeSession),
   };
 
   const post = async (route: CookieRoute, body: unknown): Promise<unknown> => {
@@ -946,6 +1162,38 @@ export function createLogtoSessionCookieTransport(
             postLogoutRedirectUri: readPostLogoutRedirectUri(args),
             everywhere: true,
           }),
+        );
+      }
+      if (
+        actionNames.listSessions !== undefined &&
+        actionName === actionNames.listSessions
+      ) {
+        return parseSessionListResponse(await post("sessions", { op: "list" }));
+      }
+      if (
+        actionNames.renameSession !== undefined &&
+        actionName === actionNames.renameSession
+      ) {
+        const label = readOptionalLabel(args);
+        return parseSessionMutationResponse(
+          await post("sessions", {
+            op: "rename",
+            targetSessionId: readTargetSessionId(args),
+            ...(label === undefined ? {} : { label }),
+          }),
+          "renamed",
+        );
+      }
+      if (
+        actionNames.revokeSession !== undefined &&
+        actionName === actionNames.revokeSession
+      ) {
+        return parseSessionMutationResponse(
+          await post("sessions", {
+            op: "revoke",
+            targetSessionId: readTargetSessionId(args),
+          }),
+          "revoked",
         );
       }
       throw new Error(

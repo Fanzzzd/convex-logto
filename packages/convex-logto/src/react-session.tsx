@@ -30,7 +30,11 @@ import {
   createLogtoSessionCookieTransport,
   type LogtoSessionCookieTransportOptions,
 } from "./session-cookie";
-import type { LogtoSessionApi } from "./session";
+import type {
+  LogtoSessionApi,
+  LogtoSessionClientDescriptor,
+  LogtoSessionSummary,
+} from "./session";
 
 const DEFAULT_CALLBACK_PATH = "/callback";
 
@@ -93,6 +97,14 @@ export type ConvexLogtoSessionProviderProps = {
    * each rotation renews the persistent cookie's 190-day idle lifetime.
    */
   cookieTransport?: LogtoSessionCookieTransportOptions;
+  /**
+   * Self-reported description of this client ("Chrome", "macOS", ...), stamped
+   * on the session at sign-in so `listSessions()` can show the user something
+   * recognisable. The app supplies it — the library never sniffs a User-Agent or
+   * IP — and it is advisory display data, never authenticated. Safe to pass as
+   * an inline object: only the three field values affect the engine.
+   */
+  clientDescriptor?: LogtoSessionClientDescriptor;
   /** Fresh ID token returned by `handler.getInitialToken(request)` during SSR. */
   initialToken?: string | null;
   /** Stable session id returned alongside `initialToken`. */
@@ -134,6 +146,7 @@ export function ConvexLogtoSessionProvider({
   tokenStorage = "session",
   deviceBinding = false,
   cookieTransport,
+  clientDescriptor,
   initialToken,
   initialSessionId,
   reactiveRevocation = true,
@@ -160,12 +173,18 @@ export function ConvexLogtoSessionProvider({
 
   // The engine must survive re-renders, but `navigate`/`onAuthError` are often
   // inline arrows with a fresh identity each render — route them through refs
-  // so the engine stays stable and still always calls the latest one.
+  // so the engine stays stable and still always calls the latest one. The
+  // client descriptor rides along for a stronger reason: apps usually learn it
+  // asynchronously, and rebuilding the engine to deliver it would restart the
+  // mount state machine — abandoning an in-flight callback exchange and leaving
+  // the tree signed out with a live session on the server.
   const navigateRef = useRef(navigate);
   const onAuthErrorRef = useRef(onAuthError);
+  const clientDescriptorRef = useRef(clientDescriptor);
   useEffect(() => {
     navigateRef.current = navigate;
     onAuthErrorRef.current = onAuthError;
+    clientDescriptorRef.current = clientDescriptor;
   });
 
   const engine = useMemo(() => {
@@ -199,6 +218,7 @@ export function ConvexLogtoSessionProvider({
       deviceBinding: deviceBinding
         ? createSessionDeviceBinding(namespace)
         : undefined,
+      clientDescriptor: () => clientDescriptorRef.current,
       navigate: (to) => {
         const soft = navigateRef.current;
         if (soft) soft(to);
@@ -337,6 +357,34 @@ export type LogtoSessionAuth = {
   signOutEverywhere: (options?: {
     postLogoutRedirectUri?: string;
   }) => Promise<void>;
+  /**
+   * The caller's own sessions, for a "where am I signed in" screen. A snapshot,
+   * not a subscription — the session token it authenticates with rotates — so
+   * call it again after `renameSession` / `revokeSession`. `truncated` means the
+   * subject has more sessions than the page returned.
+   */
+  listSessions: () => Promise<{
+    sessions: LogtoSessionSummary[];
+    truncated: boolean;
+  }>;
+  /**
+   * Name one of the caller's own sessions (pass `undefined` to clear it).
+   * Rejects with a terminal `session_not_found` when the id is not the caller's
+   * or is already revoked — the component refuses to confirm that another
+   * subject's session exists.
+   */
+  renameSession: (
+    targetSessionId: string,
+    label: string | undefined,
+  ) => Promise<void>;
+  /**
+   * Revoke one of the caller's own sessions; that device drops on its next
+   * reactive revocation tick, and an unknown id rejects like `renameSession`.
+   * Revoking the current session does not clear this browser's credentials —
+   * call `signOut` for that, and note that a device which still holds a live
+   * Logto SSO cookie can start a new sign-in.
+   */
+  revokeSession: (targetSessionId: string) => Promise<void>;
 };
 
 /**
@@ -369,6 +417,16 @@ export function useLogtoAuth(): LogtoSessionAuth {
       engine.signOutEverywhere(options),
     [engine],
   );
+  const listSessions = useCallback(() => engine.listSessions(), [engine]);
+  const renameSession = useCallback(
+    (targetSessionId: string, label: string | undefined) =>
+      engine.renameSession(targetSessionId, label),
+    [engine],
+  );
+  const revokeSession = useCallback(
+    (targetSessionId: string) => engine.revokeSession(targetSessionId),
+    [engine],
+  );
   return useMemo(
     () => ({
       isAuthenticated,
@@ -377,6 +435,9 @@ export function useLogtoAuth(): LogtoSessionAuth {
       signIn,
       signOut,
       signOutEverywhere,
+      listSessions,
+      renameSession,
+      revokeSession,
     }),
     [
       isAuthenticated,
@@ -385,10 +446,17 @@ export function useLogtoAuth(): LogtoSessionAuth {
       signIn,
       signOut,
       signOutEverywhere,
+      listSessions,
+      renameSession,
+      revokeSession,
     ],
   );
 }
 
-export type { LogtoSessionApi } from "./session";
+export type {
+  LogtoSessionApi,
+  LogtoSessionClientDescriptor,
+  LogtoSessionSummary,
+} from "./session";
 export type { TokenStorageKind } from "./session-client";
 export type { LogtoSessionCookieTransportOptions } from "./session-cookie";
