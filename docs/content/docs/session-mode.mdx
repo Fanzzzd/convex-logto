@@ -92,11 +92,14 @@ export const {
   refresh,
   signOut,
   signOutEverywhere,
+  listSessions,
+  renameSession,
+  revokeSession,
   sessionValid,
 } = logtoSessionApi(components.logto);
 ```
 
-Re-export all six with these exact names — the provider looks them up on the
+Re-export all nine with these exact names — the provider looks them up on the
 module you pass it.
 
 ### 5. Mount the provider
@@ -128,6 +131,9 @@ const {
   signIn,
   signOut,
   signOutEverywhere,
+  listSessions,
+  renameSession,
+  revokeSession,
 } = useLogtoAuth();
 // signIn({ returnTo: "/dashboard" }) — same-origin path, lands there after sign-in
 // signOut() — clears tabs sharing this localStorage transport and ends this
@@ -181,10 +187,66 @@ configured Logto TTL.
 
 If an older `convex/auth.ts` has not re-exported `signOutEverywhere`, the
 provider rejects with an explicit upgrade message instead of exposing a
-cryptic missing-function response. Re-export the six-function set shown above
+cryptic missing-function response. Re-export the nine-function set shown above
 and deploy the Convex functions.
-Listing or labeling individual devices is separate follow-up work tracked in
-[#49](https://github.com/Fanzzzd/convex-logto/issues/49).
+
+## Where am I signed in
+
+`listSessions()` returns the caller's own sessions so a settings screen can show
+them and revoke one:
+
+```tsx
+const { listSessions, renameSession, revokeSession } = useLogtoAuth();
+
+const { sessions, truncated } = await listSessions();
+// [{ sessionId, current, createdAt, lastRefreshedAt, label?, client?, deviceBound }]
+
+await renameSession(sessionId, "Work laptop"); // pass undefined to clear it
+await revokeSession(sessionId); // that device drops on its next revocation tick
+```
+
+Every one of the three authenticates the same way `signOutEverywhere` does: the
+subject comes **only** from the caller's presented live session token, so a
+`sessionId` belonging to another user resolves to `session_not_found` rather than
+revealing that it exists. A session already killed by a revocation watermark is
+invisible to the list and untouchable by the mutations, even while its row waits
+for a bounded cleanup batch.
+
+`listSessions()` is a snapshot, not a reactive query — the credential it
+authenticates with rotates roughly every ID-token lifetime, and a subscription
+keyed on a rotating credential would resubscribe on every rotation. Call it again
+after a rename or revoke. It returns at most 16 sessions, newest first, with
+`truncated: true` when the subject has more.
+
+`revokeSession()` on the **current** session revokes the server side but leaves
+this client's local credentials in place; call `signOut()` when you mean "sign
+this device out". The device proof requirement applies to the *caller's* session,
+not the target — requiring the target's key would make it impossible to revoke a
+lost device, which is the main reason this exists.
+
+### Labels and the client descriptor
+
+`label` is user-chosen and set through `renameSession`. It is normalized on write
+(whitespace collapsed, control characters and bidi overrides stripped so one
+entry cannot impersonate another) and rejected past 64 code points rather than
+silently truncated.
+
+`client` is a coarse, **self-reported** description the app supplies at sign-in
+so the user recognises their own devices:
+
+```tsx
+<ConvexLogtoSessionProvider
+  client={convex}
+  sessionApi={api.auth}
+  clientDescriptor={{ platform: "web", os: "macOS", browser: "Firefox" }}
+>
+```
+
+The library never reads a User-Agent or an IP address — it stores exactly what
+you pass, trimmed and truncated to 32 code points per field. It is not
+authenticated: treat it as display text and never make a security decision with
+it. `deviceBound` on each summary, by contrast, is server-derived and does say
+whether that session needs a device proof to refresh or sign out.
 
 ## Device binding (optional)
 

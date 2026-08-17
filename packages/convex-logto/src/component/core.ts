@@ -16,6 +16,88 @@ export const DEFAULT_REUSE_WINDOW_MS = 10 * 1000;
 /** Maximum out-of-order successful session-token responses retained per session. */
 export const SESSION_TOKEN_GENERATION_LIMIT = 8;
 
+/** Longest accepted user-chosen session label, in code points. */
+export const SESSION_LABEL_MAX_LENGTH = 64;
+/** Longest accepted value for each self-reported client descriptor field. */
+export const CLIENT_DESCRIPTOR_MAX_LENGTH = 32;
+/**
+ * Sessions returned by one `listSessions` call. Bounded because the query reads
+ * whole session documents; the result reports whether it was truncated rather
+ * than silently showing a partial list of a user's devices.
+ */
+export const SESSION_LIST_LIMIT = 16;
+
+/** Self-reported, unauthenticated description of a signing-in client. */
+export type SessionClientDescriptor = {
+  platform?: string;
+  os?: string;
+  browser?: string;
+};
+
+/**
+ * Collapse whitespace and drop control characters, so a label cannot smuggle
+ * newlines or bidi overrides into a UI that renders it next to other sessions.
+ */
+function normalizeDisplayText(raw: string): string {
+  // Code points, not graphemes: the limit these feed is a storage bound, and
+  // per-code-point filtering is what strips the control characters below.
+  return Array.from(raw)
+    .filter((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      // C0/C1 controls, plus the bidi overrides that let a label impersonate
+      // another entry in the list.
+      if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return false;
+      return (
+        !(code >= 0x202a && code <= 0x202e) &&
+        !(code >= 0x2066 && code <= 0x2069)
+      );
+    })
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Normalize a user-chosen session label. Rejects rather than truncates: a
+ * silently shortened label is worse than a clear error, because the user is
+ * naming a device they need to recognise later.
+ */
+export function normalizeSessionLabel(
+  raw: string | undefined,
+): string | undefined {
+  if (raw === undefined) return undefined;
+  const label = normalizeDisplayText(raw);
+  if (label === "") return undefined;
+  if (Array.from(label).length > SESSION_LABEL_MAX_LENGTH) {
+    throw terminal(
+      "session_label_too_long",
+      `A session label may be at most ${SESSION_LABEL_MAX_LENGTH} characters.`,
+    );
+  }
+  return label;
+}
+
+/**
+ * Normalize the app-supplied client descriptor. Values are advisory, so an
+ * over-long field is trimmed to the limit instead of failing a sign-in that is
+ * otherwise fine.
+ */
+export function normalizeClientDescriptor(
+  raw: SessionClientDescriptor | undefined,
+): SessionClientDescriptor | undefined {
+  if (raw === undefined) return undefined;
+  const descriptor: SessionClientDescriptor = {};
+  for (const field of ["platform", "os", "browser"] as const) {
+    const value = raw[field];
+    if (value === undefined) continue;
+    const normalized = Array.from(normalizeDisplayText(value))
+      .slice(0, CLIENT_DESCRIPTOR_MAX_LENGTH)
+      .join("");
+    if (normalized !== "") descriptor[field] = normalized;
+  }
+  return Object.keys(descriptor).length === 0 ? undefined : descriptor;
+}
+
 /**
  * GC horizon for dead sessions: Logto's grant chain has a hard 180-day cap, so
  * a session not refreshed for longer than this can never refresh again.

@@ -69,6 +69,9 @@ const api = {
   refresh: { fn: "refresh" },
   signOut: { fn: "signOut" },
   signOutEverywhere: { fn: "signOutEverywhere" },
+  listSessions: { fn: "listSessions" },
+  renameSession: { fn: "renameSession" },
+  revokeSession: { fn: "revokeSession" },
   sessionValid: { fn: "sessionValid" },
 } as unknown as LogtoSessionApi;
 
@@ -78,6 +81,9 @@ type Handlers = {
   refresh: ReturnType<typeof vi.fn>;
   signOut: ReturnType<typeof vi.fn>;
   signOutEverywhere: ReturnType<typeof vi.fn>;
+  listSessions: ReturnType<typeof vi.fn>;
+  renameSession: ReturnType<typeof vi.fn>;
+  revokeSession: ReturnType<typeof vi.fn>;
 };
 
 function makeHarness(options?: {
@@ -92,6 +98,11 @@ function makeHarness(options?: {
   sessionApi?: LogtoSessionApi;
   storage?: SessionStorageAdapter;
   serverHeldCredential?: boolean;
+  clientDescriptor?: {
+    platform?: string;
+    os?: string;
+    browser?: string;
+  };
 }) {
   const handlers: Handlers = {
     signIn: vi.fn(),
@@ -99,6 +110,9 @@ function makeHarness(options?: {
     refresh: vi.fn(),
     signOut: vi.fn(),
     signOutEverywhere: vi.fn(),
+    listSessions: vi.fn(),
+    renameSession: vi.fn(),
+    revokeSession: vi.fn(),
   };
   const transport = {
     action: (ref: unknown, args: unknown) =>
@@ -127,6 +141,7 @@ function makeHarness(options?: {
     initialSession,
     deviceBinding: options?.deviceBinding,
     serverHeldCredential: options?.serverHeldCredential,
+    clientDescriptor: options?.clientDescriptor,
     navigate,
     onAuthError,
     sleep: () => Promise.resolve(), // skip retry backoff in tests
@@ -1519,5 +1534,221 @@ describe("external events", () => {
     engine.handleExternalSignOut();
     expect(storage.readIdToken()).toBeNull();
     expect(engine.getSnapshot().status).toBe("unauthenticated");
+  });
+});
+
+describe("session management", () => {
+  const summary = {
+    sessionId: "s2",
+    current: false,
+    createdAt: 1,
+    lastRefreshedAt: 2,
+    deviceBound: false,
+  };
+
+  it("authenticates the list with the current token and its device proof", async () => {
+    const deviceBinding = fakeDeviceBinding("proof-for-t1");
+    const { engine, storage, handlers } = makeHarness({ deviceBinding });
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    handlers.listSessions.mockResolvedValue({
+      sessions: [summary],
+      truncated: false,
+    });
+
+    await expect(engine.listSessions()).resolves.toEqual({
+      sessions: [summary],
+      truncated: false,
+    });
+    expect(handlers.listSessions).toHaveBeenCalledWith({
+      sessionToken: "t1",
+      deviceProof: "proof-for-t1",
+    });
+  });
+
+  it("omits the proof field entirely for an unbound session", async () => {
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    handlers.listSessions.mockResolvedValue({ sessions: [], truncated: false });
+
+    await engine.listSessions();
+
+    expect(handlers.listSessions).toHaveBeenCalledWith({ sessionToken: "t1" });
+  });
+
+  it("passes a label through and treats undefined as a clear", async () => {
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    handlers.renameSession.mockResolvedValue(true);
+
+    await expect(engine.renameSession("s2", "Phone")).resolves.toBe(true);
+    expect(handlers.renameSession).toHaveBeenCalledWith({
+      sessionToken: "t1",
+      targetSessionId: "s2",
+      label: "Phone",
+    });
+
+    await engine.renameSession("s2", undefined);
+    expect(handlers.renameSession).toHaveBeenLastCalledWith({
+      sessionToken: "t1",
+      targetSessionId: "s2",
+    });
+  });
+
+  it("revokes another session without touching this client's credentials", async () => {
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    storage.writeIdToken(freshToken());
+    handlers.revokeSession.mockResolvedValue(true);
+
+    await expect(engine.revokeSession("s2")).resolves.toBe(true);
+
+    expect(handlers.revokeSession).toHaveBeenCalledWith({
+      sessionToken: "t1",
+      targetSessionId: "s2",
+    });
+    expect(storage.readSession()).toEqual({ token: "t1", sessionId: "s1" });
+  });
+
+  it.each([
+    ["listSessions", (engine: SessionAuthEngine) => engine.listSessions()],
+    [
+      "renameSession",
+      (engine: SessionAuthEngine) => engine.renameSession("s2", "Phone"),
+    ],
+    [
+      "revokeSession",
+      (engine: SessionAuthEngine) => engine.revokeSession("s2"),
+    ],
+  ])("rejects %s without an active session", async (_name, call) => {
+    const { engine, handlers } = makeHarness();
+
+    await expect(call(engine)).rejects.toThrow(/requires an active session/);
+    expect(handlers.listSessions).not.toHaveBeenCalled();
+    expect(handlers.renameSession).not.toHaveBeenCalled();
+    expect(handlers.revokeSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["listSessions", (engine: SessionAuthEngine) => engine.listSessions()],
+    [
+      "renameSession",
+      (engine: SessionAuthEngine) => engine.renameSession("s2", "Phone"),
+    ],
+    [
+      "revokeSession",
+      (engine: SessionAuthEngine) => engine.revokeSession("s2"),
+    ],
+  ])(
+    "reports the upgrade hint when %s is not re-exported",
+    async (name, call) => {
+      const legacyApi = {
+        signIn: api.signIn,
+        callback: api.callback,
+        refresh: api.refresh,
+        signOut: api.signOut,
+        signOutEverywhere: api.signOutEverywhere,
+        sessionValid: api.sessionValid,
+      } as LogtoSessionApi;
+      const { engine, storage } = makeHarness({ sessionApi: legacyApi });
+      storage.writeSession({ token: "t1", sessionId: "s1" });
+
+      await expect(call(engine)).rejects.toThrow(
+        new RegExp(`Re-export ${name} from logtoSessionApi`),
+      );
+      // Unlike sign-out, a failed management call must leave the session alone.
+      expect(storage.readSession()).toEqual({ token: "t1", sessionId: "s1" });
+    },
+  );
+
+  it("translates a deployed-but-stale module's missing-function error", async () => {
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    handlers.listSessions.mockRejectedValue(
+      new Error("Could not find public function auth:listSessions"),
+    );
+
+    await expect(engine.listSessions()).rejects.toThrow(
+      /Re-export listSessions from logtoSessionApi/,
+    );
+  });
+
+  it("translates the cookie handler's 409 upgrade response", async () => {
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    handlers.revokeSession.mockRejectedValue(
+      new ConvexError({
+        kind: "terminal",
+        code: "session_management_unavailable",
+        message: "sessionApi must re-export revokeSession",
+      }),
+    );
+
+    await expect(engine.revokeSession("s2")).rejects.toThrow(
+      /Re-export revokeSession from logtoSessionApi/,
+    );
+  });
+
+  it("surfaces an ordinary failure unchanged", async () => {
+    const failure = transientError();
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    handlers.listSessions.mockRejectedValue(failure);
+
+    await expect(engine.listSessions()).rejects.toBe(failure);
+  });
+});
+
+describe("client descriptor", () => {
+  const completeCallback = async (options?: {
+    clientDescriptor?: { platform?: string; os?: string; browser?: string };
+  }) => {
+    const harness = makeHarness(options);
+    harness.storage.stashTransaction({ state: "st" });
+    setURL("http://localhost:5173/callback?code=c&state=st");
+    harness.handlers.callback.mockResolvedValue({
+      idToken: freshToken(),
+      sessionToken: "t1",
+      sessionId: "s1",
+    });
+    harness.engine.start();
+    await settled(harness.engine);
+    return harness;
+  };
+
+  it("stamps the app-supplied descriptor on the session at sign-in", async () => {
+    const harness = await completeCallback({
+      clientDescriptor: { platform: "web", browser: "Firefox" },
+    });
+
+    expect(harness.handlers.callback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: { platform: "web", browser: "Firefox" },
+      }),
+    );
+  });
+
+  it("sends nothing when every field is blank or absent", async () => {
+    for (const clientDescriptor of [
+      undefined,
+      { platform: "  ", os: "", browser: undefined },
+    ]) {
+      const harness = await completeCallback({ clientDescriptor });
+
+      expect(harness.handlers.callback.mock.calls[0]?.[0]).not.toHaveProperty(
+        "client",
+      );
+      localStorage.clear();
+      sessionStorage.clear();
+    }
+  });
+
+  it("drops blank fields but keeps the filled ones", async () => {
+    const harness = await completeCallback({
+      clientDescriptor: { platform: " ", os: " macOS ", browser: "" },
+    });
+
+    expect(harness.handlers.callback).toHaveBeenCalledWith(
+      expect.objectContaining({ client: { os: "macOS" } }),
+    );
   });
 });

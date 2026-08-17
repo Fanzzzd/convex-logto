@@ -173,7 +173,7 @@ Everything else — `logtoAuthConfig`, `logtoConfigQuery`, the webhook
 ## Native session mode
 
 Use **`convex-logto/native-session`** when the Logto refresh token should remain
-inside the Convex session component. The server setup and six public functions
+inside the Convex session component. The server setup and nine public functions
 are the same as [web session mode](/docs/session-mode); only the storage and
 OAuth adapters differ on the device.
 
@@ -199,7 +199,7 @@ in both lists:
 Keep the `"scheme": "io.logto"` app configuration shown above. As with web
 session mode, set `LOGTO_ENDPOINT`, `LOGTO_APP_ID`, and
 `LOGTO_CLIENT_SECRET` on the Convex deployment, install the component, and
-export all six functions:
+export all nine functions:
 
 ```ts title="convex/convex.config.ts"
 import { defineApp } from "convex/server";
@@ -220,6 +220,9 @@ export const {
   refresh,
   signOut,
   signOutEverywhere,
+  listSessions,
+  renameSession,
+  revokeSession,
   sessionValid,
 } = logtoSessionApi(components.logto);
 ```

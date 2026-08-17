@@ -24,7 +24,10 @@ type HandlerName =
   | "callback"
   | "refresh"
   | "signOut"
-  | "signOutEverywhere";
+  | "signOutEverywhere"
+  | "listSessions"
+  | "renameSession"
+  | "revokeSession";
 type Handlers = Record<HandlerName, ReturnType<typeof vi.fn>>;
 
 function makeHarness(options?: { deviceBinding?: boolean }) {
@@ -50,6 +53,22 @@ function makeHarness(options?: { deviceBinding?: boolean }) {
       count: 2,
       endSessionUrl: "https://auth.example.com/oidc/session/end?all=1",
     }),
+    listSessions: vi.fn().mockResolvedValue({
+      sessions: [
+        {
+          sessionId: "session-id-1",
+          current: true,
+          createdAt: 1,
+          lastRefreshedAt: 2,
+          label: "Laptop",
+          client: { browser: "Firefox" },
+          deviceBound: false,
+        },
+      ],
+      truncated: false,
+    }),
+    renameSession: vi.fn().mockResolvedValue(true),
+    revokeSession: vi.fn().mockResolvedValue(true),
   };
   const action = vi.fn((reference: unknown, args: unknown) => {
     const name = getFunctionName(
@@ -79,7 +98,7 @@ function persistentCookie(value: string): string {
 }
 
 function request(
-  route: "sign-in" | "callback" | "token" | "sign-out",
+  route: "sign-in" | "callback" | "token" | "sign-out" | "sessions",
   options?: {
     method?: string;
     origin?: string | null;
@@ -939,5 +958,317 @@ describe("cookie transport and device-binding exclusion", () => {
     expect(() => makeHarness({ deviceBinding: true })).toThrow(
       /cannot be enabled together/,
     );
+  });
+});
+
+describe("sessions route", () => {
+  it("lists the caller's sessions using only the cookie's token", async () => {
+    const { handler, handlers } = makeHarness();
+
+    const res = await handler(
+      request("sessions", {
+        cookie: cookie("session-token-1"),
+        body: { op: "list" },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(handlers.listSessions).toHaveBeenCalledWith({
+      sessionToken: "session-token-1",
+    });
+    await expect(res.json()).resolves.toEqual({
+      sessions: [
+        {
+          sessionId: "session-id-1",
+          current: true,
+          createdAt: 1,
+          lastRefreshedAt: 2,
+          label: "Laptop",
+          client: { browser: "Firefox" },
+          deviceBound: false,
+        },
+      ],
+      truncated: false,
+    });
+  });
+
+  it("renames, and forwards an absent label as a clear", async () => {
+    const { handler, handlers } = makeHarness();
+
+    const named = await handler(
+      request("sessions", {
+        cookie: cookie("session-token-1"),
+        body: { op: "rename", targetSessionId: "session-id-2", label: "Phone" },
+      }),
+    );
+    await expect(named.json()).resolves.toEqual({ renamed: true });
+    expect(handlers.renameSession).toHaveBeenCalledWith({
+      sessionToken: "session-token-1",
+      targetSessionId: "session-id-2",
+      label: "Phone",
+    });
+
+    await handler(
+      request("sessions", {
+        cookie: cookie("session-token-1"),
+        body: { op: "rename", targetSessionId: "session-id-2" },
+      }),
+    );
+    expect(handlers.renameSession).toHaveBeenLastCalledWith({
+      sessionToken: "session-token-1",
+      targetSessionId: "session-id-2",
+      label: undefined,
+    });
+  });
+
+  it("revokes another session without clearing this browser's cookie", async () => {
+    const { handler, handlers } = makeHarness();
+
+    const res = await handler(
+      request("sessions", {
+        cookie: cookie("session-token-1"),
+        body: { op: "revoke", targetSessionId: "session-id-2" },
+      }),
+    );
+
+    await expect(res.json()).resolves.toEqual({ revoked: true });
+    expect(handlers.revokeSession).toHaveBeenCalledWith({
+      sessionToken: "session-token-1",
+      targetSessionId: "session-id-2",
+    });
+    expect(res.headers.get("Set-Cookie")).toBeNull();
+  });
+
+  it("rejects a request with no session cookie", async () => {
+    const { handler, handlers } = makeHarness();
+
+    const res = await handler(request("sessions", { body: { op: "list" } }));
+
+    expect(res.status).toBe(401);
+    const payload = (await res.json()) as { error: { code: string } };
+    expect(payload.error.code).toBe("session_cookie_missing");
+    expect(handlers.listSessions).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an unknown op", { op: "delete-everything" }],
+    ["a missing op", {}],
+    ["a rename without a target", { op: "rename", label: "Phone" }],
+    ["a revoke without a target", { op: "revoke" }],
+  ])("rejects %s as a structured 400", async (_name, body) => {
+    const { handler, handlers } = makeHarness();
+
+    const res = await handler(
+      request("sessions", { cookie: cookie("session-token-1"), body }),
+    );
+
+    expect(res.status).toBe(400);
+    const payload = (await res.json()) as { error: { code: string } };
+    expect(payload.error.code).toBe("invalid_request");
+    expect(handlers.renameSession).not.toHaveBeenCalled();
+    expect(handlers.revokeSession).not.toHaveBeenCalled();
+  });
+
+  it.each(["list", "rename", "revoke"])(
+    "answers 409 with the upgrade hint when %s is not re-exported",
+    async (op) => {
+      const legacy = createLogtoSessionCookieHandler({
+        sessionApi: {
+          ...api,
+          listSessions: undefined,
+          renameSession: undefined,
+          revokeSession: undefined,
+        },
+        action: vi.fn() as unknown as LogtoSessionAction,
+        allowedOrigins: [APP_ORIGIN],
+        basePath: BASE_PATH,
+      });
+
+      const res = await legacy(
+        request("sessions", {
+          cookie: cookie("session-token-1"),
+          body: { op, targetSessionId: "session-id-2" },
+        }),
+      );
+
+      expect(res.status).toBe(409);
+      const payload = (await res.json()) as { error: { code: string } };
+      expect(payload.error.code).toBe("session_management_unavailable");
+    },
+  );
+
+  it("forwards the app-supplied client descriptor through callback", async () => {
+    const { handler, handlers } = makeHarness();
+
+    await handler(
+      request("callback", {
+        body: {
+          code: "code-1",
+          state: "state-1",
+          redirectUri: `${APP_ORIGIN}/callback`,
+          client: { platform: "web", browser: "Firefox", os: "  " },
+        },
+      }),
+    );
+
+    expect(handlers.callback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: { platform: "web", browser: "Firefox" },
+      }),
+    );
+  });
+
+  it("rejects a non-object client descriptor", async () => {
+    const { handler, handlers } = makeHarness();
+
+    const res = await handler(
+      request("callback", {
+        body: {
+          code: "code-1",
+          state: "state-1",
+          redirectUri: `${APP_ORIGIN}/callback`,
+          client: "Firefox",
+        },
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(handlers.callback).not.toHaveBeenCalled();
+  });
+});
+
+describe("browser transport session management", () => {
+  const transportWith = (
+    fetchMock: ReturnType<typeof vi.fn<typeof globalThis.fetch>>,
+  ) =>
+    createLogtoSessionCookieTransport(api, {
+      endpoint: BASE_PATH,
+      fetch: fetchMock,
+    });
+
+  it("proxies listSessions through the sessions route", async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      Response.json({
+        sessions: [
+          {
+            sessionId: "session-id-1",
+            current: true,
+            createdAt: 1,
+            lastRefreshedAt: 2,
+            label: "Laptop",
+            client: { browser: "Firefox" },
+            deviceBound: false,
+          },
+        ],
+        truncated: true,
+      }),
+    );
+
+    const result = await transportWith(fetchMock).action(api.listSessions!, {
+      sessionToken: COOKIE_SESSION_MARKER,
+    });
+
+    expect(result).toEqual({
+      sessions: [
+        {
+          sessionId: "session-id-1",
+          current: true,
+          createdAt: 1,
+          lastRefreshedAt: 2,
+          label: "Laptop",
+          client: { browser: "Firefox" },
+          deviceBound: false,
+        },
+      ],
+      truncated: true,
+    });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url).endsWith(`${BASE_PATH}/sessions`)).toBe(true);
+    expect(JSON.parse(String(init?.body))).toEqual({ op: "list" });
+  });
+
+  it("never forwards the session-token argument, only the op payload", async () => {
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json({ renamed: true }));
+
+    await expect(
+      transportWith(fetchMock).action(api.renameSession!, {
+        sessionToken: "a-real-token",
+        targetSessionId: "session-id-2",
+        label: "Phone",
+      }),
+    ).resolves.toBe(true);
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body))).toEqual({
+      op: "rename",
+      targetSessionId: "session-id-2",
+      label: "Phone",
+    });
+  });
+
+  it("proxies a revoke and unwraps the boolean", async () => {
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json({ revoked: false }));
+
+    await expect(
+      transportWith(fetchMock).action(api.revokeSession!, {
+        sessionToken: COOKIE_SESSION_MARKER,
+        targetSessionId: "session-id-2",
+      }),
+    ).resolves.toBe(false);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body))).toEqual({
+      op: "revoke",
+      targetSessionId: "session-id-2",
+    });
+  });
+
+  it.each([
+    ["a non-array sessions field", { sessions: {}, truncated: false }],
+    [
+      "a summary missing deviceBound",
+      { sessions: [{ sessionId: "s", current: true }], truncated: false },
+    ],
+    [
+      "a non-string label",
+      {
+        sessions: [
+          {
+            sessionId: "s",
+            current: true,
+            createdAt: 1,
+            lastRefreshedAt: 2,
+            deviceBound: false,
+            label: 7,
+          },
+        ],
+        truncated: false,
+      },
+    ],
+    ["a missing truncated flag", { sessions: [] }],
+  ])("rejects %s from a hostile handler response", async (_name, payload) => {
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json(payload));
+
+    await expect(
+      transportWith(fetchMock).action(api.listSessions!, {
+        sessionToken: COOKIE_SESSION_MARKER,
+      }),
+    ).rejects.toThrow(/convex-logto/);
+  });
+
+  it("rejects a mutation response that is not a boolean", async () => {
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json({ renamed: "yes" }));
+
+    await expect(
+      transportWith(fetchMock).action(api.renameSession!, {
+        sessionToken: COOKIE_SESSION_MARKER,
+        targetSessionId: "session-id-2",
+      }),
+    ).rejects.toThrow(/convex-logto/);
   });
 });

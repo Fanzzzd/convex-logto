@@ -15,6 +15,8 @@ import {
   generateToken,
   hashToken,
   isOutcomeUnknownError,
+  normalizeClientDescriptor,
+  normalizeSessionLabel,
   rotateTokenHashes,
   terminal,
   toBase64Url,
@@ -460,3 +462,44 @@ it.each([500, 502, 503])(
     ).toBe(true);
   },
 );
+
+// --- session labels ----------------------------------------------------------
+
+describe("session labels and client descriptors", () => {
+  it("collapses whitespace and drops control and bidi characters", () => {
+    expect(normalizeSessionLabel("  Ada's\n  laptop  ")).toBe("Ada's laptop");
+    // A bidi override would let one label render as though it were another
+    // entry in the session list.
+    expect(normalizeSessionLabel("work\u202Ephone")).toBe("workphone");
+    expect(normalizeSessionLabel("   ")).toBeUndefined();
+    expect(normalizeSessionLabel(undefined)).toBeUndefined();
+  });
+
+  it("rejects an over-long label instead of truncating it", () => {
+    // The user is naming a device they need to recognise later; a silently
+    // shortened name is worse than a clear error.
+    expect(() => normalizeSessionLabel("x".repeat(65))).toThrow(
+      /at most 64 characters/,
+    );
+    expect(normalizeSessionLabel("x".repeat(64))).toHaveLength(64);
+  });
+
+  it("counts code points, not UTF-16 units", () => {
+    expect(normalizeSessionLabel("😀".repeat(64))).toBeDefined();
+    expect(() => normalizeSessionLabel("😀".repeat(65))).toThrow(
+      /at most 64 characters/,
+    );
+  });
+
+  it("trims advisory client fields and drops empty ones", () => {
+    expect(
+      normalizeClientDescriptor({
+        platform: "web",
+        os: "  ",
+        browser: "y".repeat(40),
+      }),
+    ).toEqual({ platform: "web", browser: "y".repeat(32) });
+    expect(normalizeClientDescriptor({})).toBeUndefined();
+    expect(normalizeClientDescriptor(undefined)).toBeUndefined();
+  });
+});

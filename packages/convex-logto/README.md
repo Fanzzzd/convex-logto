@@ -209,6 +209,9 @@ export const {
   refresh,
   signOut,
   signOutEverywhere,
+  listSessions,
+  renameSession,
+  revokeSession,
   sessionValid,
 } = logtoSessionApi(components.logto);
 ```
@@ -227,7 +230,8 @@ root.render(
 
 Config lives on the deployment (`LOGTO_ENDPOINT`, `LOGTO_APP_ID`,
 `LOGTO_CLIENT_SECRET`); `useLogtoAuth()` from `convex-logto/react-session` has
-the bridge actions plus `signOutEverywhere()`. Full guide — threat model, token
+the bridge actions plus `signOutEverywhere()` and the session list
+(`listSessions()` / `renameSession()` / `revokeSession()`). Full guide — threat model, token
 dance, subject-level revocation enforcement with
 `assertSubjectHasActiveSession` — in the
 [Session mode docs][session-mode-docs] and the runnable
@@ -240,6 +244,14 @@ batches. Other devices drop through reactive revocation, while their separate
 Logto browser cookies cannot be erased by the RP and can be used to start a new
 sign-in. The returned `count` is the number of physical session rows removed by
 the completed cleanup, not the moment at which revocation became effective.
+
+`listSessions()` returns the caller's own sessions for a "where am I signed in"
+screen — `{ sessionId, current, createdAt, lastRefreshedAt, label?, client?,
+deviceBound }`, newest first — with `renameSession()` and `revokeSession()` for
+naming a device or signing one out. The subject always comes from the presented
+token, so another user's `sessionId` resolves to `session_not_found`. The optional
+`clientDescriptor` provider prop supplies the advisory device description; the
+library never reads a User-Agent or IP.
 
 Apps with a same-site server endpoint can additionally mount
 `createLogtoSessionCookieHandler()` and pass
@@ -330,7 +342,7 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 | `createLogtoBackchannelLogoutHandler(opts)` | `convex-logto` | Builds the back-channel Convex HTTP action for custom route composition. |
 | `verifyLogtoLogoutToken(token, opts?)` | `convex-logto` | Low-level RS256/PS256 Logout Token verification against Logto's JWKS. |
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
-| `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](#session-mode): builds the six public auth functions backed by the session component. |
+| `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](#session-mode): builds the nine public auth functions backed by the session component. |
 | `assertSubjectHasActiveSession(ctx, component)` | `convex-logto` | Session mode: throw unless the authenticated subject has at least one active component Session; this does not bind the current bearer to one Session. A bounded scan can transiently throw `session_liveness_scan_incomplete` while bulk cleanup progresses. |
 | `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Deprecated compatibility alias for `assertSubjectHasActiveSession`. |
 | `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Four-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
@@ -338,11 +350,11 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
 | default | `convex-logto/convex.config` | The session component, for `app.use(logto)`. |
 | `ConvexLogtoSessionProvider` | `convex-logto/react-session` | Session mode's provider — no Logto SDK; talks to your `logtoSessionApi` functions. |
-| `useLogtoAuth()` | `convex-logto/react-session` | Session auth actions, including `signOutEverywhere({ postLogoutRedirectUri? })`. |
+| `useLogtoAuth()` | `convex-logto/react-session` | Session auth actions, including `signOutEverywhere({ postLogoutRedirectUri? })` and `listSessions()` / `renameSession()` / `revokeSession()`. |
 | `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `configQuery` model; no callback route. |
 | `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signIn()` defaults to the provider's `redirectUri`. |
 | `ConvexLogtoSessionProvider` | `convex-logto/native-session` | Expo session mode via SecureStore + system-browser deep links; same server component and actions. |
-| `useLogtoAuth()` | `convex-logto/native-session` | Native session auth/actions, including federated `signOutEverywhere(opts?)`. |
+| `useLogtoAuth()` | `convex-logto/native-session` | Native session auth/actions, including federated `signOutEverywhere(opts?)` and the same session list. |
 
 ### Next.js note
 

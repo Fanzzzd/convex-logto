@@ -1,3 +1,4 @@
+import type { GenericActionCtx } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import {
   action,
@@ -9,7 +10,7 @@ import {
   query,
 } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
-import type { Doc, Id } from "./_generated/dataModel.js";
+import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import {
   DEFAULT_REUSE_WINDOW_MS,
   SESSION_GC_AFTER_MS,
@@ -25,8 +26,11 @@ import {
   generatePkce,
   generateToken,
   hashToken,
+  SESSION_LIST_LIMIT,
   isOutcomeUnknownError,
   isPreviousTokenWithinReuseWindow,
+  normalizeClientDescriptor,
+  normalizeSessionLabel,
   outcomeUnknown,
   rotateTokenHashes,
   sessionReuseDetectedError,
@@ -51,6 +55,12 @@ const TOKEN_ENDPOINT_TIMEOUT_MS = 10 * 1000;
 const MAX_TOKEN_RESPONSE_BYTES = 256 * 1024;
 const tokenResponseDecoder = /* @__PURE__ */ new TextDecoder("utf-8", {
   fatal: true,
+});
+
+const clientDescriptorValidator = v.object({
+  platform: v.optional(v.string()),
+  os: v.optional(v.string()),
+  browser: v.optional(v.string()),
 });
 
 const devicePublicKeyValidator = v.object({
@@ -516,6 +526,8 @@ export const exchange = action({
     state: v.string(),
     redirectUri: v.string(),
     devicePublicKey: v.optional(devicePublicKeyValidator),
+    label: v.optional(v.string()),
+    client: v.optional(clientDescriptorValidator),
   },
   returns: v.object({
     idToken: v.string(),
@@ -558,6 +570,8 @@ export const exchange = action({
         lastIdToken: tokens.id_token,
         lastIdTokenExp: claims.expiresAtMs,
         devicePublicKey: args.devicePublicKey,
+        label: normalizeSessionLabel(args.label),
+        client: normalizeClientDescriptor(args.client),
         now,
       },
     );
@@ -612,6 +626,8 @@ export const createSession = internalMutation({
     lastIdToken: v.string(),
     lastIdTokenExp: v.number(),
     devicePublicKey: v.optional(devicePublicKeyValidator),
+    label: v.optional(v.string()),
+    client: v.optional(clientDescriptorValidator),
     now: v.number(),
   },
   returns: v.string(),
@@ -1277,6 +1293,251 @@ export const deleteSubjectSessionsByTokenBatch = internalMutation({
     return { deleted, done: true };
   },
 });
+
+// --- session management -----------------------------------------------------
+
+type SessionSummary = {
+  sessionId: string;
+  current: boolean;
+  createdAt: number;
+  lastRefreshedAt: number;
+  label?: string;
+  client?: { platform?: string; os?: string; browser?: string };
+  deviceBound: boolean;
+};
+
+const sessionSummaryValidator = v.object({
+  sessionId: v.string(),
+  /** True for the session whose token authenticated this call. */
+  current: v.boolean(),
+  createdAt: v.number(),
+  lastRefreshedAt: v.number(),
+  label: v.optional(v.string()),
+  client: v.optional(clientDescriptorValidator),
+  /** Whether this session requires a device proof to refresh or sign out. */
+  deviceBound: v.boolean(),
+});
+
+/**
+ * Resolve a session token to its owner, applying the same authentication rules
+ * as the destructive paths: a superseded generation inside the reuse window is
+ * accepted, a logically revoked session is not, and a bound session needs its
+ * proof. Never accepts a client-supplied subject.
+ */
+export const resolveCallerSession = internalQuery({
+  args: {
+    presentedHash: v.string(),
+    now: v.number(),
+    reuseWindowMs: v.number(),
+  },
+  returns: v.object({ sessionId: v.string(), subject: v.string() }),
+  handler: async (ctx, args) => {
+    const match = await resolveSessionToken(ctx.db, args.presentedHash);
+    if (
+      !match ||
+      !tokenMatchIsWithinReuseWindow(match, args.now, args.reuseWindowMs) ||
+      (await sessionIsLogicallyRevoked(ctx.db, match.session))
+    ) {
+      throw terminal(
+        "session_not_found",
+        "No active session for this token — it was signed out or revoked. Sign in again.",
+      );
+    }
+    return { sessionId: match.session._id, subject: match.session.subject };
+  },
+});
+
+export const listSubjectSessions = internalQuery({
+  args: { subject: v.string(), callerSessionId: v.string() },
+  returns: v.object({
+    sessions: v.array(sessionSummaryValidator),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const cutoff = await subjectRevokedAt(ctx.db, args.subject);
+    const rows = await ctx.db
+      .query("sessions")
+      .withIndex("by_subject_createdAt", (q) =>
+        q
+          .eq("subject", args.subject)
+          .gt("createdAt", cutoff ?? Number.MIN_SAFE_INTEGER),
+      )
+      .order("desc")
+      .take(SESSION_LIST_LIMIT + 1);
+    const sidCutoffs = new Map<string, number | undefined>();
+    const sessions = [];
+    for (const session of rows.slice(0, SESSION_LIST_LIMIT)) {
+      let sidCutoff: number | undefined;
+      if (session.sid === undefined) {
+        sidCutoff = undefined;
+      } else if (sidCutoffs.has(session.sid)) {
+        sidCutoff = sidCutoffs.get(session.sid);
+      } else {
+        sidCutoff = await sidRevokedAt(ctx.db, session.sid);
+        sidCutoffs.set(session.sid, sidCutoff);
+      }
+      // A row awaiting bounded cleanup is already dead; it must not appear in a
+      // list whose entire purpose is telling the user where they are signed in.
+      if (sidCutoff !== undefined && session.createdAt <= sidCutoff) continue;
+      sessions.push({
+        sessionId: session._id,
+        current: session._id === args.callerSessionId,
+        createdAt: session.createdAt,
+        lastRefreshedAt: session.lastRefreshedAt,
+        ...(session.label === undefined ? {} : { label: session.label }),
+        ...(session.client === undefined ? {} : { client: session.client }),
+        deviceBound: session.devicePublicKey !== undefined,
+      });
+    }
+    return { sessions, truncated: rows.length > SESSION_LIST_LIMIT };
+  },
+});
+
+export const setSessionLabel = internalMutation({
+  args: {
+    subject: v.string(),
+    targetSessionId: v.string(),
+    label: v.optional(v.string()),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const target = await loadOwnedSession(ctx.db, args);
+    await ctx.db.patch(target._id, { label: args.label });
+    return true;
+  },
+});
+
+export const deleteOwnedSession = internalMutation({
+  args: { subject: v.string(), targetSessionId: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const target = await loadOwnedSession(ctx.db, args);
+    await deleteSessionWithGenerations(ctx.db, target._id);
+    return true;
+  },
+});
+
+/**
+ * Load a session the caller's subject owns. The subject is always derived from
+ * the caller's own token, so a target id from another user resolves to
+ * `session_not_found` rather than leaking that it exists.
+ */
+async function loadOwnedSession(
+  db: DatabaseReader,
+  args: { subject: string; targetSessionId: string },
+): Promise<Doc<"sessions">> {
+  const id = db.normalizeId("sessions", args.targetSessionId);
+  const target = id === null ? null : await db.get(id);
+  if (
+    target === null ||
+    target.subject !== args.subject ||
+    (await sessionIsLogicallyRevoked(db, target))
+  ) {
+    throw terminal("session_not_found", "That session no longer exists.");
+  }
+  return target;
+}
+
+/**
+ * The caller's own sessions. Authenticated by session token, so the subject is
+ * never client-supplied. A snapshot rather than a reactive query: the token
+ * rotates roughly every ID-token lifetime, and a subscription keyed on a
+ * rotating credential would resubscribe on every rotation.
+ */
+export const listSessions = action({
+  args: {
+    sessionToken: v.string(),
+    deviceProof: v.optional(v.string()),
+    now: v.number(),
+    reuseWindowMs: v.number(),
+  },
+  returns: v.object({
+    sessions: v.array(sessionSummaryValidator),
+    truncated: v.boolean(),
+  }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ sessions: SessionSummary[]; truncated: boolean }> => {
+    const caller = await authenticateCaller(ctx, args);
+    return await ctx.runQuery(internal.lib.listSubjectSessions, {
+      subject: caller.subject,
+      callerSessionId: caller.sessionId,
+    });
+  },
+});
+
+/** Rename one of the caller's own sessions. */
+export const renameSession = action({
+  args: {
+    sessionToken: v.string(),
+    deviceProof: v.optional(v.string()),
+    targetSessionId: v.string(),
+    label: v.optional(v.string()),
+    now: v.number(),
+    reuseWindowMs: v.number(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args): Promise<boolean> => {
+    const caller = await authenticateCaller(ctx, args);
+    return await ctx.runMutation(internal.lib.setSessionLabel, {
+      subject: caller.subject,
+      targetSessionId: args.targetSessionId,
+      label: normalizeSessionLabel(args.label),
+    });
+  },
+});
+
+/**
+ * Revoke one of the caller's own sessions — the "sign out that other device"
+ * operation. The proof requirement applies to the *caller's* session, not the
+ * target: requiring the target's key would make it impossible to revoke a lost
+ * device, which is the main reason this exists.
+ */
+export const revokeSession = action({
+  args: {
+    sessionToken: v.string(),
+    deviceProof: v.optional(v.string()),
+    targetSessionId: v.string(),
+    now: v.number(),
+    reuseWindowMs: v.number(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args): Promise<boolean> => {
+    const caller = await authenticateCaller(ctx, args);
+    return await ctx.runMutation(internal.lib.deleteOwnedSession, {
+      subject: caller.subject,
+      targetSessionId: args.targetSessionId,
+    });
+  },
+});
+
+/** Hash, verify the device proof, and resolve the caller's session and subject. */
+async function authenticateCaller(
+  ctx: GenericActionCtx<DataModel>,
+  args: {
+    sessionToken: string;
+    deviceProof?: string;
+    now: number;
+    reuseWindowMs: number;
+  },
+): Promise<{ sessionId: string; subject: string }> {
+  const presentedHash = await hashToken(args.sessionToken);
+  const devicePublicKey: DevicePublicKey | null = await ctx.runQuery(
+    internal.lib.devicePublicKeyForToken,
+    { presentedHash },
+  );
+  await assertDeviceProof({
+    publicKey: devicePublicKey ?? undefined,
+    sessionToken: args.sessionToken,
+    proof: args.deviceProof,
+  });
+  return await ctx.runQuery(internal.lib.resolveCallerSession, {
+    presentedHash,
+    now: args.now,
+    reuseWindowMs: args.reuseWindowMs,
+  });
+}
 
 /** Kill every session of a subject — webhook revocation (User.Deleted / suspension). */
 export const killSubjectSessions = action({

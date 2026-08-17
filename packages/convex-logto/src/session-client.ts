@@ -10,7 +10,11 @@ import {
   SessionDeviceBindingError,
   type SessionDeviceBinding,
 } from "./session-device";
-import type { LogtoSessionApi } from "./session";
+import type {
+  LogtoSessionApi,
+  LogtoSessionClientDescriptor,
+  LogtoSessionSummary,
+} from "./session";
 
 /** Where the short-lived ID token persists. The session token is always localStorage. */
 export type TokenStorageKind = "session" | "memory" | "local";
@@ -105,6 +109,51 @@ function signOutEverywhereUpgradeError(
   return new SessionApiUpgradeError(
     "convex-logto: signOutEverywhere is unavailable because sessionApi does not export it. Re-export signOutEverywhere from logtoSessionApi(components.logto) in your Convex auth module, then deploy your Convex functions.",
     cause === undefined ? undefined : { cause },
+  );
+}
+
+/** Generic version of the same rolling-upgrade hint for the newer actions. */
+function sessionApiUpgradeError(
+  name: string,
+  cause?: unknown,
+): SessionApiUpgradeError {
+  return new SessionApiUpgradeError(
+    `convex-logto: ${name} is unavailable because sessionApi does not export it. ` +
+      `Re-export ${name} from logtoSessionApi(components.logto) in your Convex auth ` +
+      "module, then deploy your Convex functions.",
+    cause === undefined ? undefined : { cause },
+  );
+}
+
+/**
+ * Drop blank fields (and an all-blank descriptor) so a partially-filled app
+ * option never stores whitespace the server would only have to trim.
+ */
+function normalizeClientDescriptor(
+  descriptor: LogtoSessionClientDescriptor | undefined,
+): LogtoSessionClientDescriptor | undefined {
+  if (descriptor === undefined) return undefined;
+  const entries = (["platform", "os", "browser"] as const).flatMap((key) => {
+    const value = descriptor[key]?.trim();
+    return value === undefined || value === "" ? [] : [[key, value] as const];
+  });
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+}
+
+function isMissingSessionAction(error: unknown, name: string): boolean {
+  const errorData: unknown =
+    error instanceof ConvexError ? error.data : undefined;
+  const data = isRecord(errorData) ? errorData : undefined;
+  // The cookie handler answers with this code; a direct Convex call surfaces the
+  // deployment's own "function not found".
+  if (data?.code === "session_management_unavailable") return true;
+  const message = [
+    error instanceof Error ? error.message : "",
+    typeof data?.message === "string" ? data.message : "",
+  ].join(" ");
+  return (
+    message.includes(name) &&
+    /(?:function.*not found|could not find.*function)/i.test(message)
   );
 }
 
@@ -426,6 +475,13 @@ export type SessionEngineOptions = {
   /** Opt-in proof-of-possession key; absent keeps the legacy unbound flow. */
   deviceBinding?: SessionDeviceBinding;
   /**
+   * Self-reported description of this client, stamped on the session at sign-in
+   * so a user can recognise it in `listSessions()`. The app supplies it — the
+   * library never sniffs a User-Agent or IP — and it is advisory display data,
+   * never authenticated.
+   */
+  clientDescriptor?: LogtoSessionClientDescriptor;
+  /**
    * The session credential lives somewhere this code cannot delete — the
    * HttpOnly cookie of the same-site transport. Sign-out then has no local
    * fallback: if the server does not revoke, the user is still signed in, so
@@ -621,6 +677,7 @@ export class SessionAuthEngine {
     }
     try {
       const devicePublicKey = await this.options.deviceBinding?.getPublicKey();
+      const client = normalizeClientDescriptor(this.options.clientDescriptor);
       // Nothing has been minted yet, so simply abandoning the code is enough.
       if (generation !== this.authGeneration) return;
       const result = await this.retrying(() =>
@@ -629,6 +686,7 @@ export class SessionAuthEngine {
           state,
           redirectUri,
           ...(devicePublicKey === undefined ? {} : { devicePublicKey }),
+          ...(client === undefined ? {} : { client }),
         }),
       );
       if (generation !== this.authGeneration) {
@@ -985,6 +1043,94 @@ export class SessionAuthEngine {
           postLogoutRedirectUri,
         }),
     });
+  }
+
+  /**
+   * The caller's own sessions, for a "where am I signed in" screen. A snapshot,
+   * not a subscription: the credential it authenticates with rotates, so a
+   * reactive query keyed on it would resubscribe on every rotation. Call it
+   * again after `revokeSession` or `renameSession`.
+   */
+  async listSessions(): Promise<{
+    sessions: LogtoSessionSummary[];
+    truncated: boolean;
+  }> {
+    const action = this.options.api.listSessions;
+    if (action === undefined) throw sessionApiUpgradeError("listSessions");
+    const credential = await this.sessionCallCredential("listSessions");
+    return await this.callSessionAction("listSessions", () =>
+      this.options.transport.action(action, credential),
+    );
+  }
+
+  /** Rename one of the caller's own sessions. Pass `undefined` to clear it. */
+  async renameSession(
+    targetSessionId: string,
+    label: string | undefined,
+  ): Promise<boolean> {
+    const action = this.options.api.renameSession;
+    if (action === undefined) throw sessionApiUpgradeError("renameSession");
+    const credential = await this.sessionCallCredential("renameSession");
+    return await this.callSessionAction("renameSession", () =>
+      this.options.transport.action(action, {
+        ...credential,
+        targetSessionId,
+        ...(label === undefined ? {} : { label }),
+      }),
+    );
+  }
+
+  /**
+   * Revoke one of the caller's own sessions. Revoking the current one leaves
+   * this client's credentials in place — call `signOut()` for that.
+   */
+  async revokeSession(targetSessionId: string): Promise<boolean> {
+    const action = this.options.api.revokeSession;
+    if (action === undefined) throw sessionApiUpgradeError("revokeSession");
+    const credential = await this.sessionCallCredential("revokeSession");
+    return await this.callSessionAction("revokeSession", () =>
+      this.options.transport.action(action, { ...credential, targetSessionId }),
+    );
+  }
+
+  /**
+   * The current session token plus its device proof — the argument prefix every
+   * session-management action authenticates with.
+   */
+  private async sessionCallCredential(
+    name: string,
+  ): Promise<{ sessionToken: string; deviceProof?: string }> {
+    await this.prepareStorage();
+    const session = this.options.storage.readSession();
+    if (session === null) {
+      throw new Error(
+        `convex-logto: ${name} requires an active session. Sign in first.`,
+      );
+    }
+    const deviceProof = await this.options.deviceBinding?.sign(session.token);
+    return {
+      sessionToken: session.token,
+      ...(deviceProof === undefined ? {} : { deviceProof }),
+    };
+  }
+
+  /**
+   * Translate "no such function" from a deployment whose app module predates
+   * the action into the rolling-upgrade hint, the same way `signOutEverywhere`
+   * does — the server-side check alone can't see a stale re-export.
+   */
+  private async callSessionAction<Result>(
+    name: string,
+    call: () => Promise<Result>,
+  ): Promise<Result> {
+    try {
+      return await call();
+    } catch (error) {
+      if (isMissingSessionAction(error, name)) {
+        throw sessionApiUpgradeError(name, error);
+      }
+      throw error;
+    }
   }
 
   async signOutEverywhere(options?: {
