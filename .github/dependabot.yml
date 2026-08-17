@@ -29,6 +29,18 @@ updates:
       - dependency-name: expo-*
       - dependency-name: react-native
       - dependency-name: "@expo/*"
+      # Also SDK-pinned, just not under an `expo` name: `expo@56` bundles
+      # async-storage 2.2.0 (see expo/bundledNativeModules.json). Nothing in CI
+      # builds native code, so a bump to 3.x goes green while
+      # `npx expo install --check` would reject it.
+      - dependency-name: "@react-native-async-storage/async-storage"
+      # TypeScript 7 typechecks this workspace, but tsup 8.5.1 bundles
+      # rollup-plugin-dts 6.1.1, which crashes against it — and because it is
+      # bundled, a pnpm override cannot replace it. Revisit when tsup ships with
+      # rollup-plugin-dts >= 6.5 (issue #102).
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
