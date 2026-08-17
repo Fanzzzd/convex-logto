@@ -1,5 +1,4 @@
 node_modules
 dist
 .convex
-convex/_generated
 .env.local
