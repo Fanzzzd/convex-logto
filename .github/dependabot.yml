@@ -20,6 +20,25 @@ updates:
           - react-dom
           - "@types/react"
           - "@types/react-dom"
+      # @tanstack/react-start pins an *exact* @tanstack/react-router (1.168.46
+      # depends on react-router 1.170.29), so bumping either one alone installs
+      # a second copy of the router. The app's `createFileRoute` then comes from
+      # a build the Start plugin never augmented and loses the `server` option —
+      # which is how #97 and #98 both failed `docs#check-types`. They can only
+      # move together.
+      tanstack-router:
+        patterns:
+          - "@tanstack/react-router"
+          - "@tanstack/react-router-*"
+          - "@tanstack/react-start"
+          - "@tanstack/react-start-*"
+          - "@tanstack/router-plugin"
+      # Same shape: fumadocs-ui peer-depends on an *exact* fumadocs-core
+      # (16.10.2 requires core 16.10.2), and fumadocs-mdx tracks core's range.
+      # A caret keeps them aligned within a major; across one it would not.
+      fumadocs:
+        patterns:
+          - fumadocs-*
     ignore:
       # Expo SDK modules are versioned in lockstep with the SDK: `expo@56`
       # bundles `expo-crypto@~56.0.4`, and a module from another SDK breaks the
