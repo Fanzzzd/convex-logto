@@ -523,6 +523,56 @@ const callSync = (
     payload,
   });
 
+describe("Logto payload shapes", () => {
+  it("accepts a User.Created whose lastSignInAt is null", async () => {
+    // `users.last_sign_in_at` is nullable: a user who has never signed in
+    // serialises as null. Rejecting it would drop a signed, authentic delivery.
+    const handler = captureWebhookRoute({ signingKey });
+    const payload = JSON.stringify(
+      freshPayload({
+        data: {
+          id: "user_abc",
+          primaryEmail: "a@b.com",
+          lastSignInAt: null,
+          createdAt: 1_700_000_000_000,
+        },
+      }),
+    );
+    const runMutation = vi.fn();
+    const res = await handler(
+      { runMutation },
+      post(sign(signingKey, payload), payload),
+    );
+
+    expect(res.status).toBe(200);
+    expect(runMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a User.Deleted with no data key, using the route params", async () => {
+    // A 204 delete route serialises no `data` at all. Dropping it would skip
+    // the session revocation that deletion is supposed to trigger.
+    const handler = captureWebhookRoute({ signingKey });
+    const payload = JSON.stringify({
+      hookId: "h1",
+      event: "User.Deleted",
+      createdAt: new Date().toISOString(),
+      path: "/users/:userId",
+      method: "DELETE",
+      status: 204,
+      params: { userId: "user_abc" },
+      matchedRoute: "/users/:userId",
+    });
+    const runMutation = vi.fn();
+    const res = await handler(
+      { runMutation },
+      post(sign(signingKey, payload), payload),
+    );
+
+    expect(res.status).toBe(200);
+    expect(runMutation).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("logtoSync dispatch", () => {
   it("dispatches an event to its handler with (ctx, user, payload)", async () => {
     const seen: Array<{ ctx: unknown; user: unknown; payload: unknown }> = [];

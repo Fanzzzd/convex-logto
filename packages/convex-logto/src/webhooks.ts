@@ -22,8 +22,8 @@ export type LogtoUserEntity = {
   customData?: Record<string, unknown>;
   identities?: Record<string, unknown>;
   isSuspended?: boolean;
-  lastSignInAt?: number;
-  createdAt?: number;
+  lastSignInAt?: number | null;
+  createdAt?: number | null;
   applicationId?: string | null;
 };
 
@@ -77,9 +77,11 @@ function isOptionalNullableString(value: unknown): boolean {
   return value === undefined || value === null || typeof value === "string";
 }
 
-function isOptionalFiniteNumber(value: unknown): boolean {
+function isOptionalNullableFiniteNumber(value: unknown): boolean {
   return (
-    value === undefined || (typeof value === "number" && Number.isFinite(value))
+    value === undefined ||
+    value === null ||
+    (typeof value === "number" && Number.isFinite(value))
   );
 }
 
@@ -95,8 +97,11 @@ function isLogtoUserEntity(value: unknown): value is LogtoUserEntity {
     (value.identities === undefined || isRecord(value.identities)) &&
     (value.isSuspended === undefined ||
       typeof value.isSuspended === "boolean") &&
-    isOptionalFiniteNumber(value.lastSignInAt) &&
-    isOptionalFiniteNumber(value.createdAt) &&
+    // `users.last_sign_in_at` is nullable in Logto: a user who has never signed
+    // in serialises as `null`. Rejecting that would drop a signature-verified
+    // delivery — including the `User.Deleted` one that revokes their sessions.
+    isOptionalNullableFiniteNumber(value.lastSignInAt) &&
+    isOptionalNullableFiniteNumber(value.createdAt) &&
     isOptionalNullableString(value.applicationId)
   );
 }
@@ -198,7 +203,9 @@ function isLogtoWebhookPayload(value: unknown): value is LogtoWebhookPayload {
     const dataUserId = entityId(candidate);
     const routeUserId = paramsUserId(candidate);
     return (
-      (candidate.data === null || isLogtoUserEntity(candidate.data)) &&
+      // A 204 delete route serialises no `data` key at all, so `undefined` and
+      // `null` must both mean "no entity, use the route params".
+      (candidate.data == null || isLogtoUserEntity(candidate.data)) &&
       (dataUserId !== undefined || routeUserId !== undefined) &&
       (dataUserId === undefined ||
         routeUserId === undefined ||
