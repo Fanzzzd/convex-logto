@@ -84,10 +84,10 @@
     "build": "tsup && tsc -p tsconfig.component.json",
     "check-types": "tsc --noEmit",
     "test": "vitest run",
-    "lint": "oxlint",
+    "lint": "oxlint --deny-warnings src",
     "format": "oxfmt src",
     "format:check": "oxfmt --check src",
-    "lint:package": "publint --strict && attw --pack --profile node16 --ignore-rules cjs-resolves-to-esm",
+    "lint:package": "pnpm run build && publint --strict && attw --pack --profile node16 --ignore-rules cjs-resolves-to-esm",
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {
@@ -118,20 +118,21 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.3",
     "@logto/react": "^4.0.14",
-    "@logto/rn": "^1.1.0",
+    "@logto/rn": "^1.2.0",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.2.3",
-    "convex": "^1.38.0",
+    "convex": "^1.44.0",
     "expo-secure-store": "^56.0.4",
     "expo-web-browser": "^56.0.5",
     "happy-dom": "^20.10.6",
-    "oxfmt": "^0.54.0",
-    "oxlint": "^1.69.0",
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0",
+    "oxlint-tsgolint": "^7.0.2001",
     "publint": "^0.3.21",
     "react": "^19.1.0",
     "react-dom": "^19.2.7",
     "tsup": "^8.5.1",
     "typescript": "^5.8.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.10"
   }
 }
