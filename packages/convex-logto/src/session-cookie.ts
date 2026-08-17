@@ -423,6 +423,13 @@ export function createLogtoSessionCookieHandler(
     request: Request,
     origin: string,
   ): Promise<Response> => {
+    // Sign-out must expire the cookie on *every* exit. It is the only credential
+    // in this mode and JavaScript cannot delete it, so a response without this
+    // header leaves the caller signed in while reporting a failure it cannot act
+    // on. Rejecting the request is not a reason to keep the session alive.
+    const clearing =
+      route === "sign-out" ? { "Set-Cookie": clearCookieHeader() } : undefined;
+
     const bodyResult = await readJsonObject(request);
     if (!bodyResult.ok) {
       return jsonResponse(
@@ -432,7 +439,10 @@ export function createLogtoSessionCookieHandler(
               ? "Request body is too large"
               : "Malformed JSON request body",
         },
-        { status: bodyResult.reason === "too_large" ? 413 : 400 },
+        {
+          status: bodyResult.reason === "too_large" ? 413 : 400,
+          ...(clearing === undefined ? {} : { headers: clearing }),
+        },
         origin,
       );
     }
@@ -501,8 +511,19 @@ export function createLogtoSessionCookieHandler(
           try {
             const signOutEverywhere = options.sessionApi.signOutEverywhere;
             if (everywhere && signOutEverywhere === undefined) {
-              throw new RequestValidationError(
-                "sessionApi must export signOutEverywhere before using this operation",
+              // Same 409 the deployed-but-missing case returns, so the client
+              // gets the upgrade guidance either way.
+              return jsonResponse(
+                {
+                  error: {
+                    kind: "terminal",
+                    code: "sign_out_everywhere_unavailable",
+                    message:
+                      "convex-logto: sessionApi must re-export signOutEverywhere from logtoSessionApi(components.logto), then deploy the Convex functions.",
+                  } satisfies SessionError,
+                },
+                { status: 409, headers },
+                origin,
               );
             }
             const result =
@@ -539,13 +560,30 @@ export function createLogtoSessionCookieHandler(
       throw new Error("convex-logto: unsupported cookie route.");
     } catch (error) {
       if (error instanceof RequestValidationError) {
-        return jsonResponse({ error: error.message }, { status: 400 }, origin);
+        return jsonResponse(
+          {
+            // Structured so the client can classify it instead of seeing a bare
+            // "responded 400" — that is how the signOutEverywhere upgrade hint
+            // used to get lost.
+            error: {
+              kind: "terminal",
+              code: "invalid_request",
+              message: error.message,
+            } satisfies SessionError,
+          },
+          {
+            status: 400,
+            ...(clearing === undefined ? {} : { headers: clearing }),
+          },
+          origin,
+        );
       }
       const data = errorData(error);
       const headers =
-        route === "token" && data?.kind === "terminal"
+        clearing ??
+        (route === "token" && data?.kind === "terminal"
           ? { "Set-Cookie": clearCookieHeader() }
-          : undefined;
+          : undefined);
       return actionErrorResponse(error, origin, headers);
     }
   };
