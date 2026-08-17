@@ -33,6 +33,12 @@ updates:
           - "@tanstack/react-start"
           - "@tanstack/react-start-*"
           - "@tanstack/router-plugin"
+      # Same shape: fumadocs-ui peer-depends on an *exact* fumadocs-core
+      # (16.10.2 requires core 16.10.2), and fumadocs-mdx tracks core's range.
+      # A caret keeps them aligned within a major; across one it would not.
+      fumadocs:
+        patterns:
+          - fumadocs-*
     ignore:
       # Expo SDK modules are versioned in lockstep with the SDK: `expo@56`
       # bundles `expo-crypto@~56.0.4`, and a module from another SDK breaks the
