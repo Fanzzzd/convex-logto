@@ -1,11 +1,16 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "tasks": {
-    "build": { "outputs": ["dist/**"] },
+    "build": {
+      "dependsOn": ["^build"],
+      "env": ["NEXT_PUBLIC_CONVEX_URL"],
+      "outputs": ["dist/**", ".next/**", ".output/**"]
+    },
     "check-types": { "dependsOn": ["^build"] },
-    "test": {},
+    "test": { "dependsOn": ["^build"] },
     "lint": {},
+    "format": { "cache": false },
     "format:check": {},
-    "lint:package": { "dependsOn": ["build"] }
+    "lint:package": {}
   }
 }
