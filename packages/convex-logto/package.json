@@ -116,7 +116,7 @@
     }
   },
   "devDependencies": {
-    "@arethetypeswrong/cli": "^0.18.3",
+    "@arethetypeswrong/cli": "^0.18.5",
     "@logto/react": "^4.0.14",
     "@logto/rn": "^1.2.0",
     "@types/react": "^19.1.10",
@@ -124,11 +124,11 @@
     "convex": "^1.44.0",
     "expo-secure-store": "^56.0.4",
     "expo-web-browser": "^56.0.5",
-    "happy-dom": "^20.10.6",
+    "happy-dom": "^20.11.2",
     "oxfmt": "^0.63.0",
     "oxlint": "^1.78.0",
     "oxlint-tsgolint": "^7.0.2001",
-    "publint": "^0.3.21",
+    "publint": "^0.3.23",
     "react": "^19.1.0",
     "react-dom": "^19.2.7",
     "tsup": "^8.5.1",
