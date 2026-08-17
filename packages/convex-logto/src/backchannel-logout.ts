@@ -3,7 +3,9 @@ import {
   type PublicHttpAction,
   httpActionGeneric,
 } from "convex/server";
+import { readBoundedBody } from "./component/http_body.js";
 import { readEndpointAndAppId, type LogtoAuthConfigOptions } from "./config";
+import { buildLogtoEndpointUrl } from "./component/endpoint";
 import type { LogtoSessionComponent } from "./session";
 
 const encoder = /* @__PURE__ */ new TextEncoder();
@@ -16,9 +18,20 @@ const MAX_TOKEN_AGE_MS = 5 * 60 * 1000;
 const MAX_FUTURE_SKEW_MS = 60 * 1000;
 const JWKS_CACHE_MS = 5 * 60 * 1000;
 const JWKS_MISS_REFRESH_INTERVAL_MS = 60 * 1000;
+const JWKS_FETCH_TIMEOUT_MS = 10 * 1000;
+const MAX_JWKS_BODY_BYTES = 256 * 1024;
+const MAX_JWKS_KEYS = 32;
 
 type SupportedAlgorithm = "RS256" | "PS256";
-type LogtoJwk = JsonWebKey & { kid?: string };
+type LogtoJwk = {
+  kty: "RSA";
+  n: string;
+  e: string;
+  kid?: string;
+  alg?: string;
+  use?: string;
+  key_ops?: string[];
+};
 
 export type LogtoLogoutTokenClaims = {
   issuer: string;
@@ -46,6 +59,12 @@ type JwksCacheEntry = {
   expiresAt: number;
   fetchedAt: number;
   promise: Promise<LogtoJwk[]>;
+};
+
+type LoadedJwks = {
+  keys: LogtoJwk[];
+  fromCache: boolean;
+  entry: JwksCacheEntry;
 };
 
 const jwksCache = new Map<string, JwksCacheEntry>();
@@ -95,34 +114,88 @@ function supportedAlgorithm(value: unknown): SupportedAlgorithm {
   return value;
 }
 
+function readLogtoJwk(value: unknown): LogtoJwk | undefined {
+  if (!isRecord(value)) return undefined;
+  const { kty, n, e, kid, alg, use, key_ops: keyOps } = value;
+  if (
+    kty !== "RSA" ||
+    typeof n !== "string" ||
+    typeof e !== "string" ||
+    (kid !== undefined && typeof kid !== "string") ||
+    (alg !== undefined && typeof alg !== "string") ||
+    (use !== undefined && typeof use !== "string") ||
+    (keyOps !== undefined &&
+      (!Array.isArray(keyOps) ||
+        !keyOps.every((operation) => typeof operation === "string")))
+  ) {
+    return undefined;
+  }
+  return {
+    kty,
+    n,
+    e,
+    ...(kid === undefined ? {} : { kid }),
+    ...(alg === undefined ? {} : { alg }),
+    ...(use === undefined ? {} : { use }),
+    ...(keyOps === undefined ? {} : { key_ops: keyOps }),
+  };
+}
+
 async function fetchJwks(url: string): Promise<LogtoJwk[]> {
-  let response: Response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, JWKS_FETCH_TIMEOUT_MS);
   try {
-    response = await fetch(url, {
+    const response = await fetch(url, {
       headers: { Accept: "application/json" },
+      signal: controller.signal,
     });
-  } catch {
+    if (!response.ok) return invalid("Could not fetch the Logto JWKS.");
+    const bodyResult = await readBoundedBody(response, MAX_JWKS_BODY_BYTES);
+    if (!bodyResult.ok) return invalid("Could not read the Logto JWKS.");
+    let body: unknown;
+    try {
+      body = JSON.parse(decoder.decode(bodyResult.bytes));
+    } catch {
+      return invalid("Logto returned a malformed JWKS.");
+    }
+    if (!isRecord(body) || !Array.isArray(body.keys)) {
+      return invalid("Logto returned a malformed JWKS.");
+    }
+    if (body.keys.length > MAX_JWKS_KEYS) {
+      return invalid("Logto returned too many JWKS keys.");
+    }
+    const keys: LogtoJwk[] = [];
+    for (const candidate of body.keys) {
+      const key = readLogtoJwk(candidate);
+      if (key !== undefined) keys.push(key);
+    }
+    return keys;
+  } catch (error) {
+    if (error instanceof LogoutTokenValidationError) throw error;
     return invalid("Could not fetch the Logto JWKS.");
+  } finally {
+    clearTimeout(timeout);
   }
-  if (!response.ok) return invalid("Could not fetch the Logto JWKS.");
-  const body = (await response.json().catch(() => null)) as unknown;
-  if (!isRecord(body) || !Array.isArray(body.keys)) {
-    return invalid("Logto returned a malformed JWKS.");
-  }
-  return body.keys.filter(isRecord) as LogtoJwk[];
 }
 
 async function loadJwks(
   url: string,
   now: number,
-  force = false,
-): Promise<{ keys: LogtoJwk[]; fromCache: boolean; fetchedAt: number }> {
+  refreshAfter?: JwksCacheEntry,
+): Promise<LoadedJwks> {
   const cached = jwksCache.get(url);
-  if (!force && cached && cached.expiresAt > now) {
+  if (
+    cached !== undefined &&
+    (refreshAfter === undefined
+      ? cached.expiresAt > now
+      : cached !== refreshAfter)
+  ) {
     return {
       keys: await cached.promise,
       fromCache: true,
-      fetchedAt: cached.fetchedAt,
+      entry: cached,
     };
   }
   const promise = fetchJwks(url);
@@ -133,7 +206,7 @@ async function loadJwks(
   };
   jwksCache.set(url, entry);
   try {
-    return { keys: await promise, fromCache: false, fetchedAt: now };
+    return { keys: await promise, fromCache: false, entry };
   } catch (error) {
     if (jwksCache.get(url) === entry) jwksCache.delete(url);
     throw error;
@@ -147,9 +220,6 @@ function matchingKeys(
 ): LogtoJwk[] {
   return keys.filter(
     (key) =>
-      key.kty === "RSA" &&
-      typeof key.n === "string" &&
-      typeof key.e === "string" &&
       (kid === undefined || key.kid === kid) &&
       (key.alg === undefined || key.alg === algorithm) &&
       (key.use === undefined || key.use === "sig") &&
@@ -173,9 +243,9 @@ async function verifySignature(options: {
   if (
     candidates.length === 0 &&
     loaded.fromCache &&
-    options.now - loaded.fetchedAt >= JWKS_MISS_REFRESH_INTERVAL_MS
+    options.now - loaded.entry.fetchedAt >= JWKS_MISS_REFRESH_INTERVAL_MS
   ) {
-    loaded = await loadJwks(options.jwksUrl, options.now, true);
+    loaded = await loadJwks(options.jwksUrl, options.now, loaded.entry);
     candidates = matchingKeys(loaded.keys, options.algorithm, options.kid);
   }
   const signed = encoder.encode(
@@ -232,11 +302,16 @@ export async function verifyLogtoLogoutToken(
   const { endpoint, appId } = readEndpointAndAppId(options);
   const parts = logoutToken.split(".");
   if (parts.length !== 3) return invalid("Malformed logout token.");
-  const [compactHeader, compactPayload, compactSignature] = parts as [
-    string,
-    string,
-    string,
-  ];
+  const compactHeader = parts[0];
+  const compactPayload = parts[1];
+  const compactSignature = parts[2];
+  if (
+    compactHeader === undefined ||
+    compactPayload === undefined ||
+    compactSignature === undefined
+  ) {
+    return invalid("Malformed logout token.");
+  }
   const header = decodeJsonSegment(compactHeader);
   const payload = decodeJsonSegment(compactPayload);
   const algorithm = supportedAlgorithm(header.alg);
@@ -252,14 +327,14 @@ export async function verifyLogtoLogoutToken(
       signature,
       algorithm,
       ...(typeof kid === "string" ? { kid } : {}),
-      jwksUrl: `${endpoint}/oidc/jwks`,
+      jwksUrl: buildLogtoEndpointUrl(endpoint, "jwks"),
       now: Date.now(),
     }))
   ) {
     return invalid("Invalid logout token signature.");
   }
 
-  const issuer = `${endpoint}/oidc`;
+  const issuer = buildLogtoEndpointUrl(endpoint, "");
   if (payload.iss !== issuer || !audienceMatches(payload.aud, appId)) {
     return invalid("Logout token issuer or audience mismatch.");
   }
@@ -354,10 +429,6 @@ export function createLogtoBackchannelLogoutHandler(
     if (request.method !== "POST") {
       return errorResponse("Back-channel logout requires POST.");
     }
-    const contentLength = Number(request.headers.get("Content-Length"));
-    if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
-      return errorResponse("Payload too large.", 413);
-    }
     const contentType = request.headers
       .get("Content-Type")
       ?.split(";", 1)[0]
@@ -368,15 +439,14 @@ export function createLogtoBackchannelLogoutHandler(
         "Expected an application/x-www-form-urlencoded logout request.",
       );
     }
-    let rawBody: ArrayBuffer;
-    try {
-      rawBody = await request.arrayBuffer();
-    } catch {
-      return errorResponse("Could not read the logout request.");
-    }
-    if (rawBody.byteLength > MAX_BODY_BYTES) {
+    const bodyResult = await readBoundedBody(request, MAX_BODY_BYTES);
+    if (!bodyResult.ok && bodyResult.reason === "too_large") {
       return errorResponse("Payload too large.", 413);
     }
+    if (!bodyResult.ok) {
+      return errorResponse("Could not read the logout request.");
+    }
+    const rawBody = bodyResult.bytes;
     let form: URLSearchParams;
     try {
       form = new URLSearchParams(decoder.decode(rawBody));
@@ -406,13 +476,15 @@ export function createLogtoBackchannelLogoutHandler(
       // a first delivery so neither jti nor session existence leaks.
       if (!claimed) return successResponse();
       if (claims.sid !== undefined) {
-        await ctx.runMutation(options.sessions.lib.killSessionsBySid, {
+        await ctx.runAction(options.sessions.lib.killSessionsBySid, {
           sid: claims.sid,
         });
-      } else {
-        await ctx.runMutation(options.sessions.lib.killSubjectSessions, {
-          subject: claims.subject!,
+      } else if (claims.subject !== undefined) {
+        await ctx.runAction(options.sessions.lib.killSubjectSessions, {
+          subject: claims.subject,
         });
+      } else {
+        throw new Error("Verified logout token has no subject or sid.");
       }
       return successResponse();
     } catch {
