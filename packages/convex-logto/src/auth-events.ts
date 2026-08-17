@@ -18,7 +18,9 @@
  *   marks "the first authenticated query can run"; everything before it is
  *   setup.
  * - the `refresh_*` phases bracket a token refresh, including the silent ones
- *   that happen long after mount.
+ *   that happen long after mount. Exactly one of `refresh_succeeded`,
+ *   `refresh_failed`, or `refresh_abandoned` follows every `refresh_started`,
+ *   so a consumer pairing them never records a span that stays open.
  */
 export type LogtoAuthPhase =
   | "bootstrap_start"
@@ -29,6 +31,8 @@ export type LogtoAuthPhase =
   | "refresh_started"
   | "refresh_succeeded"
   | "refresh_failed"
+  /** A sign-out or revocation landed mid-refresh, so its result was discarded. */
+  | "refresh_abandoned"
   | "revoked"
   | "signed_out";
 

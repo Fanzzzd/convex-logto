@@ -11,6 +11,7 @@ import {
   type LogtoAuthEventSource,
 } from "./auth-events";
 import { classifySignInSearch, isSafeReturnTo } from "./callback";
+import { decodeJwtSegment } from "./component/core";
 import { normalizeHttpNavigationUrl } from "./component/endpoint";
 import {
   SessionDeviceBindingError,
@@ -53,8 +54,19 @@ export type SessionTransport = {
 export type SessionStorageAdapter = {
   /** Async stores hydrate their synchronous cache here before the engine reads it. */
   prepare?(): Promise<void>;
-  /** Wait for queued writes or surface a failed durable credential removal. */
+  /** Durability barrier: wait for queued writes. Every engine transition awaits it. */
   flush?(): Promise<void>;
+  /**
+   * Sign-out only: reject when a credential this area was asked to delete is
+   * still in the browser.
+   *
+   * Deliberately not part of `flush()`. A surviving credential must fail the
+   * sign-out that left it behind — and nothing else. Signing in again and
+   * refreshing are the two ways a user recovers from a storage fault, and both
+   * await the barrier, so folding the check into it locks the page out of its
+   * own recovery paths for as long as it lives.
+   */
+  assertCredentialsRemoved?(): Promise<void>;
   readonly sessionEventKey: string;
   readSession(): StoredSession | null;
   writeSession(session: StoredSession): void;
@@ -185,13 +197,11 @@ export function decodeJwtPayload(
   if (parts.length !== 3) return null;
   const payload = parts[1];
   if (payload === undefined) return null;
-  try {
-    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded: unknown = JSON.parse(atob(base64));
-    return isRecord(decoded) ? decoded : null;
-  } catch {
-    return null;
-  }
+  // Shared with the component's own ID-token decode so both halves read a
+  // non-ASCII claim the same way — and the same way the Logto SDK does, or
+  // migrating from bridge mode would start garbling names.
+  const decoded = decodeJwtSegment(payload);
+  return isRecord(decoded) ? decoded : null;
 }
 
 function idTokenExpMs(token: string): number {
@@ -389,7 +399,12 @@ export class SessionStorageArea {
     }
   }
 
+  /** Browser writes are synchronous, so there is nothing queued to wait for. */
   flush(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  assertCredentialsRemoved(): Promise<void> {
     if (this.pendingRemovals.size === 0) return Promise.resolve();
     return Promise.reject(
       new BrowserSessionStorageError(
@@ -912,6 +927,13 @@ export class SessionAuthEngine {
       }
       if (generation !== this.authGeneration) return null;
       this.events("refresh_started");
+      // Every fenced exit below closes the span it just opened: a consumer that
+      // pairs `refresh_started` with an end phase must never be left holding an
+      // open one because a sign-out raced the refresh.
+      const abandoned = (): null => {
+        this.events("refresh_abandoned");
+        return null;
+      };
       try {
         const result = await this.retrying(() =>
           this.options.transport.action(this.options.api.refresh, {
@@ -919,18 +941,18 @@ export class SessionAuthEngine {
             ...(deviceProof === undefined ? {} : { deviceProof }),
           }),
         );
-        if (generation !== this.authGeneration) return null;
+        if (generation !== this.authGeneration) return abandoned();
         this.options.storage.writeSession({
           token: result.sessionToken,
           sessionId: result.sessionId,
         });
         this.options.storage.writeIdToken(result.idToken);
         await this.flushStorageReporting();
-        if (generation !== this.authGeneration) return null;
+        if (generation !== this.authGeneration) return abandoned();
         this.events("refresh_succeeded");
         return result.idToken;
       } catch (error) {
-        if (generation !== this.authGeneration) return null;
+        if (generation !== this.authGeneration) return abandoned();
         const errorKind = sessionErrorKind(error);
         this.events("refresh_failed", { errorKind });
         if (errorKind === "terminal") {
@@ -1445,6 +1467,9 @@ export class SessionAuthEngine {
   ): Promise<Error | undefined> {
     try {
       await this.flushStorage();
+      // Sign-out is the one caller that must also fail over a credential that
+      // survived removal — see `assertCredentialsRemoved`.
+      await this.options.storage.assertCredentialsRemoved?.();
       return clearError;
     } catch (error) {
       const flushError = this.asError(error);

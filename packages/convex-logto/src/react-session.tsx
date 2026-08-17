@@ -321,14 +321,10 @@ function useAuthFromSession() {
 }
 
 /**
- * Reactive revocation: subscribe to the session's liveness; the moment the
- * server deletes the session row (sign-out elsewhere, reuse detection, a
- * webhook revocation), Convex pushes `false` and auth drops in real time.
- */
-/**
  * `convex_authenticated` is the phase an app actually cares about — the first
  * moment an authenticated query can run — and only Convex knows when it
- * happens. Mounted only when the app opted into events.
+ * happens. Always mounted: whether anything is measured is decided per event by
+ * the handler slot, so an `onAuthEvent` passed on a later render still works.
  */
 function ConvexAuthPhaseWatcher({ engine }: { engine: SessionAuthEngine }) {
   const { isAuthenticated } = useConvexAuth();
@@ -341,6 +337,11 @@ function ConvexAuthPhaseWatcher({ engine }: { engine: SessionAuthEngine }) {
   return null;
 }
 
+/**
+ * Reactive revocation: subscribe to the session's liveness; the moment the
+ * server deletes the session row (sign-out elsewhere, reuse detection, a
+ * webhook revocation), Convex pushes `false` and auth drops in real time.
+ */
 function RevocationWatcher() {
   const { engine, sessionApi } = useSessionContext("RevocationWatcher");
   const snapshot = useSyncExternalStore(

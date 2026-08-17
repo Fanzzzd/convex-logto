@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SessionAuthEngine,
   SessionStorageArea,
+  decodeJwtPayload,
   type SessionSnapshot,
   type SessionStorageAdapter,
   type SessionTransport,
@@ -37,11 +38,17 @@ function setURL(url: string): void {
 }
 
 function fakeIdToken(payload: Record<string, unknown>): string {
-  const enc = (o: unknown) =>
-    btoa(JSON.stringify(o))
+  const enc = (o: unknown) => {
+    // A real payload is base64url over UTF-8 bytes; `btoa` alone cannot even
+    // represent a non-ASCII claim.
+    let binary = "";
+    for (const byte of new TextEncoder().encode(JSON.stringify(o)))
+      binary += String.fromCharCode(byte);
+    return btoa(binary)
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
       .replace(/=+$/, "");
+  };
   return `${enc({ alg: "ES384" })}.${enc(payload)}.sig`;
 }
 
@@ -245,6 +252,39 @@ afterEach(() => {
 
 // --- storage -----------------------------------------------------------------
 
+describe("ID token claims", () => {
+  it("decodes a non-ASCII claim the way the Logto SDK does", () => {
+    // Bridge mode renders `王小明` correctly (`@logto/js` UTF-8-decodes), so an
+    // app migrating to session mode must not start garbling the same name.
+    const token = fakeIdToken({
+      sub: "u1",
+      name: "王小明",
+      family_name: "Müller",
+    });
+
+    expect(decodeJwtPayload(token)).toMatchObject({
+      name: "王小明",
+      family_name: "Müller",
+    });
+  });
+
+  it("carries the decoded claims into the snapshot the app reads", async () => {
+    const { engine } = makeHarness({
+      storedSession: { token: "t1", sessionId: "s1" },
+      storedIdToken: fakeIdToken({
+        sub: "u1",
+        name: "José Müller",
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      }),
+    });
+
+    engine.start();
+    await settled(engine);
+
+    expect(engine.getSnapshot().user?.name).toBe("José Müller");
+  });
+});
+
 describe("SessionStorageArea", () => {
   it("keeps the session in localStorage and the ID token in the chosen area", () => {
     const store = new SessionStorageArea("ns", "session");
@@ -312,11 +352,15 @@ describe("SessionStorageArea", () => {
 
     expect(store.readSession()).toBeNull();
     expect(removeAttempts).toBe(1);
-    await expect(store.flush()).rejects.toThrow(/durably remove/);
+    // The barrier stays clean — only sign-out may fail over a survivor.
+    await expect(store.flush()).resolves.toBeUndefined();
+    await expect(store.assertCredentialsRemoved()).rejects.toThrow(
+      /durably remove/,
+    );
 
     removalFails = false;
     store.clearAll();
-    await expect(store.flush()).resolves.toBeUndefined();
+    await expect(store.assertCredentialsRemoved()).resolves.toBeUndefined();
     expect(values.get("convex-logto:ns:session")).toBeUndefined();
     expect(removeAttempts).toBe(2);
   });
@@ -1157,6 +1201,67 @@ describe("signOut", () => {
     expect(coldHandlers.refresh).not.toHaveBeenCalled();
   });
 
+  it("lets the user sign in again after a durable removal failure", async () => {
+    // Signing in is how a user recovers from a storage fault. Before the
+    // barrier was split, the sign-out-era failure rejected sign-in's own flush
+    // forever: the authorize URL was minted, a server transaction row was
+    // spent, and the browser never left for Logto.
+    const sessionKey = "convex-logto:test:session";
+    const local = persistentStorageStub(
+      [[sessionKey, JSON.stringify({ token: "t1", sessionId: "s1" })]],
+      Number.POSITIVE_INFINITY,
+    );
+    const session = persistentStorageStub([], Number.POSITIVE_INFINITY);
+    vi.stubGlobal("localStorage", local.storage);
+    vi.stubGlobal("sessionStorage", session.storage);
+    const { engine, handlers } = makeHarness();
+    handlers.signOut.mockResolvedValue({});
+    await expect(engine.signOut({ federated: false })).rejects.toMatchObject({
+      name: "SessionSignOutError",
+    });
+    handlers.signIn.mockResolvedValue({
+      url: "https://auth.example.com/oidc/auth?state=st",
+    });
+
+    await engine.signIn();
+
+    expect(window.location.assign).toHaveBeenCalledWith(
+      "https://auth.example.com/oidc/auth?state=st",
+    );
+  });
+
+  it("keeps a completed refresh completed when a removal failed earlier", async () => {
+    // The rotation was consumed and the new credentials are stored. Reporting
+    // that as a failure would leave the tab unauthenticated while holding live
+    // credentials — on every refresh, for the life of the page.
+    const sessionKey = "convex-logto:test:session";
+    const local = persistentStorageStub(
+      [[sessionKey, JSON.stringify({ token: "t1", sessionId: "s1" })]],
+      Number.POSITIVE_INFINITY,
+    );
+    const session = persistentStorageStub([], Number.POSITIVE_INFINITY);
+    vi.stubGlobal("localStorage", local.storage);
+    vi.stubGlobal("sessionStorage", session.storage);
+    const { engine, storage, handlers } = makeHarness();
+    handlers.signOut.mockResolvedValue({});
+    await expect(engine.signOut({ federated: false })).rejects.toMatchObject({
+      name: "SessionSignOutError",
+    });
+    // Same engine, same poisoned storage area: sign in again and refresh.
+    storage.writeSession({ token: "t2", sessionId: "s1" });
+    const rotated = freshToken();
+    handlers.refresh.mockResolvedValue({
+      idToken: rotated,
+      sessionToken: "t3",
+      sessionId: "s1",
+    });
+
+    const served = await engine.fetchAccessToken(false);
+
+    expect(served).toBe(rotated);
+    expect(engine.getSnapshot().status).toBe("authenticated");
+  });
+
   it("prioritizes durable browser cleanup failure after successful revocation", async () => {
     const sessionKey = "convex-logto:test:session";
     const idTokenKey = "convex-logto:test:idToken";
@@ -1951,6 +2056,39 @@ describe("auth phase events", () => {
       elapsedMs: expect.any(Number),
       source: "cross-tab",
     });
+  });
+
+  it("closes the refresh span when a sign-out lands mid-refresh", async () => {
+    // A consumer pairing refresh_started with an end phase must never be left
+    // holding an open span because the generation fence discarded the result.
+    const refresh = deferred<{
+      idToken: string;
+      sessionToken: string;
+      sessionId: string;
+    }>();
+    const { engine, handlers, events } = eventHarness({
+      storedSession: { token: "t1", sessionId: "s1" },
+    });
+    handlers.refresh.mockReturnValue(refresh.promise);
+    handlers.signOut.mockResolvedValue({});
+    engine.start();
+    await vi.waitFor(() => expect(handlers.refresh).toHaveBeenCalled());
+
+    await engine.signOut({ federated: false });
+    refresh.resolve({
+      idToken: freshToken(),
+      sessionToken: "t2",
+      sessionId: "s1",
+    });
+    await vi.waitFor(() =>
+      expect(phasesOf(events)).toContain("refresh_abandoned"),
+    );
+
+    const refreshPhases = phasesOf(events).filter((phase) =>
+      phase.startsWith("refresh_"),
+    );
+    expect(refreshPhases).toEqual(["refresh_started", "refresh_abandoned"]);
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
   });
 
   it("reports convex_authenticated only when the provider says so", async () => {

@@ -186,6 +186,27 @@ export type DevicePublicKey = {
   y: string;
 };
 
+/**
+ * A JWT segment is base64url over **UTF-8 bytes**. `atob` alone yields one
+ * latin-1 character per byte, which silently mojibakes every multi-byte claim —
+ * a `name` of `王小明` decodes as `ç\u008e\u008bå°\u008fæ\u0098\u008e` — so the bytes
+ * have to go through a UTF-8 decode. Returns `undefined` rather than a partial
+ * result: nothing downstream can act on half-decoded claims.
+ */
+export function decodeJwtSegment(segment: string): unknown {
+  const bytes = fromBase64Url(segment);
+  if (bytes === null) return undefined;
+  try {
+    return JSON.parse(jwtSegmentDecoder.decode(bytes));
+  } catch {
+    return undefined;
+  }
+}
+
+const jwtSegmentDecoder = /* @__PURE__ */ new TextDecoder("utf-8", {
+  fatal: true,
+});
+
 function fromBase64Url(value: string): Uint8Array<ArrayBuffer> | null {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
   const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
@@ -345,13 +366,7 @@ export function decodeIdToken(
   if (payloadSegment === undefined) {
     throw terminal("invalid_id_token", "Logto returned a malformed ID token.");
   }
-  let payload: unknown;
-  try {
-    const base64 = payloadSegment.replace(/-/g, "+").replace(/_/g, "/");
-    payload = JSON.parse(atob(base64));
-  } catch {
-    throw terminal("invalid_id_token", "Logto returned a malformed ID token.");
-  }
+  const payload = decodeJwtSegment(payloadSegment);
   if (!isRecord(payload)) {
     throw terminal("invalid_id_token", "Logto returned a malformed ID token.");
   }
