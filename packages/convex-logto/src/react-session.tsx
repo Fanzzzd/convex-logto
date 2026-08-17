@@ -24,6 +24,7 @@ import {
   type SessionTransport,
   type TokenStorageKind,
 } from "./session-client";
+import type { LogtoAuthEventHandler } from "./auth-events";
 import { createSessionDeviceBinding } from "./session-device";
 import {
   createCookieSessionMarker,
@@ -122,6 +123,12 @@ export type ConvexLogtoSessionProviderProps = {
    * handlers; errors are also logged to the console.
    */
   onAuthError?: (error: Error) => void;
+  /**
+   * Opt-in phase timings for the auth bootstrap — `bootstrap_start` through
+   * `convex_authenticated`, plus refresh, revocation and sign-out. Absent means
+   * nothing is measured or emitted. See [`LogtoAuthEvent`](./auth-events).
+   */
+  onAuthEvent?: LogtoAuthEventHandler;
   children: ReactNode;
 };
 
@@ -151,6 +158,7 @@ export function ConvexLogtoSessionProvider({
   initialSessionId,
   reactiveRevocation = true,
   onAuthError,
+  onAuthEvent,
   children,
 }: ConvexLogtoSessionProviderProps) {
   const usesCookieTransport = cookieTransport !== undefined;
@@ -181,11 +189,16 @@ export function ConvexLogtoSessionProvider({
   const navigateRef = useRef(navigate);
   const onAuthErrorRef = useRef(onAuthError);
   const clientDescriptorRef = useRef(clientDescriptor);
+  const onAuthEventRef = useRef(onAuthEvent);
   useEffect(() => {
     navigateRef.current = navigate;
     onAuthErrorRef.current = onAuthError;
     clientDescriptorRef.current = clientDescriptor;
   });
+  // Assigned during render, not in an effect: child effects run before the
+  // parent's, so the `convex_authenticated` watcher below would emit into a
+  // ref that still held the previous render's handler.
+  onAuthEventRef.current = onAuthEvent;
 
   const engine = useMemo(() => {
     // Namespace storage by deployment so two dev apps on the same origin
@@ -225,6 +238,11 @@ export function ConvexLogtoSessionProvider({
         else window.location.replace(to);
       },
       onAuthError: (error) => onAuthErrorRef.current?.(error),
+      // Always wired, always through the ref: making this conditional would put
+      // the handler's presence in the memo's dependencies, and an app that
+      // enables telemetry from an effect would rebuild the engine mid-mount.
+      // The cost when no handler is set is one ref read per phase.
+      onAuthEvent: onAuthEventRef,
     });
   }, [
     client,
@@ -262,6 +280,7 @@ export function ConvexLogtoSessionProvider({
     <SessionContext.Provider value={contextValue}>
       <ConvexProviderWithAuth client={client} useAuth={useAuthFromSession}>
         {reactiveRevocation ? <RevocationWatcher /> : null}
+        <ConvexAuthPhaseWatcher engine={engine} />
         {children}
       </ConvexProviderWithAuth>
     </SessionContext.Provider>
@@ -306,6 +325,22 @@ function useAuthFromSession() {
  * server deletes the session row (sign-out elsewhere, reuse detection, a
  * webhook revocation), Convex pushes `false` and auth drops in real time.
  */
+/**
+ * `convex_authenticated` is the phase an app actually cares about — the first
+ * moment an authenticated query can run — and only Convex knows when it
+ * happens. Mounted only when the app opted into events.
+ */
+function ConvexAuthPhaseWatcher({ engine }: { engine: SessionAuthEngine }) {
+  const { isAuthenticated } = useConvexAuth();
+  const reported = useRef(false);
+  useEffect(() => {
+    if (!isAuthenticated || reported.current) return;
+    reported.current = true;
+    engine.reportConvexAuthenticated();
+  }, [engine, isAuthenticated]);
+  return null;
+}
+
 function RevocationWatcher() {
   const { engine, sessionApi } = useSessionContext("RevocationWatcher");
   const snapshot = useSyncExternalStore(
@@ -453,6 +488,12 @@ export function useLogtoAuth(): LogtoSessionAuth {
   );
 }
 
+export type {
+  LogtoAuthEvent,
+  LogtoAuthEventHandler,
+  LogtoAuthEventSource,
+  LogtoAuthPhase,
+} from "./auth-events";
 export type {
   LogtoSessionApi,
   LogtoSessionClientDescriptor,
