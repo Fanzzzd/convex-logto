@@ -5,8 +5,8 @@
 // concurrent config's cleaner then deletes (see #101). The build looked fine and
 // only a consumer's typecheck noticed — sometimes only in CI. It also catches a
 // new export added without a matching tsup entry.
-import { readFileSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -26,18 +26,51 @@ function collectTargets(node, targets = new Set()) {
   return targets;
 }
 
+function isFile(path) {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A wildcard subpath ("./component/*") is satisfied only by a real file the
+ * pattern matches. Asserting the parent directory instead would pass on a
+ * half-populated one, which is exactly the failure this script exists to catch.
+ */
+function matchesWildcard(target) {
+  const [prefix, ...rest] = target.split("*");
+  const suffix = rest.join("*");
+  const root = resolve(packageDir, dirname(prefix));
+  const walk = (directory) => {
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    return entries.some((entry) => {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) return walk(path);
+      const relative = `./${path.slice(packageDir.length + 1)}`;
+      return (
+        relative.startsWith(prefix) &&
+        relative.endsWith(suffix) &&
+        relative.length >= prefix.length + suffix.length &&
+        isFile(path)
+      );
+    });
+  };
+  return walk(root);
+}
+
 const missing = [];
 for (const target of collectTargets(manifest.exports ?? {})) {
-  // A wildcard subpath ("./component/*") names a directory of emitted files;
-  // assert the directory rather than trying to enumerate the pattern.
-  const path = target.includes("*")
-    ? target.slice(0, target.indexOf("*")).replace(/\/$/, "")
-    : target;
-  try {
-    statSync(resolve(packageDir, path));
-  } catch {
-    missing.push(target);
-  }
+  const satisfied = target.includes("*")
+    ? matchesWildcard(target)
+    : isFile(resolve(packageDir, target));
+  if (!satisfied) missing.push(target);
 }
 
 if (missing.length > 0) {
