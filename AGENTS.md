@@ -50,7 +50,12 @@ library and will miss a broken example or docs build.
 | Test | `pnpm test` (vitest) |
 | Build | `NEXT_PUBLIC_CONVEX_URL=… pnpm build` |
 | Validate package | `pnpm lint:package` (publint + are-the-types-wrong) |
-| Format | `pnpm --filter convex-logto format` |
+
+Not part of that sequence — `format` rewrites files and `dev` never exits:
+
+| Task | Command |
+|---|---|
+| Format | `pnpm --filter convex-logto format` (run before committing) |
 | Docs site | `pnpm --filter docs dev` |
 
 Turbo caches `check-types` and `test`. If a local run passes but CI fails,
