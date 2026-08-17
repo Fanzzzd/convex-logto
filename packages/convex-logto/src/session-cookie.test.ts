@@ -200,8 +200,14 @@ describe("request validation", () => {
         }),
       );
       expect(response.status).toBe(400);
+      // Structured, so the client can classify it rather than surfacing a bare
+      // "responded 400" that swallows the reason.
       await expect(response.json()).resolves.toEqual({
-        error: testCase.message,
+        error: {
+          kind: "terminal",
+          code: "invalid_request",
+          message: testCase.message,
+        },
       });
     }
     expect(action).not.toHaveBeenCalled();
@@ -411,6 +417,72 @@ describe("cookie session flows", () => {
     expect(response.status).toBe(401);
     expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
     expect(response.headers.get("set-cookie")).toContain("Path=/");
+  });
+});
+
+describe("sign-out always expires the cookie", () => {
+  const clears = (res: Response) =>
+    (res.headers.get("Set-Cookie") ?? "").includes("Max-Age=0");
+
+  it.each([
+    ["a rejected postLogoutRedirectUri", { postLogoutRedirectUri: 123 }],
+    ["a rejected everywhere flag", { everywhere: "yes" }],
+  ])("clears the cookie on %s", async (_name, body) => {
+    const { handler } = makeHarness();
+
+    const res = await handler(
+      request("sign-out", { cookie: cookie("session-token-1"), body }),
+    );
+
+    expect(res.status).toBe(400);
+    // The cookie is the only credential and JavaScript cannot delete it, so a
+    // rejected request must not leave the caller signed in.
+    expect(clears(res)).toBe(true);
+    const payload = (await res.json()) as { error: { code: string } };
+    expect(payload.error.code).toBe("invalid_request");
+  });
+
+  it("clears the cookie on a malformed body", async () => {
+    const { handler } = makeHarness();
+    const headers = new Headers({
+      Origin: APP_ORIGIN,
+      [LOGTO_SESSION_CSRF_HEADER]: LOGTO_SESSION_CSRF_VALUE,
+      "Content-Type": "application/json",
+      Cookie: cookie("session-token-1"),
+    });
+    const res = await handler(
+      new Request(`${APP_ORIGIN}${BASE_PATH}/sign-out`, {
+        method: "POST",
+        headers,
+        body: "{not json",
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(clears(res)).toBe(true);
+  });
+
+  it("answers 409 with the upgrade hint when signOutEverywhere is absent", async () => {
+    const { handler } = makeHarness();
+    const withoutEverywhere = createLogtoSessionCookieHandler({
+      sessionApi: { ...api, signOutEverywhere: undefined },
+      action: vi.fn() as unknown as LogtoSessionAction,
+      allowedOrigins: [APP_ORIGIN],
+      basePath: BASE_PATH,
+    });
+    void handler;
+
+    const res = await withoutEverywhere(
+      request("sign-out", {
+        cookie: cookie("session-token-1"),
+        body: { everywhere: true },
+      }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(clears(res)).toBe(true);
+    const payload = (await res.json()) as { error: { code: string } };
+    expect(payload.error.code).toBe("sign_out_everywhere_unavailable");
   });
 });
 
