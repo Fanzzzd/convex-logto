@@ -4,8 +4,10 @@ import {
   Unauthenticated,
   useQuery,
 } from "convex/react";
-import type { LogtoSessionSummary } from "convex-logto";
-import { useLogtoAuth } from "convex-logto/react-session";
+import {
+  useLogtoAuth,
+  type LogtoSessionSummary,
+} from "convex-logto/react-session";
 import { Component, useCallback, useEffect, useState, type ReactNode } from "react";
 import { api } from "../convex/_generated/api";
 
