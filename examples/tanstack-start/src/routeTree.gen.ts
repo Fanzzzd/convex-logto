@@ -9,15 +9,19 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as SigninRouteImport } from './routes/signin'
-import { Route as CallbackRouteImport } from './routes/callback'
-import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuthedRouteImport } from './routes/_authed'
+import { Route as CallbackRouteImport } from './routes/callback'
+import { Route as SigninRouteImport } from './routes/signin'
 import { Route as AuthedDashboardRouteImport } from './routes/_authed/dashboard'
 
-const SigninRoute = SigninRouteImport.update({
-  id: '/signin',
-  path: '/signin',
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthedRoute = AuthedRouteImport.update({
+  id: '/_authed',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CallbackRoute = CallbackRouteImport.update({
@@ -25,13 +29,9 @@ const CallbackRoute = CallbackRouteImport.update({
   path: '/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AuthedRoute = AuthedRouteImport.update({
-  id: '/_authed',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const SigninRoute = SigninRouteImport.update({
+  id: '/signin',
+  path: '/signin',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthedDashboardRoute = AuthedDashboardRouteImport.update({
@@ -83,18 +83,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/signin': {
-      id: '/signin'
-      path: '/signin'
-      fullPath: '/signin'
-      preLoaderRoute: typeof SigninRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/callback': {
-      id: '/callback'
-      path: '/callback'
-      fullPath: '/callback'
-      preLoaderRoute: typeof CallbackRouteImport
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authed': {
@@ -104,11 +97,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+    '/callback': {
+      id: '/callback'
+      path: '/callback'
+      fullPath: '/callback'
+      preLoaderRoute: typeof CallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/signin': {
+      id: '/signin'
+      path: '/signin'
+      fullPath: '/signin'
+      preLoaderRoute: typeof SigninRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authed/dashboard': {
