@@ -261,7 +261,7 @@ to resolve it from the backend at runtime. Exactly one of the two.
 | `callbackPath` | — | The route that finishes the OIDC redirect. Default `/callback`. Must match a registered Redirect URI's path; only this exact path runs callback handling. |
 | `afterSignIn` | — | Where to go once sign-in completes. Default `/`. `signIn({ returnTo })` overrides it. |
 | `navigate` | — | Soft navigation (your router's `navigate`). Optional for plain Vite; **recommended for any router** (TanStack / Next) so post-sign-in is a soft navigation rather than a full-page reload that drops router state. Prefer a replace-style navigate. Falls back to a hard `location.replace`. |
-| `onAuthError` | — | Called on sign-in initiation failures (Logto unreachable, blocked storage, in-app browser restrictions) and recoverable callback failures (stale/replayed callback, setup errors like `invalid_scope`). Errors are also logged to the console. |
+| `onAuthError` | — | Called on sign-in initiation failures (Logto unreachable, blocked storage, in-app browser restrictions), recoverable callback failures (stale/replayed callback, setup errors like `invalid_scope`), and **sign-out failures** — `@logto/react` catches those into its own state and resolves the promise, leaving the user signed in with the tokens still in place. Errors are also logged to the console. |
 | `discoveryCache` | — | Cache OIDC discovery + JWKS in sessionStorage. Default `true`. |
 | `onAuthEvent` | — | Opt-in phase timings (see [Auth phase events](#auth-phase-events)). Bridge mode emits `bootstrap_start`, `convex_authenticated`, and — in `configQuery` mode only — `config_loaded`. Absent means nothing is measured. |
 | `scopes` / `resources` | — | Extra OIDC scopes / API resources. `openid`, `profile`, `offline_access`, and `email` are always included. |
@@ -286,8 +286,10 @@ completes — a same-origin path starting with `/` (anything else is rejected, t
 prevent open redirects). Without `returnTo`, the provider's `afterSignIn` is
 used. `signIn(redirectUri: string)` is **deprecated**: set `callbackPath` on the
 provider instead if your callback route isn't `/callback`. Event handlers may
-continue to use `void signIn()`: initiation failures are logged and delivered
-to `onAuthError` even though `@logto/react` catches them into SDK state.
+continue to use `void signIn()` and `void signOut()`: failures are logged and
+delivered to `onAuthError` even though `@logto/react` catches them into SDK
+state. A failed sign-out is worth handling — the SDK reaches OIDC discovery
+before it clears tokens, so an unreachable Logto leaves the user signed in.
 
 ## Session mode (`convex-logto/react-session`)
 
@@ -489,12 +491,15 @@ and resolves when the deep link returns.
 | `fallback` | — | Rendered while `configQuery` loads, before the Convex provider mounts. Default `null`. |
 | `scopes` / `resources` | — | Extra OIDC scopes / API resources. `openid`, `profile`, `offline_access`, and `email` are always included. |
 | `onAuthEvent` | — | Opt-in phase timings (see [Auth phase events](#auth-phase-events)): `bootstrap_start`, `convex_authenticated`, plus `config_loaded` in `configQuery` mode. Absent means nothing is measured. |
+| `onAuthError` | — | Called when sign-in or sign-out fails (Logto unreachable, the user dismissing the system browser, an expired session). `@logto/rn` rejects rather than storing the error, so without this a `void signIn()` in an `onPress` is an unhandled rejection and nothing else. Errors are also logged to the console. |
 
 ### `useLogtoAuth()` (native)
 
 Returns `{ isAuthenticated, isLoading, user, signIn, signOut }`. `signIn(redirectUri?)`
 defaults to the provider's `redirectUri`; **`signOut()` takes no argument** — on native
 it revokes the tokens and clears local storage (no browser / federated sign-out).
+Both report a failure to the provider's `onAuthError` before rejecting, so a
+`void signIn()` in an `onPress` is observable rather than an unhandled rejection.
 
 ```tsx
 const { isAuthenticated, user, signIn, signOut } = useLogtoAuth();
