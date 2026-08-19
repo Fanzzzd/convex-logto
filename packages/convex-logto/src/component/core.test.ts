@@ -10,6 +10,7 @@ import {
   buildEndSessionUrl,
   classifyTokenEndpointFailure,
   decideRefresh,
+  asDeploymentFault,
   decodeIdToken,
   decodeJwtSegment,
   generatePkce,
@@ -17,6 +18,7 @@ import {
   hashToken,
   isOutcomeUnknownError,
   normalizeClientDescriptor,
+  normalizeSignInTargets,
   normalizeSessionLabel,
   rotateTokenHashes,
   terminal,
@@ -229,6 +231,110 @@ function fakeIdToken(payload: Record<string, unknown>): string {
 }
 
 const expected = { endpoint: "https://auth.example.com", appId: "app1" };
+
+it("decodeIdToken accepts an array aud containing the app id", () => {
+  // OIDC Core §2 allows it, Convex accepts it, and this library's own
+  // back-channel-logout verifier always has.
+  const token = fakeIdToken({
+    iss: "https://auth.example.com/oidc",
+    aud: ["app-1"],
+    sub: "u1",
+    exp: 2_000_000_000,
+  });
+
+  expect(
+    decodeIdToken(token, {
+      endpoint: "https://auth.example.com",
+      appId: "app-1",
+    }),
+  ).toMatchObject({ subject: "u1" });
+});
+
+it("decodeIdToken still rejects an array aud without the app id", () => {
+  const token = fakeIdToken({
+    iss: "https://auth.example.com/oidc",
+    aud: ["other-app"],
+    sub: "u1",
+    exp: 2_000_000_000,
+  });
+
+  expect(() =>
+    decodeIdToken(token, {
+      endpoint: "https://auth.example.com",
+      appId: "app-1",
+    }),
+  ).toThrow(/don't match/);
+});
+
+it("asDeploymentFault keeps the code but drops the terminal intent", () => {
+  const fault = asDeploymentFault(
+    new ConvexError({
+      kind: "terminal",
+      code: "id_token_mismatch",
+      message: "ID token iss/aud don't match.",
+    }),
+  );
+
+  expect(fault.data).toMatchObject({
+    kind: "transient",
+    code: "id_token_mismatch",
+  });
+  expect(fault.data.message).toMatch(/session was kept/);
+});
+
+it("asDeploymentFault survives an error that is not ours", () => {
+  expect(asDeploymentFault(new Error("boom")).data).toMatchObject({
+    kind: "transient",
+    code: "logto_response_unusable",
+  });
+});
+
+describe("normalizeSignInTargets", () => {
+  it("passes an ordinary web redirect and returnTo through", () => {
+    expect(
+      normalizeSignInTargets({
+        redirectUri: "http://localhost:5173/callback",
+        returnTo: "/dashboard",
+      }),
+    ).toEqual({
+      redirectUri: "http://localhost:5173/callback",
+      returnTo: "/dashboard",
+    });
+  });
+
+  it("accepts a native custom scheme", () => {
+    // Logto rejects any redirect URI the app has not registered, so being
+    // stricter than "absolute URI" here would break native rather than protect it.
+    expect(
+      normalizeSignInTargets({ redirectUri: "io.logto://callback" }),
+    ).toEqual({ redirectUri: "io.logto://callback" });
+  });
+
+  it("bounds both strings, which an unauthenticated caller controls", () => {
+    expect(() =>
+      normalizeSignInTargets({
+        redirectUri: `https://app.example.com/${"a".repeat(2048)}`,
+      }),
+    ).toThrow(/redirect URI exceeds/);
+    expect(() =>
+      normalizeSignInTargets({
+        redirectUri: "https://app.example.com/callback",
+        returnTo: "/".repeat(2049),
+      }),
+    ).toThrow(/exceeds/);
+  });
+
+  it("rejects a relative URI and one that embeds credentials", () => {
+    expect(() => normalizeSignInTargets({ redirectUri: "/callback" })).toThrow(
+      /absolute URI/,
+    );
+    expect(() =>
+      normalizeSignInTargets({
+        redirectUri: "https://alice:pw@app.example.com/callback",
+      }),
+    ).toThrow(/credentials/);
+  });
+});
 
 it("decodeJwtSegment reads a segment as UTF-8, not one char per byte", () => {
   // `atob` alone turns a `name` of 王小明 into ç\u008e\u008bå°\u008fæ\u0098\u008e.

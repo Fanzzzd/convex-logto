@@ -1702,6 +1702,34 @@ describe("session management", () => {
     });
   });
 
+  it("rejects an over-long label locally instead of as a session death", async () => {
+    // The component classifies an over-long label as a *terminal* session
+    // error, and terminal means "this session is gone" — so an app following
+    // that taxonomy would sign the user out over a long device name.
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+
+    await expect(engine.renameSession("s2", "x".repeat(65))).rejects.toThrow(
+      /at most 64 characters/,
+    );
+
+    expect(handlers.renameSession).not.toHaveBeenCalled();
+    // 64 is fine, and so is a 64-code-point label built from surrogate pairs.
+    handlers.renameSession.mockResolvedValue(true);
+    await expect(
+      engine.renameSession("s2", "x".repeat(64)),
+    ).resolves.toBeUndefined();
+    await expect(
+      engine.renameSession("s2", "🔐".repeat(64)),
+    ).resolves.toBeUndefined();
+    // The local check measures what the component would store, not the raw
+    // input: whitespace collapses and invisible characters drop out first, so
+    // a label the component accepts is never refused here.
+    await expect(
+      engine.renameSession("s2", "x  ".repeat(32)),
+    ).resolves.toBeUndefined();
+  });
+
   it("revokes another session without touching this client's credentials", async () => {
     const { engine, storage, handlers } = makeHarness();
     storage.writeSession({ token: "t1", sessionId: "s1" });

@@ -57,6 +57,24 @@ describe("classifySignInSearch", () => {
       expect(outcome.message).not.toContain("Single-page app");
     }
   });
+
+  it("does not find a hint on Object.prototype", () => {
+    // `error` comes straight off the query string. Looked up on a plain object,
+    // `constructor` resolves through the prototype chain and the message the
+    // app shows the user ends with a function's source.
+    for (const error of [
+      "constructor",
+      "toString",
+      "hasOwnProperty",
+      "__proto__",
+    ]) {
+      const outcome = classifySignInSearch(`?error=${error}&state=xyz`);
+      expect(outcome.kind).toBe("error");
+      if (outcome.kind === "error") {
+        expect(outcome.message).toBe(`Logto sign-in failed with "${error}".`);
+      }
+    }
+  });
 });
 
 describe("callbackResolved (#14: a /callback URL must never wait forever)", () => {
@@ -129,5 +147,30 @@ describe("isSafeReturnTo (open-redirect guard)", () => {
     // Not a path at all.
     expect(isSafeReturnTo("dashboard")).toBe(false);
     expect(isSafeReturnTo("")).toBe(false);
+  });
+
+  it("rejects raw control characters the URL parser strips", () => {
+    // The WHATWG URL parser removes ASCII tab, LF and CR *before* parsing, so
+    // each of these inspects as a same-origin path and then resolves to
+    // `//evil.example.com`.
+    expect(isSafeReturnTo("/\t/evil.example.com")).toBe(false);
+    expect(isSafeReturnTo("/\n/evil.example.com")).toBe(false);
+    expect(isSafeReturnTo("/\r/evil.example.com")).toBe(false);
+    expect(isSafeReturnTo("/\r\n/evil.example.com")).toBe(false);
+    // The rest of the C0 range and DEL go with them.
+    expect(isSafeReturnTo("/page\u0000")).toBe(false);
+    expect(isSafeReturnTo("/page\u007f")).toBe(false);
+    // Percent-encoded control characters stay a legitimate path.
+    expect(isSafeReturnTo("/%09/not-a-host")).toBe(true);
+  });
+
+  it("blocks the tab bypass end to end", () => {
+    // Every caller navigates with the string unmodified, so what the browser
+    // resolves is what matters.
+    const smuggled = "/\t/evil.example.com";
+    expect(new URL(smuggled, "https://app.example.com").origin).toBe(
+      "https://evil.example.com",
+    );
+    expect(isSafeReturnTo(smuggled)).toBe(false);
   });
 });

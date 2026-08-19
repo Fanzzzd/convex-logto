@@ -2,11 +2,13 @@
 // carries a `state` param, so a stray `?error=`/`?code=` on an ordinary app route
 // is ignored rather than mistaken for a sign-in result.
 
-const OAUTH_ERROR_HINTS: Record<string, string> = {
-  invalid_scope:
+const OAUTH_ERROR_HINTS = new Map<string, string>([
+  [
+    "invalid_scope",
     "This usually means a requested scope isn't allowed — check any extra `scopes` " +
-    "you passed, and that LOGTO_APP_ID points at a Single-page app (not a Third-party app).",
-};
+      "you passed, and that LOGTO_APP_ID points at a Single-page app (not a Third-party app).",
+  ],
+]);
 
 // OAuth errors that just mean "no session" (e.g. the user cancelled): return to the app.
 const BENIGN_OAUTH_ERRORS = new Set([
@@ -30,7 +32,10 @@ export function classifySignInSearch(search: string): SignInOutcome {
   if (error) {
     if (BENIGN_OAUTH_ERRORS.has(error)) return { kind: "benign" };
     const description = params.get("error_description");
-    const hint = OAUTH_ERROR_HINTS[error];
+    // A Map, not an object: `error` is straight off the query string, and an
+    // object lookup would resolve `?error=constructor` through the prototype
+    // chain and splice a function's source into the message the app displays.
+    const hint = OAUTH_ERROR_HINTS.get(error);
     return {
       kind: "error",
       message:
@@ -70,16 +75,35 @@ export function callbackResolved(state: {
 }
 
 /**
+ * A raw ASCII tab, LF, or CR is *removed by the URL parser before it parses
+ * anything*, so `/<TAB>/evil.com` inspects as a same-origin path and then
+ * resolves to `//evil.com`. The rest of the C0 range and DEL are refused with
+ * them: a legitimate path carries a control character percent-encoded, never
+ * raw.
+ */
+function hasControlCharacter(returnTo: string): boolean {
+  for (let index = 0; index < returnTo.length; index += 1) {
+    const code = returnTo.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/**
  * Is `returnTo` a safe post-sign-in destination? Only same-origin path
- * navigation is allowed — a single leading `/`, not `//host` (protocol-relative)
- * and no `\` (some URL parsers fold `\` into `/`, turning `/\evil.com` into
- * `//evil.com`). Anything else would let a crafted link turn the sign-in flow
- * into an open redirect (RFC 9700 §4.11.1 forbids client-side open redirectors).
+ * navigation is allowed — a single leading `/`, not `//host`
+ * (protocol-relative), no `\` (some URL parsers fold `\` into `/`, turning
+ * `/\evil.com` into `//evil.com`), and no raw control character (see above).
+ * Anything else would let a crafted link turn the sign-in flow into an open
+ * redirect (RFC 9700 §4.11.1 forbids client-side open redirectors).
+ *
+ * This is the only gate — every caller navigates with the string unmodified.
  */
 export function isSafeReturnTo(returnTo: string): boolean {
   return (
     returnTo.startsWith("/") &&
     !returnTo.startsWith("//") &&
-    !returnTo.includes("\\")
+    !returnTo.includes("\\") &&
+    !hasControlCharacter(returnTo)
   );
 }

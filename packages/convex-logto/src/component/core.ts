@@ -18,6 +18,19 @@ export const SESSION_TOKEN_GENERATION_LIMIT = 8;
 
 /** Longest accepted user-chosen session label, in code points. */
 export const SESSION_LABEL_MAX_LENGTH = 64;
+
+/**
+ * Longest accepted sign-in redirect URI / `returnTo`, in code points.
+ *
+ * `signIn` is necessarily unauthenticated, and both strings are stored verbatim
+ * in a `transactions` row for the transaction TTL. Unbounded, anyone who knows
+ * the deployment URL can park documents near Convex's 1 MiB limit in a loop, and
+ * GC only drains four transaction documents per mutation. Every other
+ * caller-supplied string in this component is bounded; these are generous by
+ * comparison — a redirect URI that does not fit in 2048 code points is not a
+ * redirect URI anyone registered with Logto.
+ */
+export const SIGN_IN_URL_MAX_LENGTH = 2048;
 /** Longest accepted value for each self-reported client descriptor field. */
 export const CLIENT_DESCRIPTOR_MAX_LENGTH = 32;
 /**
@@ -96,6 +109,19 @@ function normalizeDisplayText(raw: string): string {
 }
 
 /**
+ * Would this label be rejected for its length? Exported so the browser half can
+ * pre-empt the round-trip against *exactly* the rule the component applies:
+ * normalization first, then a code-point count. Measuring the raw string
+ * instead would reject a label the component would have accepted, because
+ * normalization collapses whitespace and drops invisible characters.
+ */
+export function sessionLabelTooLong(raw: string): boolean {
+  return (
+    Array.from(normalizeDisplayText(raw)).length > SESSION_LABEL_MAX_LENGTH
+  );
+}
+
+/**
  * Normalize a user-chosen session label. Rejects rather than truncates: a
  * silently shortened label is worse than a clear error, because the user is
  * naming a device they need to recognise later.
@@ -106,7 +132,7 @@ export function normalizeSessionLabel(
   if (raw === undefined) return undefined;
   const label = normalizeDisplayText(raw);
   if (label === "") return undefined;
-  if (Array.from(label).length > SESSION_LABEL_MAX_LENGTH) {
+  if (sessionLabelTooLong(label)) {
     throw terminal(
       "session_label_too_long",
       `A session label may be at most ${SESSION_LABEL_MAX_LENGTH} characters.`,
@@ -141,6 +167,17 @@ export function normalizeClientDescriptor(
  * a session not refreshed for longer than this can never refresh again.
  */
 export const SESSION_GC_AFTER_MS = 190 * 24 * 60 * 60 * 1000;
+
+/**
+ * GC horizon for a revocation watermark, measured from the moment it was
+ * written. A watermark is what makes a session created at or before it dead, so
+ * collecting one is only safe once nothing can still be governed by it: no
+ * session row it covers remains (the collector checks that directly), and no
+ * session can still *acquire* the marked `sid`, which a refresh can do long
+ * after sign-in. Past this horizon every session that could do either is itself
+ * unconditionally GC-dead, so the two conditions together leave no window.
+ */
+export const REVOCATION_MARKER_GC_AFTER_MS = SESSION_GC_AFTER_MS;
 
 /**
  * GC horizon for webhook-delivery dedupe hashes. Logto's delivery retries land
@@ -373,7 +410,7 @@ export function decodeIdToken(
   const { iss, aud, sub, sid, exp } = payload;
   if (
     iss !== buildLogtoEndpointUrl(expected.endpoint, "") ||
-    aud !== expected.appId
+    !audienceMatches(aud, expected.appId)
   ) {
     throw terminal(
       "id_token_mismatch",
@@ -495,11 +532,82 @@ export function rotateTokenHashes(
   };
 }
 
+/**
+ * Bound and sanity-check the two caller-supplied strings a sign-in stores.
+ *
+ * `redirectUri` only has to be a parseable absolute URI with no embedded
+ * credentials: native flows legitimately use a custom scheme
+ * (`io.logto://callback`), and Logto itself rejects any URI the app has not
+ * registered, so anything stricter here would break platforms rather than
+ * protect them.
+ */
+export function normalizeSignInTargets(targets: {
+  redirectUri: string;
+  returnTo?: string;
+}): { redirectUri: string; returnTo?: string } {
+  if (Array.from(targets.redirectUri).length > SIGN_IN_URL_MAX_LENGTH) {
+    throw terminal(
+      "redirect_uri_too_long",
+      `The sign-in redirect URI exceeds ${SIGN_IN_URL_MAX_LENGTH} characters.`,
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(targets.redirectUri);
+  } catch {
+    throw terminal(
+      "redirect_uri_invalid",
+      "The sign-in redirect URI is not an absolute URI.",
+    );
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw terminal(
+      "redirect_uri_invalid",
+      "The sign-in redirect URI must not embed credentials.",
+    );
+  }
+  if (
+    targets.returnTo !== undefined &&
+    Array.from(targets.returnTo).length > SIGN_IN_URL_MAX_LENGTH
+  ) {
+    throw terminal(
+      "return_to_too_long",
+      `\`returnTo\` exceeds ${SIGN_IN_URL_MAX_LENGTH} characters.`,
+    );
+  }
+  return {
+    redirectUri: targets.redirectUri,
+    ...(targets.returnTo === undefined ? {} : { returnTo: targets.returnTo }),
+  };
+}
+
+/**
+ * OIDC Core §2 allows `aud` to be an array, Convex's own ID-token validation
+ * accepts one, and this library's back-channel-logout verifier always has — so
+ * rejecting it here would fail a token every other party considers valid, and
+ * on the refresh path that costs the session.
+ */
+export function audienceMatches(value: unknown, appId: string): boolean {
+  return (
+    value === appId ||
+    (Array.isArray(value) &&
+      value.length > 0 &&
+      value.every((audience) => typeof audience === "string") &&
+      value.includes(appId))
+  );
+}
+
 // --- error taxonomy ---------------------------------------------------------
 //
 // Terminal: the session/transaction is gone for good — the client clears its
 // state and transitions to unauthenticated. Transient: network/5xx/contention —
 // the client retries with backoff and NEVER treats it as a sign-out.
+//
+// One class of terminal error is about the *input*, not the session: a rejected
+// session label means "do not retry this value", and nothing about the session
+// died. The client validates label length before the round-trip so an app never
+// has to tell the two apart, and this guard stays as defence in depth for a
+// caller reaching the component directly.
 
 export type SessionErrorData = {
   kind: "terminal" | "transient";
@@ -519,6 +627,45 @@ export function transient(
   message: string,
 ): ConvexError<SessionErrorData> {
   return new ConvexError({ kind: "transient" as const, code, message });
+}
+
+/**
+ * Re-classify a failure that happened *after* Logto answered with a well-formed
+ * token response.
+ *
+ * The response was unusable to us — an `iss`/`aud` drift after an endpoint
+ * change, a missing `openid` scope — but Logto processed the grant and told us
+ * what it did with the refresh token, so the session is not dead. Terminal here
+ * would delete the row, which is how one wrong environment variable takes out
+ * every session in a deployment, one refresh at a time.
+ *
+ * The caller persists any rotation and releases the claim before raising this:
+ * the rotation state is known, so the stored token is the one Logto expects
+ * next. A response we could not parse is a different case — the outcome is
+ * unknown and `outcomeUnknown` handles it.
+ */
+export function asDeploymentFault(
+  error: unknown,
+): ConvexError<SessionErrorData> {
+  if (error instanceof ConvexError && isSessionErrorData(error.data)) {
+    return transient(
+      error.data.code,
+      `${error.data.message} The session was kept: this looks like a deployment ` +
+        `fault rather than a dead session.`,
+    );
+  }
+  return transient(
+    "logto_response_unusable",
+    "Logto's token response could not be used, but the session was kept.",
+  );
+}
+
+function isSessionErrorData(data: unknown): data is SessionErrorData {
+  return (
+    isRecord(data) &&
+    typeof data.code === "string" &&
+    typeof data.message === "string"
+  );
 }
 
 /** Terminal signal for a superseded generation presented after its Reuse window. */

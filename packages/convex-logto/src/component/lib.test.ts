@@ -6,6 +6,7 @@ import {
   completeRefresh,
   consumeSessionForSignOut,
   devicePublicKeyForToken,
+  exchange,
   gc,
   killSession,
   killSubjectSessionsByToken,
@@ -18,6 +19,7 @@ import {
   signOut,
 } from "./lib";
 import {
+  REVOCATION_MARKER_GC_AFTER_MS,
   SESSION_LIST_LIMIT,
   SESSION_LIST_SCAN_BYTES,
   SESSION_LIST_SCAN_LIMIT,
@@ -466,6 +468,22 @@ const refreshActionHandler = internalHandler<
   SignOutArgs,
   { idToken: string; sessionToken: string; sessionId: string }
 >(refresh);
+const exchangeActionHandler = internalHandler<
+  {
+    endpoint: string;
+    appId: string;
+    clientSecret: string;
+    code: string;
+    state: string;
+    redirectUri: string;
+  },
+  {
+    idToken: string;
+    sessionToken: string;
+    sessionId: string;
+    returnTo?: string;
+  }
+>(exchange);
 const killSubjectSessionsByTokenHandler = internalHandler<
   Pick<SignOutArgs, "sessionToken" | "deviceProof" | "reuseWindowMs"> & {
     now: number;
@@ -507,7 +525,7 @@ async function deviceProofFixture(sessionToken: string) {
   };
 }
 
-function idToken() {
+function idToken(overrides: Record<string, unknown> = {}) {
   const payload = toBase64Url(
     new TextEncoder().encode(
       JSON.stringify({
@@ -515,6 +533,7 @@ function idToken() {
         aud: "app-1",
         sub: "subject-1",
         exp: 2_000_000_000,
+        ...overrides,
       }),
     ),
   );
@@ -756,6 +775,155 @@ describe("bounded token endpoint", () => {
           >,
         ),
       ).toBe("lib:killSession");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("keeps every session when LOGTO_ENDPOINT drifts from Logto's issuer", async () => {
+    // The operator repointed the deployment at a new custom domain while Logto
+    // still issues the old `iss`. Credentials are fine, so Logto refreshes and
+    // rotates happily — deleting the row here would destroy every session in
+    // the deployment, one refresh at a time.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id_token: idToken({ iss: "https://old.example.com/oidc" }),
+          refresh_token: "rotated-token",
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const { promise, runMutation } = tokenEndpointRefreshHarness();
+    try {
+      await expect(promise).rejects.toMatchObject({
+        data: { kind: "transient", code: "id_token_mismatch" },
+      });
+      // One mutation, not two: it stores the rotation *and* releases the claim.
+      // Persisting without releasing would age into `claim-expired`, which
+      // deletes the session this path exists to preserve; releasing without
+      // persisting would re-present a superseded token and trip Logto's reuse
+      // detection. An interruption between two calls lands in one of those.
+      expect(runMutation).toHaveBeenCalledTimes(2);
+      expect(
+        getFunctionName(
+          runMutation.mock.calls[1]?.[0] as FunctionReference<
+            "mutation",
+            "internal"
+          >,
+        ),
+      ).toBe("lib:abandonRefreshWithRotation");
+      expect(runMutation.mock.calls[1]?.[1]).toMatchObject({
+        refreshToken: "rotated-token",
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("accepts the spec-legal array form of aud", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id_token: idToken({ aud: ["app-1"] }) }), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { promise, runMutation } = tokenEndpointRefreshHarness();
+    try {
+      await expect(promise).resolves.toMatchObject({
+        idToken: expect.any(String),
+      });
+      expect(
+        getFunctionName(
+          runMutation.mock.calls[1]?.[0] as FunctionReference<
+            "mutation",
+            "internal"
+          >,
+        ),
+      ).toBe("lib:completeRefresh");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("treats a 2xx that is not a token response as an unknown outcome", async () => {
+    // A proxy or WAF interstitial in front of the token endpoint. Whether Logto
+    // saw the request at all is unknown, so this takes the same path as a 2xx we
+    // could not read: claim retained, nothing deleted, nothing re-presented.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<html>checking your browser</html>", {
+        headers: { "Content-Type": "text/html" },
+      }),
+    );
+    const { promise, runMutation } = tokenEndpointRefreshHarness();
+    try {
+      await expect(promise).rejects.toMatchObject({
+        data: { code: "logto_outcome_unknown" },
+      });
+      expectRefreshClaimRetained(runMutation);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("keeps a non-token 2xx terminal on the sign-in path", async () => {
+    // Sign-in cannot retry — the authorization code is spent either way — so
+    // the exchange must not inherit refresh's "unknown outcome, retry later".
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<html>checking your browser</html>", {
+        headers: { "Content-Type": "text/html" },
+      }),
+    );
+    const runMutation = vi.fn().mockResolvedValueOnce({
+      codeVerifier: "verifier",
+      returnTo: undefined,
+    });
+    try {
+      await expect(
+        exchangeActionHandler(
+          { runQuery: () => Promise.resolve(null), runMutation },
+          {
+            ...refreshArgs,
+            code: "code",
+            state: "state",
+            redirectUri: "https://app.example.com/callback",
+          },
+        ),
+      ).rejects.toMatchObject({
+        data: { kind: "terminal", code: "no_id_token" },
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("releases the claim when Logto answered but rotated nothing", async () => {
+    // Logto rotates a confidential-client refresh token only at >=70% TTL, so
+    // most refreshes return none — the stored token stays current, which is what
+    // makes releasing the claim safe.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ id_token: idToken({ aud: "other-app" }) }),
+        {
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    );
+    const { promise, runMutation } = tokenEndpointRefreshHarness();
+    try {
+      await expect(promise).rejects.toMatchObject({
+        data: { kind: "transient", code: "id_token_mismatch" },
+      });
+      expect(runMutation).toHaveBeenCalledTimes(2);
+      expect(
+        getFunctionName(
+          runMutation.mock.calls[1]?.[0] as FunctionReference<
+            "mutation",
+            "internal"
+          >,
+        ),
+      ).toBe("lib:abandonRefreshWithRotation");
+      // No rotation to store, so none is sent — the stored token stays current.
+      expect(runMutation.mock.calls[1]?.[1]).not.toHaveProperty("refreshToken");
     } finally {
       fetchSpy.mockRestore();
     }
@@ -1684,6 +1852,160 @@ describe("gc token generations", () => {
       "session-1",
       "orphan-generation",
     ]);
+  });
+});
+
+describe("gc revocation watermarks", () => {
+  type Row = Record<string, unknown> & { _id: string };
+
+  /**
+   * A small index-aware fake for the whole `gc` mutation: the watermark sweep
+   * needs a chained `eq(...).lte(...)`, which the refresh harness above does
+   * not model.
+   */
+  function gcHarness(tables: Record<string, Row[]>) {
+    const store: Record<string, Row[]> = {};
+    for (const [table, rows] of Object.entries(tables)) {
+      store[table] = rows.map((row) => ({ ...row }));
+    }
+    const db = {
+      query: (table: string) => ({
+        withIndex: (
+          _index: string,
+          configure?: (query: unknown) => unknown,
+        ) => {
+          const conditions: Array<(row: Row) => boolean> = [];
+          const compare =
+            (
+              field: string,
+              value: unknown,
+              ok: (a: number, b: number) => boolean,
+            ) =>
+            (row: Row) =>
+              typeof row[field] === "number" &&
+              typeof value === "number" &&
+              ok(row[field], value);
+          const builder = {
+            eq(field: string, value: unknown) {
+              conditions.push((row) => row[field] === value);
+              return this;
+            },
+            lt(field: string, value: unknown) {
+              conditions.push(compare(field, value, (a, b) => a < b));
+              return this;
+            },
+            lte(field: string, value: unknown) {
+              conditions.push(compare(field, value, (a, b) => a <= b));
+              return this;
+            },
+          };
+          configure?.(builder);
+          const matching = () =>
+            (store[table] ?? []).filter((row) =>
+              conditions.every((condition) => condition(row)),
+            );
+          const result = {
+            first: () => Promise.resolve(matching()[0] ?? null),
+            unique: () => Promise.resolve(matching()[0] ?? null),
+            collect: () => Promise.resolve(matching()),
+            take: (count: number) =>
+              Promise.resolve(matching().slice(0, count)),
+            order: () => result,
+          };
+          return result;
+        },
+      }),
+      delete: (id: string) => {
+        for (const rows of Object.values(store)) {
+          const index = rows.findIndex((row) => row._id === id);
+          if (index >= 0) rows.splice(index, 1);
+        }
+        return Promise.resolve();
+      },
+      get: (id: string) =>
+        Promise.resolve(
+          Object.values(store)
+            .flat()
+            .find((row) => row._id === id) ?? null,
+        ),
+    };
+    return {
+      db,
+      rows: (table: string) => (store[table] ?? []).map((row) => row._id),
+    };
+  }
+
+  const NOW = Date.now();
+  const ANCIENT = NOW - REVOCATION_MARKER_GC_AFTER_MS - 60_000;
+
+  it("collects a watermark once nothing it governs survives", async () => {
+    // Back-channel logout writes one row per OP session that ever ends,
+    // including logouts that matched nothing. Without this sweep they are
+    // permanent, and the app cannot reach a component-private table to prune.
+    const harness = gcHarness({
+      subjectRevocations: [
+        { _id: "subject-marker", subject: "u1", revokedAt: ANCIENT },
+      ],
+      sidRevocations: [{ _id: "sid-marker", sid: "s1", revokedAt: ANCIENT }],
+      sessions: [
+        // Created after the marker, so governed by neither, and refreshed
+        // recently enough that the dead-session sweep leaves it alone.
+        {
+          _id: "live",
+          subject: "u1",
+          sid: "s1",
+          createdAt: NOW,
+          lastRefreshedAt: NOW,
+        },
+      ],
+    });
+
+    await expect(gcHandler({ db: harness.db }, {})).resolves.toBeNull();
+    expect(harness.rows("subjectRevocations")).toEqual([]);
+    expect(harness.rows("sidRevocations")).toEqual([]);
+    expect(harness.rows("sessions")).toEqual(["live"]);
+  });
+
+  it("keeps a watermark while a row it killed is still waiting to be drained", async () => {
+    // The row is dead *because* of the marker. Dropping the marker first would
+    // hand its token back its authority.
+    const harness = gcHarness({
+      subjectRevocations: [
+        { _id: "subject-marker", subject: "u1", revokedAt: ANCIENT },
+      ],
+      sidRevocations: [{ _id: "sid-marker", sid: "s1", revokedAt: ANCIENT }],
+      sessions: [
+        {
+          _id: "stranded",
+          subject: "u1",
+          sid: "s1",
+          createdAt: ANCIENT - 1,
+          lastRefreshedAt: NOW,
+        },
+      ],
+    });
+
+    await expect(gcHandler({ db: harness.db }, {})).resolves.toBeNull();
+    expect(harness.rows("subjectRevocations")).toEqual(["subject-marker"]);
+    expect(harness.rows("sidRevocations")).toEqual(["sid-marker"]);
+  });
+
+  it("keeps a watermark inside the horizon even with nothing left to kill", async () => {
+    // A refresh can bind a `sid` to a session that did not have one, long after
+    // sign-in, so "no governed row today" is not enough on its own.
+    const harness = gcHarness({
+      subjectRevocations: [
+        { _id: "subject-marker", subject: "u1", revokedAt: NOW - 60_000 },
+      ],
+      sidRevocations: [
+        { _id: "sid-marker", sid: "s1", revokedAt: NOW - 60_000 },
+      ],
+      sessions: [],
+    });
+
+    await expect(gcHandler({ db: harness.db }, {})).resolves.toBeNull();
+    expect(harness.rows("subjectRevocations")).toEqual(["subject-marker"]);
+    expect(harness.rows("sidRevocations")).toEqual(["sid-marker"]);
   });
 });
 

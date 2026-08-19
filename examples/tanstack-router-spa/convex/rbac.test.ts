@@ -170,19 +170,35 @@ describe("RBAC example", () => {
     await expect(t.mutation(internal.logto.sync, hook("User.Deleted", null))).rejects.toThrow();
   });
 
-  test("a delete with stray data is rejected without tombstoning the user", async () => {
+  test("a delete whose entity id is unreadable is rejected without tombstoning the user", async () => {
     const t = makeT();
     const asAlice = t.withIdentity(ALICE);
     await asAlice.mutation(api.users.completeOnboarding, { role: "user" });
 
-    // A signature authenticates the sender, not the payload semantics. Never
-    // turn malformed entity data into a destructive delete.
+    // A signature authenticates the sender, not the payload semantics. An `id`
+    // that is present but not a string could be naming someone other than the
+    // route params, and a destructive event must not run on a guess.
     await expect(
       t.mutation(
         internal.logto.sync,
-        hook("User.Deleted", {}, { params: { userId: ALICE.subject } }),
+        hook("User.Deleted", { id: 42 }, { params: { userId: ALICE.subject } }),
       ),
     ).rejects.toThrow();
     expect((await rowFor(t, ALICE.subject))?.status).toBe("active");
+  });
+
+  test("a delete whose entity names no one still tombstones the route's user", async () => {
+    const t = makeT();
+    const asAlice = t.withIdentity(ALICE);
+    await asAlice.mutation(api.users.completeOnboarding, { role: "user" });
+
+    // `data: {}` carries no id, so it contradicts nothing — same information as
+    // the documented `data: null` shape. Refusing it would drop a
+    // signature-verified deletion, and Logto does not retry a 4xx.
+    await t.mutation(
+      internal.logto.sync,
+      hook("User.Deleted", {}, { params: { userId: ALICE.subject } }),
+    );
+    expect((await rowFor(t, ALICE.subject))?.status).toBe("deleted");
   });
 });

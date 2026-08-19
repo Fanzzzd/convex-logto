@@ -334,7 +334,9 @@ Returns `{ isAuthenticated, isLoading, user, signIn, signOut,
 signOutEverywhere, listSessions, renameSession, revokeSession }`.
 
 - `signIn({ returnTo? })` — one round-trip to mint the sign-in URL, then a
-  full-page redirect. `returnTo` must be a same-origin path. A failed action is
+  full-page redirect. `returnTo` must be a same-origin path, at most 2048
+  characters (sign-in is unauthenticated, so what it stores server-side is
+  bounded). A failed action is
   delivered to `onAuthError` before the promise rejects, so `void signIn()`
   remains observable.
 - `signOut({ postLogoutRedirectUri?, federated? })` — ends the component
@@ -350,7 +352,8 @@ signOutEverywhere, listSessions, renameSession, revokeSession }`.
   authenticates with rotates) of the caller's own sessions, `{ sessions,
   truncated }`, newest first. Call it again after a rename or revoke.
 - `renameSession(sessionId, label)` — name one of the caller's own sessions;
-  `undefined` (or a blank string) clears it. Rejects with terminal
+  `undefined` (or a blank string) clears it. A label over 64 characters is
+  rejected locally, before any round-trip. Rejects with terminal
   `session_not_found` for an id that is not the caller's or is already revoked —
   the component will not confirm that another subject's session exists.
 - `revokeSession(sessionId)` — sign that device out; rejects the same way for an
