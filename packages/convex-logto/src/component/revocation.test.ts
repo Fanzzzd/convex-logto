@@ -1,3 +1,4 @@
+import { getFunctionName } from "convex/server";
 import { describe, expect, it } from "vitest";
 import {
   REVOCATION_BATCH_SIZE,
@@ -218,7 +219,7 @@ describe("bounded session revocation", () => {
       (_, index) => ({ _id: `session-${index}` }),
     );
     const deleted: string[] = [];
-    const scheduled: Array<{ delay: number; args: unknown }> = [];
+    const scheduled: Array<{ delay: number; args: unknown; name: string }> = [];
     let transactionTakeLimit: number | undefined;
     let sessionTakeLimit: number | undefined;
     const db = {
@@ -257,8 +258,12 @@ describe("bounded session revocation", () => {
     const handler = handlerOf<Record<string, never>, null>(gc);
 
     const scheduler = {
-      runAfter: (delay: number, _reference: unknown, args: unknown) => {
-        scheduled.push({ delay, args });
+      runAfter: (delay: number, reference: unknown, args: unknown) => {
+        scheduled.push({
+          delay,
+          args,
+          name: getFunctionName(reference as never),
+        });
         return Promise.resolve("scheduled-gc");
       },
     };
@@ -267,7 +272,13 @@ describe("bounded session revocation", () => {
     expect(transactionTakeLimit).toBe(4);
     expect(sessionTakeLimit).toBe(REVOCATION_BATCH_SIZE);
     expect(deleted).toHaveLength(REVOCATION_BATCH_SIZE);
-    expect(scheduled).toEqual([{ delay: 0, args: {} }]);
+    // The watermark sweep runs in its own transaction — proving a watermark
+    // governs nothing reads session documents, and this budget is spent.
+    expect(scheduled.map((entry) => entry.name)).toEqual([
+      "lib:gcRevocationMarkers",
+      "lib:gc",
+    ]);
+    expect(scheduled.every((entry) => entry.delay === 0)).toBe(true);
   });
 
   it("includes a session committed after the action sampled its clock", async () => {
