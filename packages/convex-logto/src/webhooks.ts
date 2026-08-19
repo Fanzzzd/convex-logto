@@ -44,18 +44,23 @@ export type LogtoWebhookPayload = {
    * Identifies the webhook **configuration** in Logto, not this delivery —
    * every delivery from the same hook carries the same `hookId`, so it is NOT
    * an idempotency key. Deliveries are deduplicated by raw-body hash instead
-   * (the `sessions` option of {@link registerLogtoWebhook}).
+   * (the `sessions` option of {@link registerLogtoWebhook}). Optional because
+   * nothing here reads it: a delivery is never refused over a field the
+   * library does not consume.
    */
-  hookId: string;
+  hookId?: string;
   event: LogtoUserEvent;
   /** ISO 8601 creation time of the event — bounds the accepted delivery age. */
   createdAt: string;
   userAgent?: string;
   ip?: string;
   /**
-   * The affected User entity. Current Logto versions include the pre-deletion
-   * entity for `User.Deleted`; older versions and Logto's documented payload
-   * shape use `null` and put the deleted id in Management API `params.userId`.
+   * The affected User entity, **verbatim as delivered**. Current Logto versions
+   * include the pre-deletion entity for `User.Deleted`; older versions and
+   * Logto's documented payload shape use `null` and put the deleted id in
+   * Management API `params.userId`. A sync handler's second argument is the
+   * normalized entity; this one is where the raw value of a field that drifted
+   * out of its declared type is still reachable.
    */
   data: LogtoUserEntity | null;
   /** Management API context, present for admin-triggered changes (e.g. deletion). */
@@ -73,37 +78,74 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isOptionalNullableString(value: unknown): boolean {
-  return value === undefined || value === null || typeof value === "string";
+function isNullableString(value: unknown): boolean {
+  return value === null || typeof value === "string";
 }
 
-function isOptionalNullableFiniteNumber(value: unknown): boolean {
+function isNullableFiniteNumber(value: unknown): boolean {
   return (
-    value === undefined ||
-    value === null ||
-    (typeof value === "number" && Number.isFinite(value))
+    value === null || (typeof value === "number" && Number.isFinite(value))
   );
 }
 
-function isLogtoUserEntity(value: unknown): value is LogtoUserEntity {
-  if (!isRecord(value) || typeof value.id !== "string") return false;
-  return (
-    isOptionalNullableString(value.username) &&
-    isOptionalNullableString(value.primaryEmail) &&
-    isOptionalNullableString(value.primaryPhone) &&
-    isOptionalNullableString(value.name) &&
-    isOptionalNullableString(value.avatar) &&
-    (value.customData === undefined || isRecord(value.customData)) &&
-    (value.identities === undefined || isRecord(value.identities)) &&
-    (value.isSuspended === undefined ||
-      typeof value.isSuspended === "boolean") &&
-    // `users.last_sign_in_at` is nullable in Logto: a user who has never signed
-    // in serialises as `null`. Rejecting that would drop a signature-verified
-    // delivery — including the `User.Deleted` one that revokes their sessions.
-    isOptionalNullableFiniteNumber(value.lastSignInAt) &&
-    isOptionalNullableFiniteNumber(value.createdAt) &&
-    isOptionalNullableString(value.applicationId)
-  );
+/**
+ * The fields this library never reads, each with the runtime type the published
+ * type declares for it.
+ *
+ * A delivery is never *refused* over one of these. Logto retries a 5xx and not
+ * a 4xx, so rejecting a signature-verified delivery turns one drifted field
+ * into permanent, first-attempt event loss — and because the same handler
+ * revokes sessions for deleted and suspended users, it would silently disable
+ * that too. A drifted field is dropped from the entity handed to sync handlers
+ * instead, which keeps the declared type honest while the raw value stays
+ * reachable on the payload those handlers also receive.
+ */
+const ADVISORY_PAYLOAD_FIELDS: Record<string, (value: unknown) => boolean> = {
+  hookId: (value) => typeof value === "string",
+  userAgent: (value) => typeof value === "string",
+  ip: (value) => typeof value === "string",
+  path: (value) => typeof value === "string",
+  method: (value) => typeof value === "string",
+  status: (value) => typeof value === "number" && Number.isFinite(value),
+  params: isRecord,
+  matchedRoute: (value) => typeof value === "string",
+};
+
+/** See {@link ADVISORY_PAYLOAD_FIELDS} — the same rule for the User entity. */
+const ADVISORY_ENTITY_FIELDS: Record<string, (value: unknown) => boolean> = {
+  username: isNullableString,
+  primaryEmail: isNullableString,
+  primaryPhone: isNullableString,
+  name: isNullableString,
+  avatar: isNullableString,
+  applicationId: isNullableString,
+  customData: isRecord,
+  identities: isRecord,
+  isSuspended: (value) => typeof value === "boolean",
+  // `users.last_sign_in_at` is nullable in Logto: a user who has never signed
+  // in serialises as `null`.
+  lastSignInAt: isNullableFiniteNumber,
+  createdAt: isNullableFiniteNumber,
+};
+
+/**
+ * Copy `raw` without the declared fields whose value drifted out of its type.
+ * Fields absent from `declared` — including ones Logto adds later — pass
+ * through untouched, and an undrifted payload is returned as-is.
+ */
+function withoutDriftedFields<Shape extends Record<string, unknown>>(
+  raw: Shape,
+  declared: Record<string, (value: unknown) => boolean>,
+): Shape {
+  let pruned: Shape | undefined;
+  for (const [field, matchesDeclaredType] of Object.entries(declared)) {
+    if (!Object.hasOwn(raw, field)) continue;
+    const value = raw[field];
+    if (value === undefined || matchesDeclaredType(value)) continue;
+    pruned ??= { ...raw };
+    delete pruned[field];
+  }
+  return pruned ?? raw;
 }
 
 function isLogtoUserEvent(value: unknown): value is LogtoUserEvent {
@@ -161,6 +203,20 @@ function entityId(payload: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+/**
+ * Did the entity bring an `id` this library cannot read? Distinct from "no
+ * entity": a `User.Deleted` naming no user in `data` is the documented 204
+ * shape and the route params are authoritative, but one whose id is present and
+ * unreadable could be naming a *different* user than the route params, and a
+ * destructive event must not be executed on a guess.
+ */
+function hasUnreadableEntityId(payload: Record<string, unknown>): boolean {
+  const data = payload.data;
+  return (
+    isRecord(data) && Object.hasOwn(data, "id") && typeof data.id !== "string"
+  );
+}
+
 /** The deleted user's id from the Management API route params (`DELETE /users/:userId`). */
 function paramsUserId(payload: Record<string, unknown>): string | undefined {
   const params = payload.params;
@@ -170,6 +226,13 @@ function paramsUserId(payload: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+/**
+ * Accept a delivery on exactly the fields this library consumes: the event it
+ * dispatches on, the `createdAt` it bounds the delivery age with, and the user
+ * id it revokes sessions by. Everything else is advisory — see
+ * {@link ADVISORY_PAYLOAD_FIELDS} for why widening this predicate is how schema
+ * drift becomes silent event loss.
+ */
 function isLogtoWebhookPayload(value: unknown): value is LogtoWebhookPayload {
   if (!isRecord(value)) return false;
   const candidate = value;
@@ -179,43 +242,35 @@ function isLogtoWebhookPayload(value: unknown): value is LogtoWebhookPayload {
   if (!isLogtoUserEvent(event)) {
     return false;
   }
-  if (
-    typeof candidate.hookId !== "string" ||
-    typeof candidate.createdAt !== "string" ||
-    (candidate.userAgent !== undefined &&
-      typeof candidate.userAgent !== "string") ||
-    (candidate.ip !== undefined && typeof candidate.ip !== "string") ||
-    (candidate.path !== undefined && typeof candidate.path !== "string") ||
-    (candidate.method !== undefined && typeof candidate.method !== "string") ||
-    (candidate.status !== undefined &&
-      (typeof candidate.status !== "number" ||
-        !Number.isFinite(candidate.status))) ||
-    (candidate.params !== undefined && !isRecord(candidate.params)) ||
-    (candidate.matchedRoute !== undefined &&
-      typeof candidate.matchedRoute !== "string")
-  ) {
-    return false;
-  }
+  // Read by the replay window below; `isFreshDelivery` parses it.
+  if (typeof candidate.createdAt !== "string") return false;
+  const dataUserId = entityId(candidate);
+  const routeUserId = paramsUserId(candidate);
   // Current Logto versions send the pre-deletion User; older/documented payloads
-  // send `data: null` with the id in route params. Accept both, but never accept
-  // malformed or contradictory entity/context data for a destructive event.
+  // send `data: null` with the id in route params (a 204 delete route serialises
+  // no `data` key at all). Accept both, but never accept contradictory ids for a
+  // destructive event.
   if (event === "User.Deleted") {
-    const dataUserId = entityId(candidate);
-    const routeUserId = paramsUserId(candidate);
     return (
-      // A 204 delete route serialises no `data` key at all, so `undefined` and
-      // `null` must both mean "no entity, use the route params".
-      (candidate.data == null || isLogtoUserEntity(candidate.data)) &&
+      !hasUnreadableEntityId(candidate) &&
       (dataUserId !== undefined || routeUserId !== undefined) &&
       (dataUserId === undefined ||
         routeUserId === undefined ||
         dataUserId === routeUserId)
     );
   }
-  return isLogtoUserEntity(candidate.data);
+  // Every other event hands a sync handler an entity, so it needs one.
+  return dataUserId !== undefined;
 }
 
-/** A per-event sync handler. Runs in a Convex mutation, so `ctx.db` is available. */
+/**
+ * A per-event sync handler. Runs in a Convex mutation, so `ctx.db` is available.
+ *
+ * `user` is normalized: a field whose type drifted out of the declared
+ * {@link LogtoUserEntity} shape is absent rather than surprising, and the raw
+ * delivery is still reachable on `payload`. See
+ * {@link ADVISORY_PAYLOAD_FIELDS}.
+ */
 export type LogtoSyncHandler<DataModel extends GenericDataModel> = (
   ctx: GenericMutationCtx<DataModel>,
   user: LogtoUserEntity,
@@ -280,13 +335,19 @@ export function logtoSync<
             "convex-logto: logtoSync received a payload that isn't a known Logto User.* event.",
           );
         }
-        const payload = args.payload;
+        const payload = withoutDriftedFields(
+          args.payload,
+          ADVISORY_PAYLOAD_FIELDS,
+        );
         const handler = handlers[payload.event];
         if (handler) {
           // Current Logto sends the pre-deletion entity; for the older/documented
           // `data: null` shape, synthesize the minimal entity from route params.
-          let user = payload.data;
-          if (user === null) {
+          const entity = payload.data;
+          let user: LogtoUserEntity;
+          if (isRecord(entity) && typeof entity.id === "string") {
+            user = withoutDriftedFields(entity, ADVISORY_ENTITY_FIELDS);
+          } else {
             const id = paramsUserId(payload);
             if (id === undefined) {
               throw new Error(
