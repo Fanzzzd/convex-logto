@@ -80,9 +80,11 @@ The endpoint accepts only a form-encoded POST containing exactly one
 - streams the request body through a 1 MiB application limit.
 
 Verified `jti` values are claimed for 24 hours using the component's existing
-delivery-deduplication table. A retry is answered with the same `200` without
-re-running revocation; if the revocation mutation fails, the claim is released
-so Logto can retry the work.
+delivery-deduplication table. A retry of a delivery that already *completed* is
+answered with the same `200` without re-running revocation; a claim whose work
+never completed is redone, because it may never have committed — revocation is
+idempotent. If the revocation mutation fails, the claim is released so Logto can
+retry the work.
 
 Responses include `Cache-Control: no-store`. Success is always `200`, including
 when no session matched, so the endpoint never reveals session existence.

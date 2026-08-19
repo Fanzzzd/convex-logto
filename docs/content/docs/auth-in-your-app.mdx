@@ -19,7 +19,10 @@ You usually **don't need a users table**. Every Convex function already has the
 signed-in user's identity from the token — `identity.subject` is their stable Logto
 id — so attach your data to _your own_ tables, keyed by it:
 
-```ts
+```ts title="convex/posts.ts"
+import { v } from "convex/values";
+import { mutation } from "./_generated/server";
+
 export const createPost = mutation({
   args: { body: v.string() },
   handler: async (ctx, { body }) => {
