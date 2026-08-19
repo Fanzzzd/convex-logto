@@ -365,6 +365,11 @@ export class SessionStorageArea {
       return;
     } catch {
       this.fallBack(kind);
+      // The durable copy is now superseded. Another tab builds its own area,
+      // reads that value, and presents a session token this one has already
+      // rotated away from — which trips reuse detection and kills the session
+      // for every tab. Drop it; the memory copy below is the live one.
+      this.remove(kind, name);
     }
     this.memoryArea().setItem(key, serialized);
   }
@@ -776,6 +781,12 @@ export class SessionAuthEngine {
         await this.revokeAbandonedSession(result.sessionToken);
         return;
       }
+      // Signing in over a live session is ordinary — Logto's SSO cookie makes
+      // it a silent redirect, so it is how a user retries anything that looks
+      // like a sign-out. The row it replaces would otherwise keep a live Logto
+      // grant that no client can reach, and sit in the user's own device list
+      // until GC takes it 190 days later.
+      const superseded = this.options.storage.readSession();
       this.options.storage.writeSession({
         token: result.sessionToken,
         sessionId: result.sessionId,
@@ -788,6 +799,14 @@ export class SessionAuthEngine {
       if (generation !== this.authGeneration) return;
       this.lastServed = null;
       this.setAuthenticated(result.idToken, "callback");
+      if (superseded !== null && superseded.sessionId !== result.sessionId) {
+        // Not awaited: the user is signed in and navigating. A failure here is
+        // reported, never fatal.
+        void this.revokeAbandonedSession(
+          superseded.token,
+          "signed in over an existing session",
+        );
+      }
       const destination =
         result.returnTo !== undefined && isSafeReturnTo(result.returnTo)
           ? result.returnTo
@@ -813,7 +832,17 @@ export class SessionAuthEngine {
    * abandoned. Without this the row — and the Logto grant behind it — would
    * outlive every credential anyone holds for it.
    */
-  private async revokeAbandonedSession(sessionToken: string): Promise<void> {
+  /**
+   * Drop a component session no client holds a credential for any more.
+   *
+   * Never federated and never an RFC 7009 revoke — the component only deletes
+   * its own row, because the Logto grant behind it can be shared with sibling
+   * sessions of the same OP session.
+   */
+  private async revokeAbandonedSession(
+    sessionToken: string,
+    reason = "signed out during sign-in",
+  ): Promise<void> {
     try {
       const deviceProof = await this.options.deviceBinding?.sign(sessionToken);
       await this.options.transport.action(this.options.api.signOut, {
@@ -823,8 +852,8 @@ export class SessionAuthEngine {
     } catch (error) {
       this.reportError(
         new Error(
-          "convex-logto: signed out during sign-in, but the session the server " +
-            "had already created could not be revoked. It expires on its own.",
+          `convex-logto: ${reason}, but the session the server had already ` +
+            "created could not be revoked. It expires on its own.",
           { cause: error },
         ),
       );
