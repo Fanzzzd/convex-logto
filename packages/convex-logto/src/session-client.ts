@@ -35,6 +35,12 @@ const ID_TOKEN_SKEW_MS = 30 * 1000;
 
 /** Backoff between retries of a transiently-failing action call. */
 const RETRY_DELAYS_MS = [500, 2000];
+/**
+ * Backoff for re-presenting a session after a transient refresh failure. The
+ * last entry repeats: an outage that outlives the ladder still has to end with
+ * the tab signed in, not stranded.
+ */
+const RECOVERY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
 
 /** Error objects already surfaced through the public auth-error channel. */
 const REPORTED_AUTH_ERRORS = new WeakSet<Error>();
@@ -531,6 +537,12 @@ export type SessionEngineOptions = {
   /** Injectable for tests. */
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Separate from `sleep` on purpose: the retry backoff inside one action call
+   * is something a test wants to skip, while the recovery loop is unbounded and
+   * a test that skipped its waits would spin.
+   */
+  recoverySleep?: (ms: number) => Promise<void>;
 };
 
 const SERVER_SNAPSHOT: SessionSnapshot = {
@@ -562,6 +574,7 @@ export class SessionAuthEngine {
   private settleReported = false;
   private inflightSignIn: Promise<void> | null = null;
   private inflightRefresh: Promise<string | null> | null = null;
+  private recovering = false;
   private storagePreparation: Promise<void> | null = null;
   /** Invalidates async credential work that started before a local sign-out. */
   private authGeneration = 0;
@@ -569,12 +582,16 @@ export class SessionAuthEngine {
   private lastServed: string | null = null;
   private now: () => number;
   private sleep: (ms: number) => Promise<void>;
+  private recoverySleep: (ms: number) => Promise<void>;
 
   constructor(private options: SessionEngineOptions) {
     this.now = options.now ?? (() => Date.now());
     this.events = createAuthEventEmitter(options.onAuthEvent);
     this.sleep =
       options.sleep ??
+      ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.recoverySleep =
+      options.recoverySleep ??
       ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     if (options.initialSession !== undefined) {
       options.storage.writeSession(options.initialSession);
@@ -899,6 +916,13 @@ export class SessionAuthEngine {
       this.lastServed = token;
       if (this.snapshot.status !== "authenticated")
         this.setAuthenticated(token);
+    } else if (this.snapshot.status === "authenticated") {
+      // Convex is about to park at `noAuth`, and it only re-arms when
+      // `ConvexProviderWithAuth` calls `setAuth` again — which needs
+      // `isAuthenticated` to flip. Staying "authenticated" here is what wedged
+      // the tab: the app already reads as signed out, but nothing could ever
+      // undo it.
+      this.setUnauthenticated();
     }
     return token;
   }
@@ -969,8 +993,12 @@ export class SessionAuthEngine {
           this.options.storage.clearAll();
           this.setUnauthenticated();
         }
-        // Transient (Logto/Convex unreachable): keep the session token — the
-        // next fetch after the network heals refreshes cleanly. Never a sign-out.
+        // Transient (Logto/Convex unreachable): keep the session token. Nothing
+        // else will re-present it — `ConvexProviderWithAuth` calls
+        // `fetchAccessToken` only while our snapshot says authenticated, and
+        // Convex parks at `noAuth` after a single null — so retry on our own
+        // clock. Never a sign-out.
+        else this.scheduleRecovery();
         return null;
       }
     };
@@ -1421,6 +1449,47 @@ export class SessionAuthEngine {
     if (signOutError !== undefined) throw signOutError;
     if (fatalServerError !== undefined) throw fatalServerError;
     if (navigationError !== undefined) throw navigationError;
+  }
+
+  /**
+   * Re-present the session after a transient refresh failure until it works.
+   *
+   * Keeping the session token is only useful if something presents it again,
+   * and nothing does: Convex clears its auth config after one `null` and only
+   * `client.setAuth` re-arms it, which `ConvexProviderWithAuth` calls solely
+   * when `isAuthenticated` flips. So the engine drives the retry itself and
+   * flips its own snapshot back on success.
+   *
+   * Bounded by the session's existence and the auth generation, not by an
+   * attempt count: a five-minute outage must still end with the tab signed in.
+   */
+  private scheduleRecovery(): void {
+    if (this.recovering) return;
+    this.recovering = true;
+    const generation = this.authGeneration;
+    void this.recover(generation).finally(() => {
+      this.recovering = false;
+    });
+  }
+
+  private async recover(generation: number): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      const delay =
+        RECOVERY_DELAYS_MS[Math.min(attempt, RECOVERY_DELAYS_MS.length - 1)] ??
+        30_000;
+      await this.recoverySleep(delay);
+      // A sign-out, a revocation, or another tab getting there first all end the
+      // retry: there is nothing left to re-present.
+      if (generation !== this.authGeneration) return;
+      if (this.options.storage.readSession() === null) return;
+      const idToken = await this.refreshIdToken(null);
+      if (generation !== this.authGeneration) return;
+      if (idToken === null) continue;
+      this.lastServed = idToken;
+      if (this.snapshot.status !== "authenticated")
+        this.setAuthenticated(idToken);
+      return;
+    }
   }
 
   // -- external events --

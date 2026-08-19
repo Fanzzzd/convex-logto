@@ -106,6 +106,7 @@ function makeHarness(options?: {
   sessionApi?: LogtoSessionApi;
   storage?: SessionStorageAdapter;
   serverHeldCredential?: boolean;
+  recoverySleep?: (ms: number) => Promise<void>;
   onAuthEvent?: (event: LogtoAuthEvent) => void;
   clientDescriptor?: {
     platform?: string;
@@ -155,6 +156,10 @@ function makeHarness(options?: {
     navigate,
     onAuthError,
     sleep: () => Promise.resolve(), // skip retry backoff in tests
+    // Off unless a test asks for it: the recovery loop only ends when a refresh
+    // succeeds, so a no-wait default would spin in every transient-failure test.
+    recoverySleep:
+      options?.recoverySleep ?? (() => new Promise<void>(() => {})),
   });
   return { engine, storage, handlers, navigate, onAuthError };
 }
@@ -701,6 +706,77 @@ describe("mount", () => {
     await settled(engine);
     expect(handlers.refresh).toHaveBeenCalledTimes(1);
   });
+});
+
+it("re-presents the session after a transient refresh failure", async () => {
+  // Keeping the session token is only useful if something presents it again.
+  // Convex clears its auth config after one `null` and re-arms only when
+  // `isAuthenticated` flips, so the engine has to drive the retry itself.
+  let release = () => {};
+  const waited = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { engine, handlers } = makeHarness({
+    storedSession: { token: "session-token-0", sessionId: "session-id-0" },
+    storedIdToken: staleToken(),
+    recoverySleep: () => waited,
+  });
+  // `retrying` already burns RETRY_DELAYS_MS.length + 1 attempts inside the
+  // one action call; recovery is what happens after all of them fail.
+  handlers.refresh
+    .mockRejectedValueOnce(transientError())
+    .mockRejectedValueOnce(transientError())
+    .mockRejectedValueOnce(transientError())
+    .mockResolvedValue(sessionResult(1));
+
+  engine.start();
+  expect((await settled(engine)).status).toBe("unauthenticated");
+  release();
+
+  await vi.waitFor(() =>
+    expect(engine.getSnapshot().status).toBe("authenticated"),
+  );
+  expect(handlers.refresh).toHaveBeenCalledTimes(4);
+});
+
+it("stops recovering once the session is gone", async () => {
+  let release = () => {};
+  const waited = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { engine, handlers, storage } = makeHarness({
+    storedSession: { token: "session-token-0", sessionId: "session-id-0" },
+    storedIdToken: staleToken(),
+    recoverySleep: () => waited,
+  });
+  handlers.refresh.mockRejectedValue(transientError());
+
+  engine.start();
+  expect((await settled(engine)).status).toBe("unauthenticated");
+  const attempts = handlers.refresh.mock.calls.length;
+  storage.clearAll();
+  release();
+  await Promise.resolve();
+
+  expect(handlers.refresh).toHaveBeenCalledTimes(attempts);
+});
+
+it("agrees it is signed out when a forced fetch cannot refresh", async () => {
+  // Convex parks at `noAuth` after a single null and only re-arms when
+  // `ConvexProviderWithAuth` calls `setAuth` again, which needs this flip.
+  const idToken = freshToken();
+  const { engine, handlers } = makeHarness({
+    storedSession: { token: "session-token-0", sessionId: "session-id-0" },
+    storedIdToken: idToken,
+  });
+  engine.start();
+  expect((await settled(engine)).status).toBe("authenticated");
+  await expect(engine.fetchAccessToken(false)).resolves.toBe(idToken);
+  handlers.refresh.mockRejectedValue(transientError());
+
+  await expect(engine.fetchAccessToken(true)).resolves.toBeNull();
+
+  expect(engine.getSnapshot().status).toBe("unauthenticated");
 });
 
 // --- callback landing --------------------------------------------------------

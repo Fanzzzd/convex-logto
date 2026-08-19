@@ -596,9 +596,19 @@ The unknown case is a response the component cannot parse as a token response at
 all — a proxy or WAF interstitial where JSON was expected, or a body too large to
 read. Whether Logto processed the grant is then genuinely unknown, so the refresh
 claim is left to expire and that session requires a fresh sign-in. Guessing there
-is what risks spending a rotated token twice. (During *sign-in* the same response
-is terminal instead: the authorization code is spent either way, so there is
-nothing a retry could recover.)
+is what risks spending a rotated token twice. (During *sign-in* every one of
+these is terminal instead — including a wrong client secret. The component
+consumes the sign-in transaction before it contacts Logto, so the authorization
+code is spent either way and a retry could only report a stale callback, hiding
+what actually went wrong.)
+
+A transient failure is not a sign-out, and the browser keeps retrying it. The
+session token stays in storage and the provider re-presents it on its own
+schedule — a second, then five, then ten, then every thirty seconds — until the
+refresh succeeds, the session is signed out, or the tab closes. This matters
+because Convex stops asking for a token after one failure: without the retry, a
+tab that hit a tunnel hiccup or woke from sleep before its network did would sit
+signed-out until the user reloaded.
 
 ## How the token dance works
 
