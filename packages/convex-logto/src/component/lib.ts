@@ -1837,8 +1837,9 @@ export const forgetWebhookDelivery = mutation({
 
 /**
  * Delete revocation watermarks that can no longer kill anything: no session the
- * marker covers survives, and it is old enough that none can appear. Returns
- * how many rows were deleted, so the caller knows whether to continue.
+ * marker covers survives, and it is old enough that none can appear. Reports
+ * the two tables' deletions separately, since either one filling its batch
+ * means there is more to collect.
  *
  * A marker that still governs a surviving row is skipped, not deleted — that
  * row is logically dead *because* of the marker, and dropping it early would
@@ -1849,9 +1850,10 @@ export const forgetWebhookDelivery = mutation({
 async function collectRevocationMarkers(
   db: DatabaseWriter,
   now: number,
-): Promise<number> {
+): Promise<{ subjectDeleted: number; sidDeleted: number }> {
   const horizon = now - REVOCATION_MARKER_GC_AFTER_MS;
-  let deleted = 0;
+  let subjectDeleted = 0;
+  let sidDeleted = 0;
   const subjectMarkers = await db
     .query("subjectRevocations")
     .withIndex("by_revokedAt", (q) => q.lt("revokedAt", horizon))
@@ -1865,7 +1867,7 @@ async function collectRevocationMarkers(
       .first();
     if (governed !== null) continue;
     await db.delete(marker._id);
-    deleted += 1;
+    subjectDeleted += 1;
   }
   const sidMarkers = await db
     .query("sidRevocations")
@@ -1880,9 +1882,9 @@ async function collectRevocationMarkers(
       .first();
     if (governed !== null) continue;
     await db.delete(marker._id);
-    deleted += 1;
+    sidDeleted += 1;
   }
-  return deleted;
+  return { subjectDeleted, sidDeleted };
 }
 
 export const gc = internalMutation({
@@ -1953,11 +1955,18 @@ export const gcRevocationMarkers = internalMutation({
   args: {},
   returns: v.null(),
   handler: async (ctx) => {
-    const deleted = await collectRevocationMarkers(ctx.db, Date.now());
-    // Only a full batch of *deletions* continues. A batch that skipped
-    // everything found nothing collectable, and rescheduling on that would spin
-    // on the same rows forever.
-    if (deleted === GC_MARKER_BATCH_SIZE) {
+    const { subjectDeleted, sidDeleted } = await collectRevocationMarkers(
+      ctx.db,
+      Date.now(),
+    );
+    // Continue while either table filled its batch with *deletions*. Counting
+    // the two together would stop the chain exactly when both are backlogged,
+    // and counting rows merely examined would spin forever on a batch that
+    // skipped everything — a skipped marker is retained, not collected.
+    if (
+      subjectDeleted === GC_MARKER_BATCH_SIZE ||
+      sidDeleted === GC_MARKER_BATCH_SIZE
+    ) {
       await ctx.scheduler.runAfter(0, internal.lib.gcRevocationMarkers, {});
     }
     return null;
