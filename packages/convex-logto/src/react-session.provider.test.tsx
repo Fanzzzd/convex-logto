@@ -30,6 +30,22 @@ vi.mock("convex/react", () => ({
   useQuery: () => undefined,
 }));
 
+// Session actions must reach the deployment over HTTP, never over the app's
+// WebSocket client — see `session-transport.ts`.
+const httpClientUrls: string[] = [];
+vi.mock("convex/browser", () => ({
+  ConvexHttpClient: class {
+    constructor(url: string) {
+      httpClientUrls.push(url);
+    }
+    action(reference: unknown, args: unknown) {
+      if ((reference as { fn: string }).fn === "callback")
+        return callback(args);
+      return Promise.resolve({});
+    }
+  },
+}));
+
 const callback = vi.fn();
 const api = {
   signIn: { fn: "signIn" },
@@ -45,9 +61,8 @@ const api = {
 
 const client = {
   url: "https://example.convex.cloud",
-  action: (reference: unknown, args: unknown) => {
-    if ((reference as { fn: string }).fn === "callback") return callback(args);
-    return Promise.resolve({});
+  action: () => {
+    throw new Error("session action ran on the app's WebSocket client");
   },
 } as never;
 
@@ -88,6 +103,7 @@ beforeEach(() => {
   sessionStorage.clear();
   convexAuthenticated = false;
   authEvents = [];
+  httpClientUrls.length = 0;
   callback.mockReset().mockResolvedValue({
     idToken: "id-token",
     sessionToken: "session-token",
@@ -139,6 +155,24 @@ it("passes the descriptor through to the exchange", async () => {
       client: { platform: "web", browser: "Firefox" },
     }),
   );
+});
+
+it("runs session actions off the app's WebSocket client", async () => {
+  // Convex stops the socket *before* asking for a fresh token, so an action
+  // sent on that client during reauthentication parks forever and the socket is
+  // never restarted. `client.action` throws here to catch a regression.
+  sessionStorage.setItem(
+    "convex-logto:https://example.convex.cloud:txn",
+    JSON.stringify({ state: "st" }),
+  );
+  (
+    window as unknown as { happyDOM: { setURL: (url: string) => void } }
+  ).happyDOM.setURL("http://localhost:5173/callback?code=c&state=st");
+
+  await render(undefined);
+  await vi.waitFor(() => expect(callback).toHaveBeenCalled());
+
+  expect(httpClientUrls).toEqual(["https://example.convex.cloud"]);
 });
 
 it("reports convex_authenticated once Convex accepts the token, and only once", async () => {

@@ -26,6 +26,7 @@ import {
 } from "./native-session-client";
 import type { LogtoAuthEventHandler } from "./auth-events";
 import { SessionAuthEngine } from "./session-client";
+import { defaultSessionTransport } from "./session-transport";
 import type {
   LogtoSessionApi,
   LogtoSessionClientDescriptor,
@@ -113,7 +114,7 @@ export function ConvexLogtoSessionProvider({
       SecureStore,
     );
     return new SessionAuthEngine({
-      transport: client,
+      transport: defaultSessionTransport(client),
       api: sessionApi,
       storage,
       callbackPath: "",

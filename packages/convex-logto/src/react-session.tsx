@@ -21,9 +21,9 @@ import {
 import {
   SessionAuthEngine,
   SessionStorageArea,
-  type SessionTransport,
   type TokenStorageKind,
 } from "./session-client";
+import { defaultSessionTransport } from "./session-transport";
 import type { LogtoAuthEventHandler } from "./auth-events";
 import { createSessionDeviceBinding } from "./session-device";
 import {
@@ -214,7 +214,7 @@ export function ConvexLogtoSessionProvider({
           fetch: cookieFetch,
           deviceBinding: deviceBinding || cookieDeviceBinding,
         })
-      : (client as SessionTransport);
+      : defaultSessionTransport(client);
     return new SessionAuthEngine({
       transport,
       api: sessionApi,
