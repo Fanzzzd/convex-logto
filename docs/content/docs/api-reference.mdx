@@ -334,7 +334,9 @@ Returns `{ isAuthenticated, isLoading, user, signIn, signOut,
 signOutEverywhere, listSessions, renameSession, revokeSession }`.
 
 - `signIn({ returnTo? })` — one round-trip to mint the sign-in URL, then a
-  full-page redirect. `returnTo` must be a same-origin path. A failed action is
+  full-page redirect. `returnTo` must be a same-origin path, at most 2048
+  characters (sign-in is unauthenticated, so what it stores server-side is
+  bounded). A failed action is
   delivered to `onAuthError` before the promise rejects, so `void signIn()`
   remains observable.
 - `signOut({ postLogoutRedirectUri?, federated? })` — ends the component

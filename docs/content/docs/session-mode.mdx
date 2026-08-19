@@ -569,6 +569,36 @@ subject-wide revocation renders as a clean sign-out; the
 [example's `SessionBoundary`](https://github.com/Fanzzzd/convex-logto/blob/main/examples/vite-react-session/src/App.tsx)
 is a 15-line version.
 
+## Configuration faults never delete sessions
+
+A refresh has three possible failures, and the component keeps them apart. If
+Logto rejects the *grant* — the refresh token was revoked, reused, or the SSO
+session ended — that is terminal: the row is deleted and the user signs in again.
+If the failure describes your **deployment** instead, the session is kept and the
+error is transient, so fixing the environment variable is all the recovery anyone
+needs. And if the component cannot tell what Logto did with the grant, the
+outcome is **unknown** and gets its own conservative handling, below.
+
+Deployment faults include a wrong `LOGTO_CLIENT_SECRET` (`invalid_client`), a
+`LOGTO_ENDPOINT` that no longer matches the `iss` Logto issues — after moving
+behind a custom domain or a reverse proxy, say — and a missing `openid` scope.
+Any of these would otherwise destroy every session in the deployment, one refresh
+at a time.
+
+What makes keeping the session safe is that Logto *told us what it did*: it
+either returned a rotated refresh token, which the component persists before
+failing, or returned none, which means the stored one is still current.
+Presenting a superseded refresh token again would trip Logto's reuse detection
+and destroy the whole grant, including the sibling sessions that share it.
+
+The unknown case is a response the component cannot parse as a token response at
+all — a proxy or WAF interstitial where JSON was expected, or a body too large to
+read. Whether Logto processed the grant is then genuinely unknown, so the refresh
+claim is left to expire and that session requires a fresh sign-in. Guessing there
+is what risks spending a rotated token twice. (During *sign-in* the same response
+is terminal instead: the authorization code is spent either way, so there is
+nothing a retry could recover.)
+
 ## How the token dance works
 
 1. **Sign-in** — `signIn()` asks the component for an authorize URL. The OIDC
