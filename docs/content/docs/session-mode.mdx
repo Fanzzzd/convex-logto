@@ -475,15 +475,15 @@ For example, a TanStack Start server function can seed the root loader:
 
 ```tsx
 import { createServerFn } from "@tanstack/react-start";
-import {
-  getRequest,
-  setResponseHeaders,
-} from "@tanstack/react-start/server";
+import { getRequest, setResponseHeader } from "@tanstack/react-start/server";
 import { logtoCookieHandler } from "~/server/logto-cookie";
 
 const seedSession = createServerFn().handler(async () => {
   const seed = await logtoCookieHandler.getInitialToken(getRequest());
-  setResponseHeaders(Object.fromEntries(seed.headers));
+  // Forward header by header. `setResponseHeaders` takes a `Headers`-like
+  // object, so handing it `Object.fromEntries(seed.headers)` does not
+  // typecheck.
+  for (const [name, value] of seed.headers) setResponseHeader(name, value);
   return {
     initialToken: seed.initialToken,
     initialSessionId: seed.initialSessionId,
@@ -528,6 +528,7 @@ too (an ID token stays cryptographically valid until it expires):
 ```ts title="convex/me.ts"
 import { assertSubjectHasActiveSession } from "convex-logto";
 import { components } from "./_generated/api";
+import { query } from "./_generated/server";
 
 export const sensitive = query({
   handler: async (ctx) => {

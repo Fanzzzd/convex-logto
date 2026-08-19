@@ -60,7 +60,10 @@ export type ConvexLogtoSessionProviderProps = {
   /**
    * The module re-exporting `logtoSessionApi(...)`'s functions, e.g. `api.auth`.
    * The provider expects the exact names `signIn` / `callback` / `refresh` /
-   * `signOut` / `signOutEverywhere` / `sessionValid`.
+   * `signOut` / `signOutEverywhere` / `listSessions` / `renameSession` /
+   * `revokeSession` / `sessionValid`. Everything after `signOut` is
+   * feature-detected: omitting one disables that call with a message naming
+   * the export to add, so a rolling upgrade never breaks sign-in.
    */
   sessionApi: LogtoSessionApi;
   /**
