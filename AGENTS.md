@@ -79,6 +79,8 @@ clean clone (`git clone --no-hardlinks . /tmp/x && cd /tmp/x && pnpm install
   - Every path that installs credentials in the browser re-checks `authGeneration` after each await, so a response issued before a sign-out cannot resurrect it.
   - Anything that reads or mutates a session takes its subject from the caller's presented token, never from an argument — and a row killed by a watermark is invisible to reads too, or a "where am I signed in" list would show sessions that are already dead.
   - A page filtered after the read must be filled by scanning, not by slicing: dead rows must never consume a slot and hide the live device behind them. Bound the scan instead, and report truncation when it stops early.
+  - A delivery record separates *claimed* from *completed*. Releasing a claim after the work succeeded re-arms the replay it was there to stop, so only an unfinished claim may be forgotten.
+  - Watermark GC runs in its own transaction and collects a marker only once it governs nothing. Its batches are per-table: a sweep that filled the batch in *either* table must reschedule, or a backlog on one side stalls the other.
   - Validate a webhook payload only as far as the fields the library consumes — the event, `createdAt`, and the user id. Rejecting a signature-verified delivery turns Logto schema drift into silent, unretried event loss (Logto retries a 5xx, not a 4xx), and the same handler revokes sessions for deleted and suspended users. A field that drifts out of its declared type is dropped from the entity handed to sync handlers, never rejected.
 
 ## Releasing
