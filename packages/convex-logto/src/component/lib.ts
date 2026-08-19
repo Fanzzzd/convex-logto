@@ -19,6 +19,7 @@ import {
   TRANSACTION_TTL_MS,
   WEBHOOK_DELIVERY_GC_AFTER_MS,
   asDeploymentFault,
+  assertUsableDevicePublicKey,
   asSpentAuthorizationCode,
   assertDeviceProof,
   buildAuthorizeUrl,
@@ -575,6 +576,7 @@ export const exchange = action({
     // grant no one would ever hold.
     const label = normalizeSessionLabel(args.label);
     const client = normalizeClientDescriptor(args.client);
+    assertUsableDevicePublicKey(args.devicePublicKey);
     const transaction: ConsumedTransaction = await ctx.runMutation(
       internal.lib.consumeTransaction,
       {

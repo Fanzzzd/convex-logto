@@ -62,11 +62,15 @@ export function sessionReadCost(session: {
   logtoRefreshToken: string;
   lastIdToken: string;
   label?: string;
+  devicePublicKey?: { x: string; y: string };
 }): number {
   return (
     session.logtoRefreshToken.length +
     session.lastIdToken.length +
     (session.label?.length ?? 0) +
+    (session.devicePublicKey === undefined
+      ? 0
+      : session.devicePublicKey.x.length + session.devicePublicKey.y.length) +
     512
   );
 }
@@ -139,6 +143,40 @@ export function normalizeSessionLabel(
     );
   }
   return label;
+}
+
+/**
+ * A base64url P-256 coordinate: 32 bytes, so always exactly 43 characters.
+ */
+const DEVICE_KEY_COORDINATE = /^[\w-]{43}$/;
+
+/**
+ * Reject a device public key the component could never verify with.
+ *
+ * `x` and `y` are the only caller-supplied strings this component stores
+ * without a bound of their own, and {@link sessionReadCost} does not count
+ * them — so an unbounded key is a session row the list scan under-measures by
+ * however much the caller chose to send. The key is otherwise parsed only at
+ * verify time, inside a `try/catch` that returns `false`, so nothing on the
+ * write path would notice.
+ *
+ * Called before the authorization code is spent, like the label: a key that can
+ * never produce a valid proof should fail the sign-in it was offered to, not
+ * one refresh later.
+ */
+export function assertUsableDevicePublicKey(
+  key: DevicePublicKey | undefined,
+): void {
+  if (key === undefined) return;
+  if (
+    !DEVICE_KEY_COORDINATE.test(key.x) ||
+    !DEVICE_KEY_COORDINATE.test(key.y)
+  ) {
+    throw terminal(
+      "device_key_malformed",
+      "The device public key is not a P-256 JWK: `x` and `y` must each be 43 base64url characters.",
+    );
+  }
 }
 
 /**

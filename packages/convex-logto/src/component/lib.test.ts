@@ -903,6 +903,33 @@ describe("bounded token endpoint", () => {
     }
   });
 
+  it("rejects a malformed device key before spending the code", async () => {
+    // A key that can never produce a valid proof should fail the sign-in it was
+    // offered to, not one refresh later — and never after the authorization code
+    // has bought a grant no one would hold.
+    const runMutation = vi.fn();
+    await expect(
+      exchangeActionHandler(
+        { runQuery: () => Promise.resolve(null), runMutation },
+        {
+          ...refreshArgs,
+          code: "code",
+          state: "state",
+          redirectUri: "https://app.example.com/callback",
+          devicePublicKey: {
+            kty: "EC" as const,
+            crv: "P-256" as const,
+            x: "A".repeat(500_000),
+            y: "A".repeat(400_000),
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "device_key_malformed" },
+    });
+    expect(runMutation).not.toHaveBeenCalled();
+  });
+
   it("reports Logto's own rejection on the sign-in path, terminally", async () => {
     // `classifyTokenEndpointFailure` calls this transient for refresh's sake.
     // Here the transaction is already consumed, so a retry can only report
