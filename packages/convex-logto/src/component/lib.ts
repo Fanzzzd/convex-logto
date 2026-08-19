@@ -1796,13 +1796,13 @@ export const forgetWebhookDelivery = mutation({
 /**
  * Delete revocation watermarks that can no longer kill anything: no session the
  * marker covers survives, and it is old enough that none can appear. Returns
- * how many rows were deleted so `gc` knows whether to continue.
+ * how many rows were deleted, so the caller knows whether to continue.
  *
  * A marker that still governs a surviving row is skipped, not deleted — that
  * row is logically dead *because* of the marker, and dropping it early would
- * hand its token back its authority. Skipped markers are the oldest, so they
- * hold up younger ones until the session sweep in the same mutation removes
- * what they govern; that is the safe direction to be stuck in.
+ * hand its token back its authority. Skipped markers are the oldest in the
+ * table, so they hold up younger ones until `gc`'s dead-session sweep removes
+ * what they govern; being stuck retaining watermarks is the safe direction.
  */
 async function collectRevocationMarkers(
   db: DatabaseWriter,
