@@ -259,9 +259,12 @@ it("survives a sessionValid query error instead of blanking the app", async () =
   await render(undefined);
 
   expect(capturedSignIn).not.toBeNull();
-  expect(authErrors.map((error) => error.message)).toContainEqual(
-    expect.stringContaining("reactive revocation is off"),
+  const reports = authErrors.filter((error) =>
+    error.message.includes("reactive revocation is off"),
   );
+  // Exactly once. The wrapper is rebuilt inside the effect, so the engine's
+  // identity dedupe cannot cover it; the watcher tracks the query error itself.
+  expect(reports).toHaveLength(1);
 });
 
 it("reports convex_authenticated once Convex accepts the token, and only once", async () => {

@@ -1091,6 +1091,51 @@ describe("callback", () => {
     );
   });
 
+  it("retries an exchange that never reached the deployment", async () => {
+    // A dropped connection or the transport deadline means the request may never
+    // have arrived, so nothing was consumed. Losing a sign-in to one bad packet
+    // is worse than an attempt that finds nothing.
+    const { engine, storage, handlers } = makeHarness();
+    setURL("http://localhost:5173/callback?code=c1&state=s1");
+    storage.stashTransaction({ state: "s1" });
+    handlers.callback
+      .mockRejectedValueOnce(new Error("Failed to fetch"))
+      .mockResolvedValueOnce(sessionResult(1));
+
+    engine.start();
+    expect((await settled(engine)).status).toBe("authenticated");
+    expect(handlers.callback).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports the first error when the retry finds the transaction gone", async () => {
+    // The retry proves the first attempt landed after all. `transaction_not_found`
+    // is the stale-callback diagnosis that would bury what actually went wrong.
+    const { engine, storage, handlers, onAuthError } = makeHarness();
+    setURL("http://localhost:5173/callback?code=c1&state=s1");
+    storage.stashTransaction({ state: "s1" });
+    handlers.callback
+      .mockRejectedValueOnce(new Error("connection closed mid-flight"))
+      .mockRejectedValueOnce(
+        new ConvexError({
+          kind: "terminal",
+          code: "transaction_not_found",
+          message: "no such sign-in transaction",
+        }),
+      );
+
+    engine.start();
+    expect((await settled(engine)).status).toBe("unauthenticated");
+    expect(handlers.callback).toHaveBeenCalledTimes(2);
+    expect(onAuthError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "connection closed mid-flight" }),
+    );
+    expect(onAuthError).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining("no such sign-in transaction"),
+      }),
+    );
+  });
+
   it("benign ?error=access_denied → back to the app without reporting an error", async () => {
     const { engine, navigate, onAuthError } = makeHarness();
     setURL("http://localhost:5173/callback?error=access_denied&state=s1");

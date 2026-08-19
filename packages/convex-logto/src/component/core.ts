@@ -668,6 +668,33 @@ export function transient(
 }
 
 /**
+ * Re-classify a token-endpoint failure that happened on the *sign-in* path.
+ *
+ * {@link classifyTokenEndpointFailure} answers for `refresh`, where transient is
+ * the safe default because terminal deletes the session row. Sign-in has no
+ * session to lose, and by the time Logto is contacted the transaction row is
+ * already consumed and the authorization code spent — so a retry can only find
+ * nothing and report `transaction_not_found`, burying the diagnosis Logto just
+ * gave us. Keep the code and the message; only the verdict changes.
+ */
+export function asSpentAuthorizationCode(
+  error: unknown,
+): ConvexError<SessionErrorData> {
+  // Not "the authorization code is spent": a `logto_unreachable` may never have
+  // reached Logto at all. What is always true is that the transaction row is
+  // consumed, so *this* attempt is unrepeatable whatever happened downstream.
+  const suffix =
+    " Start sign-in again: this sign-in attempt cannot be retried.";
+  if (error instanceof ConvexError && isSessionErrorData(error.data)) {
+    return terminal(error.data.code, `${error.data.message}${suffix}`);
+  }
+  return terminal(
+    "sign_in_failed",
+    `Could not exchange the authorization code with Logto.${suffix}`,
+  );
+}
+
+/**
  * Re-classify a failure that happened *after* Logto answered with a well-formed
  * token response.
  *
@@ -682,31 +709,6 @@ export function transient(
  * next. A response we could not parse is a different case — the outcome is
  * unknown and `outcomeUnknown` handles it.
  */
-/**
- * Re-classify a token-endpoint failure that happened on the *sign-in* path.
- *
- * {@link classifyTokenEndpointFailure} answers for `refresh`, where transient is
- * the safe default because terminal deletes the session row. Sign-in has no
- * session to lose, and by the time Logto is contacted the transaction row is
- * already consumed and the authorization code spent — so a retry can only find
- * nothing and report `transaction_not_found`, burying the diagnosis Logto just
- * gave us. Keep the code and the message; only the verdict changes.
- */
-export function asSpentAuthorizationCode(
-  error: unknown,
-): ConvexError<SessionErrorData> {
-  const suffix =
-    " Start sign-in again: the authorization code is spent, so this attempt " +
-    "cannot be retried.";
-  if (error instanceof ConvexError && isSessionErrorData(error.data)) {
-    return terminal(error.data.code, `${error.data.message}${suffix}`);
-  }
-  return terminal(
-    "sign_in_failed",
-    `Could not exchange the authorization code with Logto.${suffix}`,
-  );
-}
-
 export function asDeploymentFault(
   error: unknown,
 ): ConvexError<SessionErrorData> {

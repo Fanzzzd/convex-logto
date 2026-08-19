@@ -10,8 +10,12 @@ Do not open a public issue until a fix or coordinated disclosure is ready.
 CI runs `pnpm audit:dependencies` and fails on every advisory except the three
 exact dependency paths and versions below. The gate also fails if an exception
 moves to another dependency path or becomes stale. These are build-time-only
-dependencies of the Expo example, not dependencies shipped by the
-`convex-logto` npm package.
+dependencies of the Expo examples (`examples/expo` and
+`examples/expo-session`, which share the same Expo toolchain), not dependencies
+shipped by the `convex-logto` npm package. `pnpm audit` reports one resolved
+path per advisory, so the paths below name whichever example it resolves
+through; if that ever changes the gate fails closed rather than silently
+widening.
 
 | Advisory | Resolved version and dependency path | Reason for temporary exception |
 | --- | --- | --- |

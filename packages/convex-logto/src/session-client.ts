@@ -2,7 +2,11 @@
 // machine, and the refresh pipeline. `react-session.tsx` is thin React glue
 // over this. No Logto SDK — the server (component) owns all OIDC traffic.
 
-import type { FunctionReference } from "convex/server";
+import type {
+  FunctionArgs,
+  FunctionReference,
+  FunctionReturnType,
+} from "convex/server";
 import { ConvexError } from "convex/values";
 import {
   createAuthEventEmitter,
@@ -226,6 +230,13 @@ export function sessionErrorKind(error: unknown): "terminal" | "transient" {
     if (isRecord(data) && data.kind === "terminal") return "terminal";
   }
   return "transient";
+}
+
+/** The component's own error code, when the deployment answered with one. */
+function sessionErrorCode(error: unknown): string | null {
+  if (!(error instanceof ConvexError)) return null;
+  const data: unknown = error.data;
+  return isRecord(data) && typeof data.code === "string" ? data.code : null;
 }
 
 // --- storage -----------------------------------------------------------------
@@ -764,20 +775,13 @@ export class SessionAuthEngine {
       );
       // Nothing has been minted yet, so simply abandoning the code is enough.
       if (generation !== this.authGeneration) return;
-      // Deliberately not `retrying`: the exchange is single-use. The component
-      // consumes the transaction row before it contacts Logto, so a second
-      // attempt can only report `transaction_not_found` — replacing whatever
-      // actually went wrong with a stale-callback diagnosis.
-      const result = await this.options.transport.action(
-        this.options.api.callback,
-        {
-          code,
-          state,
-          redirectUri,
-          ...(devicePublicKey === undefined ? {} : { devicePublicKey }),
-          ...(client === undefined ? {} : { client }),
-        },
-      );
+      const result = await this.exchangeCallback({
+        code,
+        state,
+        redirectUri,
+        ...(devicePublicKey === undefined ? {} : { devicePublicKey }),
+        ...(client === undefined ? {} : { client }),
+      });
       if (generation !== this.authGeneration) {
         await this.revokeAbandonedSession(result.sessionToken);
         return;
@@ -839,6 +843,45 @@ export class SessionAuthEngine {
       // previous session survives in storage, restore() picks it up.
       await this.restore();
       this.navigateReplace(this.options.afterSignIn);
+    }
+  }
+
+  /**
+   * Run the single-use callback exchange, retrying only a failure that proves
+   * nothing was consumed.
+   *
+   * The component consumes the transaction row before it contacts Logto, so a
+   * blind retry can only report `transaction_not_found` — replacing whatever
+   * actually went wrong with a stale-callback diagnosis. A `ConvexError` means
+   * the deployment ran the function and answered, so the row is spent: never
+   * retry one.
+   *
+   * A transport failure is the opposite case. A dropped connection or the
+   * transport's own deadline may mean the request never arrived, and losing a
+   * sign-in to one bad packet is worse than an attempt that finds nothing. Retry
+   * once — and if the retry reports the row is gone, the first attempt did land
+   * after all, so report *its* error rather than the stale-callback one.
+   */
+  private async exchangeCallback(
+    args: FunctionArgs<LogtoSessionApi["callback"]>,
+  ): Promise<FunctionReturnType<LogtoSessionApi["callback"]>> {
+    try {
+      return await this.options.transport.action(
+        this.options.api.callback,
+        args,
+      );
+    } catch (first) {
+      if (first instanceof ConvexError) throw first;
+      try {
+        return await this.options.transport.action(
+          this.options.api.callback,
+          args,
+        );
+      } catch (second) {
+        throw sessionErrorCode(second) === "transaction_not_found"
+          ? first
+          : second;
+      }
     }
   }
 
@@ -1586,9 +1629,11 @@ export class SessionAuthEngine {
 
   private async recover(generation: number): Promise<void> {
     for (let attempt = 0; ; attempt += 1) {
+      // `Math.min` already clamps to the last entry, so the index is always in
+      // range — no fallback to write, and none to leave silently wrong if the
+      // ladder changes.
       const delay =
-        RECOVERY_DELAYS_MS[Math.min(attempt, RECOVERY_DELAYS_MS.length - 1)] ??
-        30_000;
+        RECOVERY_DELAYS_MS[Math.min(attempt, RECOVERY_DELAYS_MS.length - 1)];
       await this.recoverySleep(delay);
       // A sign-out, a revocation, or another tab getting there first all end the
       // retry: there is nothing left to re-present.

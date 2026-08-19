@@ -393,8 +393,15 @@ function RevocationWatcher() {
     return request;
   }, [hasSessionId, sessionApi, sessionId]);
   const valid: unknown = useQueries(queries).valid;
+  // The engine dedupes by Error identity, but the wrapper below is rebuilt on
+  // every effect run, so that dedupe cannot cover it. Track the query error
+  // itself — the object `useQueries` keeps stable — so a remount or a re-run
+  // triggered by a neighbouring dependency cannot report the same fault twice.
+  const reportedFailure = useRef<unknown>(null);
   useEffect(() => {
     if (valid instanceof Error) {
+      if (reportedFailure.current === valid) return;
+      reportedFailure.current = valid;
       engine.reportWatchFailure(
         new Error(
           "convex-logto: reactive revocation is off — the sessionValid query failed. " +
@@ -404,6 +411,7 @@ function RevocationWatcher() {
       );
       return;
     }
+    reportedFailure.current = null;
     if (hasSessionId && valid === false) engine.handleRevoked();
   }, [engine, hasSessionId, valid]);
   return null;
