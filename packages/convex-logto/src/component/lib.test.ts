@@ -1,17 +1,21 @@
 import { getFunctionName, type FunctionReference } from "convex/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   beginRefresh,
   beginSubjectRevocationByToken,
   completeRefresh,
+  completeWebhookDelivery,
   consumeSessionForSignOut,
   devicePublicKeyForToken,
   exchange,
+  forgetWebhookDelivery,
   gc,
+  gcRevocationMarkers,
   killSession,
   killSubjectSessionsByToken,
   deleteOwnedSession,
   listSubjectSessions,
+  recordWebhookDelivery,
   refresh,
   releaseClaim,
   resolveCallerSession,
@@ -450,6 +454,9 @@ const consumeSessionForSignOutHandler = internalHandler<
   SignOutConsumptionResult
 >(consumeSessionForSignOut);
 const gcHandler = internalHandler<Record<string, never>, null>(gc);
+const gcMarkersHandler = internalHandler<Record<string, never>, null>(
+  gcRevocationMarkers,
+);
 
 type SignOutArgs = {
   endpoint: string;
@@ -1844,7 +1851,12 @@ describe("gc token generations", () => {
       ],
     );
 
-    await expect(gcHandler({ db: harness.db }, {})).resolves.toBeNull();
+    await expect(
+      gcHandler(
+        { db: harness.db, scheduler: { runAfter: () => Promise.resolve() } },
+        {},
+      ),
+    ).resolves.toBeNull();
     expect(harness.session()).toBeNull();
     expect(harness.generations()).toEqual([]);
     expect(harness.deleted).toEqual([
@@ -1937,6 +1949,17 @@ describe("gc revocation watermarks", () => {
 
   const NOW = Date.now();
   const ANCIENT = NOW - REVOCATION_MARKER_GC_AFTER_MS - 60_000;
+  const scheduled: unknown[] = [];
+  const scheduler = {
+    runAfter: (_delay: number, ref: unknown) => {
+      scheduled.push(ref);
+      return Promise.resolve();
+    },
+  };
+
+  beforeEach(() => {
+    scheduled.length = 0;
+  });
 
   it("collects a watermark once nothing it governs survives", async () => {
     // Back-channel logout writes one row per OP session that ever ends,
@@ -1960,7 +1983,9 @@ describe("gc revocation watermarks", () => {
       ],
     });
 
-    await expect(gcHandler({ db: harness.db }, {})).resolves.toBeNull();
+    await expect(
+      gcMarkersHandler({ db: harness.db, scheduler }, {}),
+    ).resolves.toBeNull();
     expect(harness.rows("subjectRevocations")).toEqual([]);
     expect(harness.rows("sidRevocations")).toEqual([]);
     expect(harness.rows("sessions")).toEqual(["live"]);
@@ -1985,9 +2010,46 @@ describe("gc revocation watermarks", () => {
       ],
     });
 
-    await expect(gcHandler({ db: harness.db }, {})).resolves.toBeNull();
+    await expect(
+      gcMarkersHandler({ db: harness.db, scheduler }, {}),
+    ).resolves.toBeNull();
     expect(harness.rows("subjectRevocations")).toEqual(["subject-marker"]);
     expect(harness.rows("sidRevocations")).toEqual(["sid-marker"]);
+  });
+
+  it("continues durably only when a full batch was actually collected", async () => {
+    // Rescheduling on a full batch that *skipped* everything would spin on the
+    // same rows forever, since a skipped marker is not deleted.
+    const collectable = Array.from({ length: 8 }, (_, index) => ({
+      _id: `marker-${index}`,
+      subject: `u${index}`,
+      revokedAt: ANCIENT,
+    }));
+    const harness = gcHarness({
+      subjectRevocations: collectable,
+      sidRevocations: [],
+      sessions: [],
+    });
+
+    await gcMarkersHandler({ db: harness.db, scheduler }, {});
+    expect(harness.rows("subjectRevocations")).toEqual([]);
+    expect(scheduled).toHaveLength(1);
+
+    const stuck = gcHarness({
+      subjectRevocations: collectable,
+      sidRevocations: [],
+      sessions: collectable.map((marker, index) => ({
+        _id: `stranded-${index}`,
+        subject: marker.subject,
+        createdAt: ANCIENT - 1,
+        lastRefreshedAt: NOW,
+      })),
+    });
+    scheduled.length = 0;
+
+    await gcMarkersHandler({ db: stuck.db, scheduler }, {});
+    expect(stuck.rows("subjectRevocations")).toHaveLength(8);
+    expect(scheduled).toHaveLength(0);
   });
 
   it("keeps a watermark inside the horizon even with nothing left to kill", async () => {
@@ -2003,9 +2065,109 @@ describe("gc revocation watermarks", () => {
       sessions: [],
     });
 
-    await expect(gcHandler({ db: harness.db }, {})).resolves.toBeNull();
+    await expect(
+      gcMarkersHandler({ db: harness.db, scheduler }, {}),
+    ).resolves.toBeNull();
     expect(harness.rows("subjectRevocations")).toEqual(["subject-marker"]);
     expect(harness.rows("sidRevocations")).toEqual(["sid-marker"]);
+  });
+});
+
+describe("webhook delivery dedupe", () => {
+  type DeliveryRow = {
+    _id: string;
+    bodyHash: string;
+    seenAt: number;
+    completedAt?: number;
+  };
+
+  function deliveryHarness(initial: DeliveryRow[]) {
+    let rows = initial.map((row) => ({ ...row }));
+    const db = {
+      query: () => ({
+        withIndex: (_index: string, configure: (query: unknown) => unknown) => {
+          let hash = "";
+          configure({
+            eq(_field: string, value: string) {
+              hash = value;
+              return this;
+            },
+          });
+          return {
+            unique: () =>
+              Promise.resolve(
+                rows.find((row) => row.bodyHash === hash) ?? null,
+              ),
+          };
+        },
+      }),
+      insert: (_table: string, value: Omit<DeliveryRow, "_id">) => {
+        rows.push({ _id: `delivery-${rows.length + 1}`, ...value });
+        return Promise.resolve("delivery");
+      },
+      patch: (id: string, patch: Partial<DeliveryRow>) => {
+        rows = rows.map((row) => (row._id === id ? { ...row, ...patch } : row));
+        return Promise.resolve();
+      },
+      delete: (id: string) => {
+        rows = rows.filter((row) => row._id !== id);
+        return Promise.resolve();
+      },
+    };
+    return { db, rows: () => rows };
+  }
+
+  const record = internalHandler<{ bodyHash: string; now: number }, unknown>(
+    recordWebhookDelivery,
+  );
+  const complete = internalHandler<{ bodyHash: string; now: number }, null>(
+    completeWebhookDelivery,
+  );
+  const forget = internalHandler<{ bodyHash: string }, null>(
+    forgetWebhookDelivery,
+  );
+
+  it("reports a claim and a completion separately", async () => {
+    const harness = deliveryHarness([]);
+    await expect(
+      record({ db: harness.db }, { bodyHash: "h", now: 1 }),
+    ).resolves.toEqual({ claimed: true, completed: false });
+    // A claim proves a delivery started, not that its work committed.
+    await expect(
+      record({ db: harness.db }, { bodyHash: "h", now: 2 }),
+    ).resolves.toEqual({ claimed: false, completed: false });
+
+    await complete({ db: harness.db }, { bodyHash: "h", now: 3 });
+    await expect(
+      record({ db: harness.db }, { bodyHash: "h", now: 4 }),
+    ).resolves.toEqual({ claimed: false, completed: true });
+  });
+
+  it("records completion even after the claim was released", async () => {
+    const harness = deliveryHarness([]);
+    await record({ db: harness.db }, { bodyHash: "h", now: 1 });
+    await forget({ db: harness.db }, { bodyHash: "h" });
+
+    await complete({ db: harness.db }, { bodyHash: "h", now: 2 });
+    await expect(
+      record({ db: harness.db }, { bodyHash: "h", now: 3 }),
+    ).resolves.toEqual({ claimed: false, completed: true });
+  });
+
+  it("never releases a delivery that completed", async () => {
+    // A retry can take over an abandoned claim and finish while the original
+    // owner is still failing. Deleting the row then would erase the only proof
+    // the work happened, re-arming a replay.
+    const harness = deliveryHarness([]);
+    await record({ db: harness.db }, { bodyHash: "h", now: 1 });
+    await complete({ db: harness.db }, { bodyHash: "h", now: 2 });
+
+    await forget({ db: harness.db }, { bodyHash: "h" });
+
+    expect(harness.rows()).toHaveLength(1);
+    await expect(
+      record({ db: harness.db }, { bodyHash: "h", now: 3 }),
+    ).resolves.toEqual({ claimed: false, completed: true });
   });
 });
 

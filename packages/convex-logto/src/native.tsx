@@ -90,6 +90,32 @@ type ConfigState =
 // `useLogtoAuth().signIn()` can default to it without every caller repeating it.
 const RedirectUriContext = createContext<string | undefined>(undefined);
 
+// `@logto/rn` does not proxy its errors the way the web SDK does: `signIn` and
+// `signOut` reject. The shipped pattern is `void signIn()` in an onPress, so
+// without somewhere to report them a dismissed browser sheet or an offline
+// sign-out becomes an unhandled rejection and nothing else.
+const AuthErrorContext = createContext<((error: Error) => void) | undefined>(
+  undefined,
+);
+
+/** Reports a recoverable auth error: loud in the console, surfaced to `onAuthError`. */
+function reportAuthError(
+  onAuthError: ((error: Error) => void) | undefined,
+  error: Error,
+): void {
+  console.error(`convex-logto: ${error.message}`, error);
+  try {
+    onAuthError?.(error);
+  } catch {
+    // An app's own handler must not break sign-in or sign-out.
+  }
+}
+
+function asAuthError(caught: unknown, fallbackMessage: string): Error {
+  if (caught instanceof Error) return caught;
+  return new Error(fallbackMessage, { cause: caught });
+}
+
 export type ConvexLogtoProviderProps = {
   /** Your `ConvexReactClient`. */
   client: ConvexReactClient;
@@ -120,6 +146,15 @@ export type ConvexLogtoProviderProps = {
    * lifecycle, so the settle and refresh phases belong to session mode.
    */
   onAuthEvent?: LogtoAuthEventHandler;
+  /**
+   * Called when sign-in or sign-out fails recoverably (Logto unreachable, the
+   * user dismissing the system browser, an expired session). `@logto/rn`
+   * rejects rather than storing the error, so without this a `void signIn()` in
+   * an `onPress` — the documented pattern — is an unhandled rejection and
+   * nothing else. A failed sign-out matters as much: the SDK reaches Logto
+   * before clearing tokens, so the user stays signed in.
+   */
+  onAuthError?: (error: Error) => void;
   children: ReactNode;
 } & (
   | {
@@ -169,6 +204,7 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
     resources,
     fallback = null,
     onAuthEvent,
+    onAuthError,
     children,
   } = props;
   const staticConfig = props.config;
@@ -254,12 +290,14 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
 
   return (
     <RedirectUriContext.Provider value={redirectUri}>
-      <LogtoProvider config={logtoConfig}>
-        <ConvexProviderWithAuth client={client} useAuth={useAuthFromLogto}>
-          <ConvexAuthPhaseWatcher events={events} />
-          {children}
-        </ConvexProviderWithAuth>
-      </LogtoProvider>
+      <AuthErrorContext.Provider value={onAuthError}>
+        <LogtoProvider config={logtoConfig}>
+          <ConvexProviderWithAuth client={client} useAuth={useAuthFromLogto}>
+            <ConvexAuthPhaseWatcher events={events} />
+            {children}
+          </ConvexProviderWithAuth>
+        </LogtoProvider>
+      </AuthErrorContext.Provider>
     </RedirectUriContext.Provider>
   );
 }
@@ -310,6 +348,7 @@ export function useLogtoAuth(): LogtoAuth {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const { signIn, signOut, getIdTokenClaims } = useLogto();
   const defaultRedirectUri = useContext(RedirectUriContext);
+  const onAuthError = useContext(AuthErrorContext);
   const [user, setUser] = useState<IdTokenClaims>();
 
   useEffect(() => {
@@ -332,20 +371,45 @@ export function useLogtoAuth(): LogtoAuth {
   }, [isAuthenticated, getIdTokenClaims]);
 
   const doSignIn = useCallback(
-    (redirectUri?: string) => {
+    async (redirectUri?: string) => {
       const uri = redirectUri ?? defaultRedirectUri;
-      if (!uri) {
-        throw new Error(
-          "convex-logto: signIn needs a redirect URI on native — pass one to " +
-            "signIn() or set `redirectUri` on <ConvexLogtoProvider> (e.g. " +
-            '"io.logto://callback").',
+      try {
+        if (!uri) {
+          throw new Error(
+            "convex-logto: signIn needs a redirect URI on native — pass one to " +
+              "signIn() or set `redirectUri` on <ConvexLogtoProvider> (e.g. " +
+              '"io.logto://callback").',
+          );
+        }
+        await signIn(uri);
+      } catch (caught) {
+        // Dismissing the system browser rejects with `auth_session_failed`.
+        // Report it so an app's "signing in…" state has something to clear on.
+        const failure = asAuthError(
+          caught,
+          "convex-logto: starting Logto sign-in failed.",
         );
+        reportAuthError(onAuthError, failure);
+        throw failure;
       }
-      return signIn(uri);
     },
-    [signIn, defaultRedirectUri],
+    [signIn, defaultRedirectUri, onAuthError],
   );
-  const doSignOut = useCallback(() => signOut(), [signOut]);
+  const doSignOut = useCallback(async () => {
+    try {
+      await signOut();
+    } catch (caught) {
+      // `@logto/client` reaches OIDC discovery before it clears tokens, so an
+      // unreachable Logto leaves the user signed in with a live ID token while
+      // the button looks like it worked.
+      const failure = asAuthError(
+        caught,
+        "convex-logto: Logto sign-out failed.",
+      );
+      reportAuthError(onAuthError, failure);
+      throw failure;
+    }
+  }, [signOut, onAuthError]);
 
   return useMemo(
     () => ({

@@ -121,6 +121,7 @@ async function logoutToken(options: {
 
 const refs = {
   record: { fn: "record" },
+  complete: { fn: "complete" },
   forget: { fn: "forget" },
   killSid: { fn: "killSid" },
   killSubject: { fn: "killSubject" },
@@ -129,6 +130,7 @@ const refs = {
 const sessions = {
   lib: {
     recordWebhookDelivery: refs.record,
+    completeWebhookDelivery: refs.complete,
     forgetWebhookDelivery: refs.forget,
     killSessionsBySid: refs.killSid,
     killSubjectSessions: refs.killSubject,
@@ -144,7 +146,8 @@ type RouteHandler = (
 ) => Promise<Response>;
 
 function harness(options?: {
-  record?: boolean;
+  /** What `recordWebhookDelivery` reports: a fresh claim by default. */
+  delivery?: { claimed: boolean; completed: boolean };
   killSidError?: Error;
   customPath?: string;
 }) {
@@ -160,7 +163,12 @@ function harness(options?: {
     );
   vi.stubGlobal("fetch", fetchMock);
   const handlers: Record<string, ReturnType<typeof vi.fn>> = {
-    record: vi.fn().mockResolvedValue(options?.record ?? true),
+    record: vi
+      .fn()
+      .mockResolvedValue(
+        options?.delivery ?? { claimed: true, completed: false },
+      ),
+    complete: vi.fn().mockResolvedValue(null),
     forget: vi.fn().mockResolvedValue(null),
     killSid: options?.killSidError
       ? vi.fn().mockRejectedValue(options.killSidError)
@@ -258,7 +266,11 @@ describe("Logto back-channel logout", () => {
       sid: "logto-session-1",
     });
     expect(handlers.killSubject).not.toHaveBeenCalled();
-    expect(calls.map((call) => call.fn)).toEqual(["record", "killSid"]);
+    expect(calls.map((call) => call.fn)).toEqual([
+      "record",
+      "killSid",
+      "complete",
+    ]);
   });
 
   it("kills every subject session when sid is absent", async () => {
@@ -312,11 +324,9 @@ describe("Logto back-channel logout", () => {
     expect(handlers.killSid).toHaveBeenCalledTimes(1);
   });
 
-  it("answers 200 and performs no revocation for a replayed jti", async () => {
+  it("answers 200 and performs no revocation for a completed replay", async () => {
     const { endpoint, handler, handlers, calls, runMutation, runAction } =
-      harness({
-        record: false,
-      });
+      harness({ delivery: { claimed: false, completed: true } });
     const token = await logoutToken({ endpoint });
 
     const response = await handler(
@@ -328,6 +338,46 @@ describe("Logto back-channel logout", () => {
     expect(handlers.killSid).not.toHaveBeenCalled();
     expect(handlers.killSubject).not.toHaveBeenCalled();
     expect(calls.map((call) => call.fn)).toEqual(["record"]);
+  });
+
+  it("redoes the revocation for a claim that never completed", async () => {
+    // A claim proves a delivery started. If its revocation never committed —
+    // the mutation failed and the release failed too — answering 200 would
+    // leave the user signed in through a completed OIDC logout for the whole
+    // dedupe window. Revocation is idempotent, so redo it.
+    const { endpoint, handler, handlers, calls, runMutation, runAction } =
+      harness({ delivery: { claimed: false, completed: false } });
+    const token = await logoutToken({ endpoint });
+
+    const response = await handler(
+      { runMutation, runAction },
+      logoutRequest(token),
+    );
+
+    expect(response.status).toBe(200);
+    expect(handlers.killSid).toHaveBeenCalledTimes(1);
+    expect(calls.map((call) => call.fn)).toEqual([
+      "record",
+      "killSid",
+      "complete",
+    ]);
+  });
+
+  it("records completion only after the revocation committed", async () => {
+    const { endpoint, handler, calls, runMutation, runAction } = harness();
+    const token = await logoutToken({ endpoint });
+
+    const response = await handler(
+      { runMutation, runAction },
+      logoutRequest(token),
+    );
+
+    expect(response.status).toBe(200);
+    expect(calls.map((call) => call.fn)).toEqual([
+      "record",
+      "killSid",
+      "complete",
+    ]);
   });
 
   it.each([

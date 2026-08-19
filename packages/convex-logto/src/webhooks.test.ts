@@ -342,7 +342,9 @@ function sessionsHarness(overrides?: {
 }) {
   const calls: Array<{ fn: string; args: unknown }> = [];
   const handlers: Record<string, ReturnType<typeof vi.fn>> = {
-    record: overrides?.record ?? vi.fn().mockResolvedValue(true),
+    record:
+      overrides?.record ??
+      vi.fn().mockResolvedValue({ claimed: true, completed: false }),
     forget: vi.fn().mockResolvedValue(null),
     kill: vi.fn().mockResolvedValue(0),
     sync: overrides?.sync ?? vi.fn().mockResolvedValue(null),
@@ -390,7 +392,7 @@ describe("registerLogtoWebhook with sessions", () => {
 
   it("answers 200 on a duplicate delivery WITHOUT re-running sync", async () => {
     const { handler, runMutation, runAction, handlers } = sessionsHarness({
-      record: vi.fn().mockResolvedValue(false),
+      record: vi.fn().mockResolvedValue({ claimed: false, completed: true }),
     });
     const res = await handler(
       { runMutation, runAction },
