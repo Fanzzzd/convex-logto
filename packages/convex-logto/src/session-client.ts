@@ -1438,6 +1438,16 @@ export class SessionAuthEngine {
   }
 
   /** The reactive `sessionValid` subscription pushed `false`: the session was revoked. */
+  /**
+   * Surface a failure the provider detected rather than the engine — today a
+   * broken `sessionValid` subscription. Routed through the same observer as
+   * every other auth error, and deduped by Error identity, so a re-render that
+   * hands back the same object stays quiet.
+   */
+  reportWatchFailure(error: Error): void {
+    this.reportError(error);
+  }
+
   handleRevoked(): void {
     this.authGeneration += 1;
     this.events("revoked");
