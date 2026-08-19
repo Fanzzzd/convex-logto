@@ -109,6 +109,19 @@ function normalizeDisplayText(raw: string): string {
 }
 
 /**
+ * Would this label be rejected for its length? Exported so the browser half can
+ * pre-empt the round-trip against *exactly* the rule the component applies:
+ * normalization first, then a code-point count. Measuring the raw string
+ * instead would reject a label the component would have accepted, because
+ * normalization collapses whitespace and drops invisible characters.
+ */
+export function sessionLabelTooLong(raw: string): boolean {
+  return (
+    Array.from(normalizeDisplayText(raw)).length > SESSION_LABEL_MAX_LENGTH
+  );
+}
+
+/**
  * Normalize a user-chosen session label. Rejects rather than truncates: a
  * silently shortened label is worse than a clear error, because the user is
  * naming a device they need to recognise later.
@@ -119,7 +132,7 @@ export function normalizeSessionLabel(
   if (raw === undefined) return undefined;
   const label = normalizeDisplayText(raw);
   if (label === "") return undefined;
-  if (Array.from(label).length > SESSION_LABEL_MAX_LENGTH) {
+  if (sessionLabelTooLong(label)) {
     throw terminal(
       "session_label_too_long",
       `A session label may be at most ${SESSION_LABEL_MAX_LENGTH} characters.`,

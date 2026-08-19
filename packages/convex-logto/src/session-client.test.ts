@@ -1722,6 +1722,12 @@ describe("session management", () => {
     await expect(
       engine.renameSession("s2", "🔐".repeat(64)),
     ).resolves.toBeUndefined();
+    // The local check measures what the component would store, not the raw
+    // input: whitespace collapses and invisible characters drop out first, so
+    // a label the component accepts is never refused here.
+    await expect(
+      engine.renameSession("s2", "x  ".repeat(32)),
+    ).resolves.toBeUndefined();
   });
 
   it("revokes another session without touching this client's credentials", async () => {

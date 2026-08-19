@@ -11,7 +11,11 @@ import {
   type LogtoAuthEventSource,
 } from "./auth-events";
 import { classifySignInSearch, isSafeReturnTo } from "./callback";
-import { SESSION_LABEL_MAX_LENGTH, decodeJwtSegment } from "./component/core";
+import {
+  SESSION_LABEL_MAX_LENGTH,
+  decodeJwtSegment,
+  sessionLabelTooLong,
+} from "./component/core";
 import { normalizeHttpNavigationUrl } from "./component/endpoint";
 import {
   SessionDeviceBindingError,
@@ -1157,10 +1161,7 @@ export class SessionAuthEngine {
     // defined as "this session is gone" — an app that follows that taxonomy
     // would sign the user out for typing a long device name. Failing locally
     // also saves a round-trip on an input the user can simply shorten.
-    if (
-      label !== undefined &&
-      Array.from(label).length > SESSION_LABEL_MAX_LENGTH
-    ) {
+    if (label !== undefined && sessionLabelTooLong(label)) {
       throw new Error(
         `convex-logto: a session label may be at most ${SESSION_LABEL_MAX_LENGTH} characters.`,
       );
