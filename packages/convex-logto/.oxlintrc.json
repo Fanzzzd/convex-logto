@@ -75,6 +75,7 @@
     },
     {
       "files": [
+        "src/native.bridge.test.tsx",
         "src/react.bridge.test.tsx",
         "src/react.config-loading.test.tsx",
         "src/react-session.provider.test.tsx"
