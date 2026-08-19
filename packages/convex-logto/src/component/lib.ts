@@ -117,9 +117,12 @@ const MAX_REVOCATION_BATCHES = 512;
 // so reserve four of the 16 MiB read/write budget for transaction documents.
 const GC_TRANSACTION_BATCH_SIZE = 4;
 const GC_SMALL_DOCUMENT_BATCH_SIZE = 500;
-// Each watermark costs one indexed session lookup on top of its own row, so
-// this batch buys two document reads per unit rather than one.
-const GC_MARKER_BATCH_SIZE = 100;
+// A watermark row is tiny, but proving it governs nothing reads a *session*
+// document, which can approach Convex's 1 MiB limit. Bound the batch by that
+// read, the same way the revocation drain is bounded, and give the sweep its
+// own transaction so it never has to share a budget with the session and
+// transaction sweeps.
+const GC_MARKER_BATCH_SIZE = 8;
 
 type SessionTokenMatch =
   | { source: "current"; session: Doc<"sessions"> }
@@ -1752,28 +1755,68 @@ export const deleteSidSessionsBatch = internalMutation({
 
 /**
  * Claim a verified Logto delivery by a SHA-256 key (webhook body or issuer+jti).
- * Returns `true` the first time; `false` on a retry whose original 200 was lost.
+ *
+ * `claimed` is true only for the caller that created the row — the first
+ * delivery, or the first retry after a released claim. `completed` reports
+ * whether some caller got as far as {@link completeWebhookDelivery}: a claim on
+ * its own proves a delivery *started*, not that its work committed, so a caller
+ * whose work is idempotent should redo an unfinished one rather than answer for
+ * it.
  */
 export const recordWebhookDelivery = mutation({
   args: { bodyHash: v.string(), now: v.number() },
-  returns: v.boolean(),
+  returns: v.object({ claimed: v.boolean(), completed: v.boolean() }),
   handler: async (ctx, args) => {
     const existing = await ctx.db
       .query("webhookDeliveries")
       .withIndex("by_bodyHash", (q) => q.eq("bodyHash", args.bodyHash))
       .unique();
-    if (existing) return false;
+    if (existing) {
+      return { claimed: false, completed: existing.completedAt !== undefined };
+    }
     await ctx.db.insert("webhookDeliveries", {
       bodyHash: args.bodyHash,
       seenAt: args.now,
     });
-    return true;
+    return { claimed: true, completed: false };
+  },
+});
+
+/**
+ * Record that a delivery's work committed. Inserts when the row is gone, so a
+ * caller that took over an abandoned claim — one whose owner failed and
+ * released it — still leaves proof behind for the next retry.
+ */
+export const completeWebhookDelivery = mutation({
+  args: { bodyHash: v.string(), now: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("webhookDeliveries")
+      .withIndex("by_bodyHash", (q) => q.eq("bodyHash", args.bodyHash))
+      .unique();
+    if (existing === null) {
+      await ctx.db.insert("webhookDeliveries", {
+        bodyHash: args.bodyHash,
+        seenAt: args.now,
+        completedAt: args.now,
+      });
+    } else if (existing.completedAt === undefined) {
+      await ctx.db.patch(existing._id, { completedAt: args.now });
+    }
+    return null;
   },
 });
 
 /**
  * Release a claimed delivery after processing failed, so Logto's retry isn't
  * deduplicated into a lost event.
+ *
+ * Never releases a *completed* delivery. A caller that took over an abandoned
+ * claim can finish while the original owner is still failing, and deleting the
+ * row then would erase the only proof the work happened — re-arming a replay of
+ * a `sub`-only logout token, which revokes whatever the subject has when it
+ * runs, including sessions created since.
  */
 export const forgetWebhookDelivery = mutation({
   args: { bodyHash: v.string() },
@@ -1783,7 +1826,9 @@ export const forgetWebhookDelivery = mutation({
       .query("webhookDeliveries")
       .withIndex("by_bodyHash", (q) => q.eq("bodyHash", args.bodyHash))
       .unique();
-    if (existing) await ctx.db.delete(existing._id);
+    if (existing && existing.completedAt === undefined) {
+      await ctx.db.delete(existing._id);
+    }
     return null;
   },
 });
@@ -1793,13 +1838,13 @@ export const forgetWebhookDelivery = mutation({
 /**
  * Delete revocation watermarks that can no longer kill anything: no session the
  * marker covers survives, and it is old enough that none can appear. Returns
- * how many rows were deleted so `gc` knows whether to continue.
+ * how many rows were deleted, so the caller knows whether to continue.
  *
  * A marker that still governs a surviving row is skipped, not deleted — that
  * row is logically dead *because* of the marker, and dropping it early would
- * hand its token back its authority. Skipped markers are the oldest, so they
- * hold up younger ones until the session sweep in the same mutation removes
- * what they govern; that is the safe direction to be stuck in.
+ * hand its token back its authority. Skipped markers are the oldest in the
+ * table, so they hold up younger ones until `gc`'s dead-session sweep removes
+ * what they govern; being stuck retaining watermarks is the safe direction.
  */
 async function collectRevocationMarkers(
   db: DatabaseWriter,
@@ -1880,20 +1925,40 @@ export const gc = internalMutation({
     // Revocation watermarks outlive the rows they killed on purpose, but not
     // forever: back-channel logout writes one per OP session that ever ends,
     // including logouts that matched nothing, and nothing else ever deletes
-    // them. Collect only a marker that governs no surviving session — deleting
-    // one that still does would make a logically dead row start validating
-    // again — and only past the horizon where a session could still bind it.
-    const collectedMarkers = await collectRevocationMarkers(ctx.db, now);
+    // them. They sweep in their own transaction because proving a marker
+    // governs nothing reads session documents, which this mutation has already
+    // spent most of its budget on.
+    await ctx.scheduler.runAfter(0, internal.lib.gcRevocationMarkers, {});
     // A full batch might have more rows behind it. Continue durably instead of
     // reducing a daily cron to four abandoned sign-ins or eight dead sessions.
     if (
       expiredTransactions.length === GC_TRANSACTION_BATCH_SIZE ||
       deadSessions.length === REVOCATION_BATCH_SIZE ||
       expiredGenerations.length === GC_SMALL_DOCUMENT_BATCH_SIZE ||
-      staleDeliveries.length === GC_SMALL_DOCUMENT_BATCH_SIZE ||
-      collectedMarkers === GC_MARKER_BATCH_SIZE
+      staleDeliveries.length === GC_SMALL_DOCUMENT_BATCH_SIZE
     ) {
       await ctx.scheduler.runAfter(0, internal.lib.gc, {});
+    }
+    return null;
+  },
+});
+
+/**
+ * Sweep revocation watermarks, one bounded batch per transaction. Split out of
+ * {@link gc} for the read budget: a marker row is tiny, but each one costs an
+ * indexed lookup into `sessions`, whose documents are the largest this
+ * component stores.
+ */
+export const gcRevocationMarkers = internalMutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    const deleted = await collectRevocationMarkers(ctx.db, Date.now());
+    // Only a full batch of *deletions* continues. A batch that skipped
+    // everything found nothing collectable, and rescheduling on that would spin
+    // on the same rows forever.
+    if (deleted === GC_MARKER_BATCH_SIZE) {
+      await ctx.scheduler.runAfter(0, internal.lib.gcRevocationMarkers, {});
     }
     return null;
   },
