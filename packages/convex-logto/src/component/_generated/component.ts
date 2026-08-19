@@ -24,6 +24,13 @@ import type { FunctionReference } from "convex/server";
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
     lib: {
+      completeWebhookDelivery: FunctionReference<
+        "mutation",
+        "internal",
+        { bodyHash: string; now: number },
+        null,
+        Name
+      >;
       createSignInUrl: FunctionReference<
         "action",
         "internal",
@@ -128,7 +135,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "mutation",
         "internal",
         { bodyHash: string; now: number },
-        boolean,
+        { claimed: boolean; completed: boolean },
         Name
       >;
       refresh: FunctionReference<
