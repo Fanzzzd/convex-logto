@@ -427,11 +427,13 @@ type CommonProviderProps = {
   /**
    * Called when starting or finishing sign-in — or signing out — fails
    * recoverably (Logto unreachable, blocked storage, a stale/replayed callback,
-   * or a setup error like `invalid_scope`). This makes `void signIn()` and
-   * `void signOut()` safe for event handlers: failures are observable here and
-   * are also logged to the console. A failed sign-out matters as much as a
-   * failed sign-in — the SDK leaves the tokens in place, so the user is still
-   * signed in.
+   * or a setup error like `invalid_scope`). Failures are reported here and
+   * logged to the console; the ones `@logto/react` swallows into its own state
+   * would otherwise be invisible, and the ones it doesn't are reported *before*
+   * the promise rejects, so a fire-and-forget caller still wants a
+   * `.catch(() => {})` to avoid an unhandled rejection. A failed sign-out
+   * matters as much as a failed sign-in — the SDK leaves the tokens in place,
+   * so the user is still signed in.
    */
   onAuthError?: (error: Error) => void;
   /**

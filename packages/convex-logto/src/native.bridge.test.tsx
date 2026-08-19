@@ -2,7 +2,9 @@
 //
 // `@logto/rn` does not proxy its errors the way the web SDK does — `signIn` and
 // `signOut` reject — and the documented pattern is `void signIn()` in an
-// `onPress`. These cover what an app can observe when either one fails.
+// `onPress`. These cover what an app can observe when either one fails: the
+// failure reaches `onAuthError` and the console *before* the promise rejects,
+// which it still does.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -75,7 +77,7 @@ afterEach(async () => {
   capturedApi = null;
 });
 
-it("reports a dismissed sign-in instead of leaving an unhandled rejection", async () => {
+it("reports a dismissed sign-in before rejecting", async () => {
   const failure = new Error("auth_session_failed");
   mockLogto.signIn.mockRejectedValue(failure);
   const onAuthError = vi.fn<(error: Error) => void>();

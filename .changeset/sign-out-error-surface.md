@@ -17,6 +17,9 @@ reported and rethrown.
 The native bridge had no error surface at all: `@logto/rn` rejects rather than
 storing the error, and the documented pattern is `void signIn()` in an
 `onPress`, so a dismissed system browser or an offline sign-out became an
-unhandled rejection and nothing else. The native `<ConvexLogtoProvider>` now
+unhandled rejection and *nothing else*. The native `<ConvexLogtoProvider>` now
 takes `onAuthError`, matching the web provider and native session mode, and both
-`signIn()` and `signOut()` report through it before rejecting.
+`signIn()` and `signOut()` report through it before rejecting. Reporting is not
+handling: a promise that rejects still does, so a fire-and-forget caller wants
+`.catch(() => {})` alongside `onAuthError` — the docs now say so instead of
+calling `void signIn()` safe.
