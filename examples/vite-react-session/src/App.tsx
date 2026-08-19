@@ -134,10 +134,12 @@ function SignedIn() {
   const { user, signOut, signOutEverywhere } = useLogtoAuth();
   return (
     <>
-      <button onClick={() => void signOut()}>
+      {/* The provider's `onAuthError` reports the failure; swallowing the
+          rejection here just keeps it from also surfacing unhandled. */}
+      <button onClick={() => void signOut().catch(() => {})}>
         Sign out ({String(user?.email ?? user?.sub ?? "user")})
       </button>{" "}
-      <button onClick={() => void signOutEverywhere()}>
+      <button onClick={() => void signOutEverywhere().catch(() => {})}>
         Sign out everywhere
       </button>
       <SessionBoundary>
@@ -150,7 +152,9 @@ function SignedIn() {
 
 function SignIn() {
   const { signIn } = useLogtoAuth();
-  return <button onClick={() => void signIn()}>Sign in</button>;
+  return (
+    <button onClick={() => void signIn().catch(() => {})}>Sign in</button>
+  );
 }
 
 export function App() {

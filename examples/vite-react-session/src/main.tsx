@@ -19,6 +19,11 @@ createRoot(document.getElementById("root")!).render(
       // Advisory, app-supplied device description shown by listSessions(). The
       // library never sniffs a User-Agent — this is exactly what you pass.
       clientDescriptor={{ platform: "web", browser: "this browser" }}
+      // Sign-in and sign-out reject rather than storing the error, so without
+      // this an offline sign-out is an unhandled rejection and nothing else.
+      onAuthError={(error) => {
+        console.error("auth error", error);
+      }}
     >
       <App />
     </ConvexLogtoSessionProvider>
