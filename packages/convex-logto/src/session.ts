@@ -223,11 +223,6 @@ export type LogtoSessionComponent = {
 
 // --- public function surface -------------------------------------------------
 
-/**
- * The six public functions {@link logtoSessionApi} registers, as the frontend
- * sees them. `ConvexLogtoSessionProvider` takes a reference to the module that
- * re-exports them (e.g. `api.auth`).
- */
 /** Coarse, self-reported description of a signing-in client. */
 export type LogtoSessionClientDescriptor = {
   platform?: string;
@@ -248,6 +243,11 @@ export type LogtoSessionSummary = {
   deviceBound: boolean;
 };
 
+/**
+ * The nine public functions {@link logtoSessionApi} registers, as the frontend
+ * sees them. `ConvexLogtoSessionProvider` takes a reference to the module that
+ * re-exports them (e.g. `api.auth`).
+ */
 export type LogtoSessionApi = {
   signIn: FunctionReference<
     "action",
