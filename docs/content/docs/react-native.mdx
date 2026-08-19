@@ -286,8 +286,10 @@ useEffect(() => {
 }, [completeSignIn]);
 ```
 
-Pass every deep link through — anything that is not this app's `redirectUri` is
-ignored. A user who *cancelled* in the browser is deliberately not recoverable
+Pass every deep link through. Anything that is not this app's `redirectUri`, or
+that carries no OIDC response, is ignored without disturbing a sign-in already in
+progress, and delivering the same URL twice (both entry points fire on some
+Android returns) completes it once. A user who *cancelled* in the browser is deliberately not recoverable
 this way: cancelling discards the OIDC state so a later deep link cannot replay
 it. Tapping Sign in again is instant, since Logto's browser SSO session is still
 there.
