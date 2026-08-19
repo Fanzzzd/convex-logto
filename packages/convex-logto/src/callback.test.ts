@@ -57,6 +57,24 @@ describe("classifySignInSearch", () => {
       expect(outcome.message).not.toContain("Single-page app");
     }
   });
+
+  it("does not find a hint on Object.prototype", () => {
+    // `error` comes straight off the query string. Looked up on a plain object,
+    // `constructor` resolves through the prototype chain and the message the
+    // app shows the user ends with a function's source.
+    for (const error of [
+      "constructor",
+      "toString",
+      "hasOwnProperty",
+      "__proto__",
+    ]) {
+      const outcome = classifySignInSearch(`?error=${error}&state=xyz`);
+      expect(outcome.kind).toBe("error");
+      if (outcome.kind === "error") {
+        expect(outcome.message).toBe(`Logto sign-in failed with "${error}".`);
+      }
+    }
+  });
 });
 
 describe("callbackResolved (#14: a /callback URL must never wait forever)", () => {
