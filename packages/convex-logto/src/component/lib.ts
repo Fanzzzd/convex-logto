@@ -1808,6 +1808,12 @@ export const completeWebhookDelivery = mutation({
 /**
  * Release a claimed delivery after processing failed, so Logto's retry isn't
  * deduplicated into a lost event.
+ *
+ * Never releases a *completed* delivery. A caller that took over an abandoned
+ * claim can finish while the original owner is still failing, and deleting the
+ * row then would erase the only proof the work happened — re-arming a replay of
+ * a `sub`-only logout token, which revokes whatever the subject has when it
+ * runs, including sessions created since.
  */
 export const forgetWebhookDelivery = mutation({
   args: { bodyHash: v.string() },
@@ -1817,7 +1823,9 @@ export const forgetWebhookDelivery = mutation({
       .query("webhookDeliveries")
       .withIndex("by_bodyHash", (q) => q.eq("bodyHash", args.bodyHash))
       .unique();
-    if (existing) await ctx.db.delete(existing._id);
+    if (existing && existing.completedAt === undefined) {
+      await ctx.db.delete(existing._id);
+    }
     return null;
   },
 });

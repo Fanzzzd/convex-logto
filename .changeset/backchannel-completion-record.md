@@ -21,5 +21,10 @@ already dead. Suppressing *completed* replays still matters and is unchanged: a
 so replaying one after the user signs in again would sign them out a second
 time.
 
+Releasing a claim after a failure no longer deletes a *completed* record: a
+retry can take over an abandoned claim and finish while the original owner is
+still failing, and deleting the row then would erase the only proof the work
+happened.
+
 The webhook route keeps answering a claimed delivery without redoing it, since
 an app's sync handlers write to its own tables and are not idempotent.
