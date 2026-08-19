@@ -392,15 +392,18 @@ function basicAuth(config: OidcConfig): string {
 /**
  * POST to Logto's token endpoint; classify failures terminal vs transient.
  *
- * A 2xx without a usable `id_token` is *not* decided here. On the sign-in path
- * that is terminal (there is no session yet to lose); on the refresh path the
- * grant has already been processed, so the caller has to persist any rotated
- * refresh token before it fails — see `refresh`.
+ * A 2xx that does not carry usable tokens is *not* classified here, because the
+ * two callers need opposite answers. Sign-in has no session to lose and cannot
+ * retry a spent authorization code, so it fails terminally; a refresh has to
+ * weigh what Logto may already have done to the grant. Both get the facts —
+ * whether the body was a token response at all, and which tokens it held.
  */
 async function tokenEndpoint(
   config: OidcConfig,
   params: Record<string, string>,
 ): Promise<{
+  /** False when a 2xx body was not JSON at all — e.g. a proxy or WAF interstitial. */
+  tokenResponse: boolean;
   id_token?: string;
   refresh_token?: string;
   access_token?: string;
@@ -455,17 +458,9 @@ async function tokenEndpoint(
     const error =
       isRecord(body) && typeof body.error === "string" ? body.error : undefined;
     if (!res.ok) throw classifyTokenEndpointFailure(res.status, { error });
-    if (!parsed || !isRecord(body)) {
-      // A 2xx that is not a token response at all — a proxy or WAF interstitial
-      // where JSON was expected. Whether Logto processed (and rotated) anything
-      // is genuinely unknown, exactly like a 2xx we could not read, so it takes
-      // the same conservative path rather than pretending we know.
-      throw outcomeUnknown(
-        "Logto's token endpoint answered with something that is not a token response — " +
-          "the refresh outcome is unknown.",
-      );
-    }
+    if (!parsed || !isRecord(body)) return { tokenResponse: false };
     return {
+      tokenResponse: true,
       ...(typeof body.id_token === "string" ? { id_token: body.id_token } : {}),
       ...(typeof body.refresh_token === "string"
         ? { refresh_token: body.refresh_token }
@@ -580,10 +575,14 @@ export const exchange = action({
       redirect_uri: args.redirectUri,
       code_verifier: transaction.codeVerifier,
     });
-    if (tokens.id_token === undefined) {
+    if (!tokens.tokenResponse || tokens.id_token === undefined) {
+      // Sign-in cannot retry: the authorization code is spent either way, so
+      // there is nothing to gain by calling this transient.
       throw terminal(
         "no_id_token",
-        "Logto's token response carried no id_token — is `openid` scope enabled?",
+        tokens.tokenResponse
+          ? "Logto's token response carried no id_token — is `openid` scope enabled?"
+          : "Logto's token endpoint answered with something that is not a token response.",
       );
     }
     if (!tokens.refresh_token) {
@@ -772,6 +771,17 @@ export const refresh = action({
             );
           }
           throw error;
+        }
+        if (!tokens.tokenResponse) {
+          // A 2xx that is not a token response at all — a proxy or WAF
+          // interstitial where JSON was expected. Whether Logto processed (and
+          // rotated) the grant is genuinely unknown, exactly like a 2xx we could
+          // not read, so the claim is deliberately left to age into
+          // `claim-expired` rather than guessing.
+          throw outcomeUnknown(
+            "Logto's token endpoint answered with something that is not a token response — " +
+              "the refresh outcome is unknown.",
+          );
         }
         let claims: ReturnType<typeof decodeIdToken>;
         let idToken: string;

@@ -6,6 +6,7 @@ import {
   completeRefresh,
   consumeSessionForSignOut,
   devicePublicKeyForToken,
+  exchange,
   gc,
   killSession,
   killSubjectSessionsByToken,
@@ -466,6 +467,22 @@ const refreshActionHandler = internalHandler<
   SignOutArgs,
   { idToken: string; sessionToken: string; sessionId: string }
 >(refresh);
+const exchangeActionHandler = internalHandler<
+  {
+    endpoint: string;
+    appId: string;
+    clientSecret: string;
+    code: string;
+    state: string;
+    redirectUri: string;
+  },
+  {
+    idToken: string;
+    sessionToken: string;
+    sessionId: string;
+    returnTo?: string;
+  }
+>(exchange);
 const killSubjectSessionsByTokenHandler = internalHandler<
   Pick<SignOutArgs, "sessionToken" | "deviceProof" | "reuseWindowMs"> & {
     now: number;
@@ -842,6 +859,37 @@ describe("bounded token endpoint", () => {
         data: { code: "logto_outcome_unknown" },
       });
       expectRefreshClaimRetained(runMutation);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("keeps a non-token 2xx terminal on the sign-in path", async () => {
+    // Sign-in cannot retry — the authorization code is spent either way — so
+    // the exchange must not inherit refresh's "unknown outcome, retry later".
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<html>checking your browser</html>", {
+        headers: { "Content-Type": "text/html" },
+      }),
+    );
+    const runMutation = vi.fn().mockResolvedValueOnce({
+      codeVerifier: "verifier",
+      returnTo: undefined,
+    });
+    try {
+      await expect(
+        exchangeActionHandler(
+          { runQuery: () => Promise.resolve(null), runMutation },
+          {
+            ...refreshArgs,
+            code: "code",
+            state: "state",
+            redirectUri: "https://app.example.com/callback",
+          },
+        ),
+      ).rejects.toMatchObject({
+        data: { kind: "terminal", code: "no_id_token" },
+      });
     } finally {
       fetchSpy.mockRestore();
     }
