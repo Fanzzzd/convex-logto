@@ -781,7 +781,12 @@ describe("bounded token endpoint", () => {
       await expect(promise).rejects.toMatchObject({
         data: { kind: "transient", code: "id_token_mismatch" },
       });
-      expect(runMutation).toHaveBeenCalledTimes(3);
+      // One mutation, not two: it stores the rotation *and* releases the claim.
+      // Persisting without releasing would age into `claim-expired`, which
+      // deletes the session this path exists to preserve; releasing without
+      // persisting would re-present a superseded token and trip Logto's reuse
+      // detection. An interruption between two calls lands in one of those.
+      expect(runMutation).toHaveBeenCalledTimes(2);
       expect(
         getFunctionName(
           runMutation.mock.calls[1]?.[0] as FunctionReference<
@@ -789,23 +794,10 @@ describe("bounded token endpoint", () => {
             "internal"
           >,
         ),
-      ).toBe("lib:persistRotatedRefreshToken");
-      // The rotation must be stored: presenting the superseded token again
-      // would trip Logto's reuse detection and destroy the whole grant.
+      ).toBe("lib:abandonRefreshWithRotation");
       expect(runMutation.mock.calls[1]?.[1]).toMatchObject({
         refreshToken: "rotated-token",
       });
-      // And the claim must be released. Retaining it would age into
-      // `claim-expired` — which deletes the session — so "keeping the session"
-      // would have been a 15-second stay of execution.
-      expect(
-        getFunctionName(
-          runMutation.mock.calls[2]?.[0] as FunctionReference<
-            "mutation",
-            "internal"
-          >,
-        ),
-      ).toBe("lib:releaseClaim");
     } finally {
       fetchSpy.mockRestore();
     }
@@ -880,7 +872,9 @@ describe("bounded token endpoint", () => {
             "internal"
           >,
         ),
-      ).toBe("lib:releaseClaim");
+      ).toBe("lib:abandonRefreshWithRotation");
+      // No rotation to store, so none is sent — the stored token stays current.
+      expect(runMutation.mock.calls[1]?.[1]).not.toHaveProperty("refreshToken");
     } finally {
       fetchSpy.mockRestore();
     }

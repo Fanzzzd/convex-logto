@@ -792,21 +792,17 @@ export const refresh = action({
           // deployment, one refresh at a time.
           //
           // The rotation state is *known* here, which is what makes releasing
-          // the claim safe: either Logto returned a new refresh token, which is
-          // persisted first, or it returned none and the stored one is still
-          // current. Retaining the claim instead would age into `claim-expired`
-          // — and that path deletes the session, so the operator could never
-          // recover it by fixing the configuration.
-          if (tokens.refresh_token !== undefined) {
-            await ctx.runMutation(internal.lib.persistRotatedRefreshToken, {
-              sessionId: begin.sessionId,
-              claimId,
-              refreshToken: tokens.refresh_token,
-            });
-          }
-          await ctx.runMutation(internal.lib.releaseClaim, {
+          // the claim safe: either Logto returned a new refresh token, stored in
+          // the same transaction that releases, or it returned none and the
+          // stored one is still current. Retaining the claim instead would age
+          // into `claim-expired` — and that path deletes the session, so the
+          // operator could never recover it by fixing the configuration.
+          await ctx.runMutation(internal.lib.abandonRefreshWithRotation, {
             sessionId: begin.sessionId,
             claimId,
+            ...(tokens.refresh_token === undefined
+              ? {}
+              : { refreshToken: tokens.refresh_token }),
           });
           throw asDeploymentFault(error);
         }
@@ -1046,19 +1042,22 @@ export const completeRefresh = internalMutation({
 });
 
 /**
- * Store a refresh token Logto rotated on a response we could not otherwise use.
+ * Finish a refresh whose response Logto answered but we could not use: store any
+ * rotation and release the claim, in **one** transaction.
  *
- * The claim is intentionally *not* released: this runs when the token response
- * turned out to be unusable, and the invariant is that an unknown outcome ages
- * into `claim-expired` rather than inviting another presentation. Without this,
- * the row would keep the superseded token and the next refresh would trip
- * Logto's reuse detection, destroying a grant sibling sessions share.
+ * Both halves have to commit together. Persisting the rotation without
+ * releasing would leave the row holding a claim that ages into `claim-expired`
+ * — which deletes the session this path exists to preserve — and releasing
+ * without persisting would leave the next refresh presenting a token Logto has
+ * already superseded, tripping reuse detection on a grant sibling sessions
+ * share. An action interrupted between two mutations would land in exactly one
+ * of those states, so there is only one mutation.
  */
-export const persistRotatedRefreshToken = internalMutation({
+export const abandonRefreshWithRotation = internalMutation({
   args: {
     sessionId: v.string(),
     claimId: v.string(),
-    refreshToken: v.string(),
+    refreshToken: v.optional(v.string()),
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
@@ -1068,7 +1067,11 @@ export const persistRotatedRefreshToken = internalMutation({
     // is no longer the one the row is waiting for.
     if (!session || session.refreshClaimId !== args.claimId) return false;
     await ctx.db.patch(session._id, {
-      logtoRefreshToken: args.refreshToken,
+      refreshingSince: undefined,
+      refreshClaimId: undefined,
+      ...(args.refreshToken === undefined
+        ? {}
+        : { logtoRefreshToken: args.refreshToken }),
     });
     return true;
   },
