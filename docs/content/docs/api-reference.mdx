@@ -30,7 +30,7 @@ description: Every export from convex-logto and its web, native, and session-mod
 | `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `config` / `configQuery` model; no callback route. |
 | `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signOut()` takes no argument. |
 | `ConvexLogtoSessionProvider` | `convex-logto/native-session` | React Native / Expo session provider using SecureStore + the system browser. |
-| `useLogtoAuth()` | `convex-logto/native-session` | Native session `{ isAuthenticated, isLoading, user, signIn, signOut, signOutEverywhere, listSessions, renameSession, revokeSession }`; no device-binding surface. |
+| `useLogtoAuth()` | `convex-logto/native-session` | Native session `{ isAuthenticated, isLoading, user, signIn, completeSignIn, signOut, signOutEverywhere, listSessions, renameSession, revokeSession }`; no device-binding surface. |
 
 ## Backend
 
@@ -442,10 +442,13 @@ device-binding option.
 | `onAuthEvent` | — | Opt-in phase timings (see [Auth phase events](#auth-phase-events)). Absent means nothing is measured. |
 
 `useLogtoAuth()` returns `{ isAuthenticated, isLoading, user, signIn,
-signOut, signOutEverywhere, listSessions, renameSession, revokeSession }`, with
-the same session-management semantics as web session mode and an optional
-`clientDescriptor` prop for the device description shown in the list.
-`signIn()` opens and completes the system-browser flow in place.
+completeSignIn, signOut, signOutEverywhere, listSessions, renameSession,
+revokeSession }`, with the same session-management semantics as web session mode
+and an optional `clientDescriptor` prop for the device description shown in the
+list. `signIn()` opens and completes the system-browser flow in place.
+`completeSignIn(url)` finishes a sign-in whose deep link came back *outside*
+that flow — see [Recovering a reclaimed
+sign-in](/docs/react-native#recovering-a-reclaimed-sign-in).
 `signOut({ postLogoutRedirectUri?, federated? })` clears SecureStore and revokes
 the server session, then ends Logto browser SSO unless `federated: false`.
 `signOutEverywhere({ postLogoutRedirectUri? })` clears SecureStore, kills every

@@ -261,6 +261,37 @@ export default function App() {
 the single-use state stashed before the browser opened, and exchanges the code
 in place. There is no `/callback` screen or router integration.
 
+### Recovering a reclaimed sign-in
+
+That whole flow lives in one in-memory promise. If the OS reclaims the app while
+Logto has the browser — routine on a low-memory Android device — the promise dies
+with the process and the redirect arrives as a cold-start deep link instead. Hand
+it to `completeSignIn(url)` and the exchange finishes as normal; without it the
+user comes back signed in at Logto and signed out in the app, with no error.
+(Web needs no equivalent: the callback is in the URL, so the provider re-reads it
+on the next mount.)
+
+```tsx title="Main.tsx"
+import * as Linking from "expo-linking";
+import { useEffect } from "react";
+import { useLogtoAuth } from "convex-logto/native-session";
+
+const { completeSignIn } = useLogtoAuth();
+useEffect(() => {
+  void Linking.getInitialURL().then((url) => url && completeSignIn(url));
+  const subscription = Linking.addEventListener("url", ({ url }) => {
+    void completeSignIn(url);
+  });
+  return () => subscription.remove();
+}, [completeSignIn]);
+```
+
+Pass every deep link through — anything that is not this app's `redirectUri` is
+ignored. A user who *cancelled* in the browser is deliberately not recoverable
+this way: cancelling discards the OIDC state so a later deep link cannot replay
+it. Tapping Sign in again is instant, since Logto's browser SSO session is still
+there.
+
 Native session mode keeps the rotating session token, OAuth state stash, and
 **short-lived ID token** in deployment-namespaced SecureStore. Persisting the ID
 token is a deliberate cold-start choice: while it remains fresh, the app can
