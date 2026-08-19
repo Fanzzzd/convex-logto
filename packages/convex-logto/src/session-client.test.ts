@@ -852,6 +852,26 @@ describe("callback", () => {
     );
   });
 
+  it("never revokes the superseded session in cookie mode", async () => {
+    // The stored value there is a marker, not a credential, and the same-origin
+    // sign-out route reads the *cookie* — which the callback just replaced. A
+    // revoke by marker would sign the user straight back out.
+    const { engine, storage, handlers } = makeHarness({
+      storedSession: { token: "legacy-session-secret", sessionId: "old" },
+      cookieBootstrap: {},
+      serverHeldCredential: true,
+    });
+    setURL("http://localhost:5173/callback?code=c1&state=s1");
+    storage.stashTransaction({ state: "s1" });
+    handlers.callback.mockResolvedValue(sessionResult(1));
+
+    engine.start();
+    expect((await settled(engine)).status).toBe("authenticated");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(handlers.signOut).not.toHaveBeenCalled();
+  });
+
   it("bound callback captures the device public key in the new session", async () => {
     const deviceBinding = fakeDeviceBinding();
     const { engine, storage, handlers } = makeHarness({ deviceBinding });

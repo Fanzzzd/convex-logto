@@ -799,7 +799,17 @@ export class SessionAuthEngine {
       if (generation !== this.authGeneration) return;
       this.lastServed = null;
       this.setAuthenticated(result.idToken, "callback");
-      if (superseded !== null && superseded.sessionId !== result.sessionId) {
+      if (
+        // Never in cookie mode. The stored value there is a marker, not a
+        // credential, and the same-origin sign-out route reads the *cookie* —
+        // which the callback just replaced with the new session. Revoking by
+        // marker would sign the user straight back out of the session they just
+        // created.
+        this.options.serverHeldCredential !== true &&
+        superseded !== null &&
+        superseded.sessionId !== "" &&
+        superseded.sessionId !== result.sessionId
+      ) {
         // Not awaited: the user is signed in and navigating. A failure here is
         // reported, never fatal.
         void this.revokeAbandonedSession(
