@@ -89,7 +89,7 @@ it has a server on the same origin:
    ```tsx
    const seedSession = createServerFn().handler(async () => {
      const seed = await logtoCookieHandler.getInitialToken(getRequest());
-     setResponseHeaders(Object.fromEntries(seed.headers));
+     for (const [name, value] of seed.headers) setResponseHeader(name, value);
      return {
        initialToken: seed.initialToken,
        initialSessionId: seed.initialSessionId,
