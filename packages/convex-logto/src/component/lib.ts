@@ -473,6 +473,10 @@ async function tokenEndpoint(
       ...(typeof body.refresh_token === "string"
         ? { refresh_token: body.refresh_token }
         : {}),
+      // Read but never used: session mode exposes the ID token only, and the
+      // deprecated `resources` option is the one thing that would make this
+      // access token interesting. Kept so a future caller that needs it does
+      // not have to re-derive where it lives.
       ...(typeof body.access_token === "string"
         ? { access_token: body.access_token }
         : {}),
