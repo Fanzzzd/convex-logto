@@ -47,18 +47,22 @@ const STALE_CALLBACK_TIMEOUT_MS = 10_000;
 
 // Provider-level settings the bridge hooks need but can't take as props, since
 // `ConvexProviderWithAuth` owns the `useAuth` call site.
-type BridgeSignInAttempt = {
+/**
+ * One `signIn()`/`signOut()` call, tracked so the failure `@logto/react`
+ * swallows into its own state can still be reported exactly once.
+ */
+type BridgeAuthAttempt = {
   baselineError: Error | undefined;
   handled: boolean;
 };
 
-type BridgeSignInErrors = {
-  begin: (baselineError: Error | undefined) => BridgeSignInAttempt;
-  fail: (attempt: BridgeSignInAttempt, error: Error) => void;
+type BridgeAuthErrors = {
+  begin: (baselineError: Error | undefined) => BridgeAuthAttempt;
+  fail: (attempt: BridgeAuthAttempt, error: Error) => void;
   observe: (error: Error | undefined) => void;
 };
 
-const NOOP_SIGN_IN_ERRORS: BridgeSignInErrors = {
+const NOOP_AUTH_ERRORS: BridgeAuthErrors = {
   begin: (baselineError) => ({ baselineError, handled: false }),
   fail: () => {},
   observe: () => {},
@@ -66,7 +70,7 @@ const NOOP_SIGN_IN_ERRORS: BridgeSignInErrors = {
 
 const BridgeContext = createContext<{
   callbackPath: string;
-  signInErrors: BridgeSignInErrors;
+  authErrors: BridgeAuthErrors;
   /**
    * Is this document still finishing an OIDC redirect? React state, not a read
    * of `window.location`: the location is not a reactive source, and a provider
@@ -78,7 +82,7 @@ const BridgeContext = createContext<{
   callbackActive: boolean;
 }>({
   callbackPath: DEFAULT_CALLBACK_PATH,
-  signInErrors: NOOP_SIGN_IN_ERRORS,
+  authErrors: NOOP_AUTH_ERRORS,
   callbackActive: false,
 });
 
@@ -228,16 +232,16 @@ function ConvexAuthPhaseWatcher({ events }: { events: AuthEventEmitter }) {
   return null;
 }
 
-/** Observes initiation failures that @logto/react catches into its error state. */
-function LogtoSignInErrorObserver({
-  signInErrors,
+/** Observes the failures @logto/react catches into its error state instead of rejecting. */
+function LogtoAuthErrorObserver({
+  authErrors,
 }: {
-  signInErrors: BridgeSignInErrors;
+  authErrors: BridgeAuthErrors;
 }) {
   const { error } = useLogto();
   useEffect(() => {
-    signInErrors.observe(error);
-  }, [error, signInErrors]);
+    authErrors.observe(error);
+  }, [error, authErrors]);
   return null;
 }
 
@@ -421,10 +425,15 @@ type CommonProviderProps = {
    */
   callbackPath?: string;
   /**
-   * Called when starting or finishing sign-in fails recoverably (Logto
-   * unreachable, blocked storage, a stale/replayed callback, or a setup error
-   * like `invalid_scope`). This makes `void signIn()` safe for event handlers:
-   * failures are observable here and are also logged to the console.
+   * Called when starting or finishing sign-in — or signing out — fails
+   * recoverably (Logto unreachable, blocked storage, a stale/replayed callback,
+   * or a setup error like `invalid_scope`). Failures are reported here and
+   * logged to the console; the ones `@logto/react` swallows into its own state
+   * would otherwise be invisible, and the ones it doesn't are reported *before*
+   * the promise rejects, so a fire-and-forget caller still wants a
+   * `.catch(() => {})` to avoid an unhandled rejection. A failed sign-out
+   * matters as much as a failed sign-in — the SDK leaves the tokens in place,
+   * so the user is still signed in.
    */
   onAuthError?: (error: Error) => void;
   /**
@@ -582,9 +591,9 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
     onAuthErrorRef.current = onAuthError;
   }, [onAuthError]);
   const signInErrorState = useRef<{
-    latestAttempt: BridgeSignInAttempt | undefined;
+    latestAttempt: BridgeAuthAttempt | undefined;
   }>({ latestAttempt: undefined });
-  const signInErrors = useMemo<BridgeSignInErrors>(() => {
+  const authErrors = useMemo<BridgeAuthErrors>(() => {
     return {
       begin: (baselineError) => {
         const attempt = { baselineError, handled: false };
@@ -620,8 +629,8 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
   );
   const endCallbackFlow = useCallback(() => setCallbackActive(false), []);
   const bridgeValue = useMemo(
-    () => ({ callbackPath, signInErrors, callbackActive }),
-    [callbackPath, signInErrors, callbackActive],
+    () => ({ callbackPath, authErrors, callbackActive }),
+    [callbackPath, authErrors, callbackActive],
   );
 
   if (configQuery && fetched.status === "error") {
@@ -643,7 +652,7 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
             public promise. Observe that state only on the initiating page;
             callback errors are already handled by LogtoCallback below. */}
         {!callbackActive ? (
-          <LogtoSignInErrorObserver signInErrors={signInErrors} />
+          <LogtoAuthErrorObserver authErrors={authErrors} />
         ) : null}
         {/* Callback handling is gated to the exact callback route: a real OIDC
             redirect always lands as a full-page load, so mount == landing. */}
@@ -703,7 +712,7 @@ export type LogtoAuth = {
 export function useLogtoAuth(): LogtoAuth {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const { signIn, signOut, getIdTokenClaims, error } = useLogto();
-  const { callbackPath, signInErrors } = useContext(BridgeContext);
+  const { callbackPath, authErrors } = useContext(BridgeContext);
   const [user, setUser] = useState<IdTokenClaims>();
 
   useEffect(() => {
@@ -728,7 +737,7 @@ export function useLogtoAuth(): LogtoAuth {
 
   const doSignIn = useCallback(
     async (redirectUriOrOptions?: string | { returnTo?: string }) => {
-      const attempt = signInErrors.begin(error);
+      const attempt = authErrors.begin(error);
       try {
         // Deprecated escape hatch: a full redirect URI. Kept working for 0.3.x
         // callers, but callback handling only runs on `callbackPath` — warn loudly
@@ -766,18 +775,35 @@ export function useLogtoAuth(): LogtoAuth {
           caught,
           "convex-logto: starting Logto sign-in failed.",
         );
-        signInErrors.fail(attempt, failure);
+        authErrors.fail(attempt, failure);
         throw failure;
       }
     },
-    [signIn, callbackPath, error, signInErrors],
+    [signIn, callbackPath, error, authErrors],
   );
   // Federated sign-out: ends the SSO session (so the next sign-in isn't silent),
   // then returns to origin — which must be a registered Post sign-out redirect URI.
   const doSignOut = useCallback(
-    (postLogoutRedirectUri?: string) =>
-      signOut(postLogoutRedirectUri ?? window.location.origin),
-    [signOut],
+    async (postLogoutRedirectUri?: string) => {
+      // Sign-out is swallowed the same way sign-in is: `@logto/react` catches
+      // the failure into its own state and resolves this promise. Worse, the
+      // SDK reaches OIDC discovery *before* clearing tokens, so an unreachable
+      // Logto leaves the user signed in with a live token while the button
+      // appears to have worked. Register the attempt so the observer reports
+      // whatever the SDK stored.
+      const attempt = authErrors.begin(error);
+      try {
+        await signOut(postLogoutRedirectUri ?? window.location.origin);
+      } catch (caught) {
+        const failure = asAuthError(
+          caught,
+          "convex-logto: Logto sign-out failed.",
+        );
+        authErrors.fail(attempt, failure);
+        throw failure;
+      }
+    },
+    [signOut, error, authErrors],
   );
 
   return useMemo(

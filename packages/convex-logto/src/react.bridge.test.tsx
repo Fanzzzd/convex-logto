@@ -312,6 +312,36 @@ it("stops holding isLoading once a callback resolves without authenticating", as
   }
 });
 
+it("reports a sign-out that @logto/react swallowed", async () => {
+  // The SDK reaches OIDC discovery before it clears tokens, then catches the
+  // failure into its own state and resolves the promise — so the user is still
+  // signed in with a live token while the button looks like it worked.
+  const failure = new Error("failed to fetch openid-configuration");
+  const onAuthError = vi.fn<(error: Error) => void>();
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  mockLogto.signOut.mockImplementation(async () => {
+    mockLogto.error = failure;
+  });
+  try {
+    await renderProvider({ probe: true, onAuthError });
+    await act(async () => {
+      void capturedApi!.signOut();
+      await Promise.resolve();
+    });
+
+    // The SDK context update is what exposes the swallowed failure.
+    await rerenderProvider({ probe: true, onAuthError });
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+    expect(onAuthError).toHaveBeenCalledWith(failure);
+
+    // And it is reported once, not on every later render.
+    await rerenderProvider({ probe: true, onAuthError });
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+  } finally {
+    consoleError.mockRestore();
+  }
+});
+
 it("mounts the sign-in error observer once the callback has resolved", async () => {
   // A router's `navigate` is asynchronous, so a provider re-render right after
   // the callback resolves can still see /callback in the URL. Gating the
@@ -337,6 +367,22 @@ it("mounts the sign-in error observer once the callback has resolved", async () 
     });
     await rerenderProvider({ probe: true, onAuthError, navigate });
 
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+    expect(onAuthError).toHaveBeenCalledWith(failure);
+  } finally {
+    consoleError.mockRestore();
+  }
+});
+
+it("rethrows a sign-out that rejects outright", async () => {
+  const failure = new Error("network down");
+  const onAuthError = vi.fn<(error: Error) => void>();
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  mockLogto.signOut.mockRejectedValue(failure);
+  try {
+    await renderProvider({ probe: true, onAuthError });
+
+    await expect(capturedApi!.signOut()).rejects.toBe(failure);
     expect(onAuthError).toHaveBeenCalledTimes(1);
     expect(onAuthError).toHaveBeenCalledWith(failure);
   } finally {
