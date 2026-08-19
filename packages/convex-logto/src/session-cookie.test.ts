@@ -397,6 +397,26 @@ describe("cookie session flows", () => {
     });
   });
 
+  it("answers a cookieless sign-out in the shape the caller asked for", async () => {
+    // The cookie can leave the jar while a tab lives (privacy extension, ITP
+    // eviction, another tab clearing cookies). Signing out is then a no-op —
+    // but a bare `{}` fails the client's `count` check, so it would retry twice
+    // and then throw, turning a clean no-op into a hard error.
+    const { handler, handlers } = makeHarness();
+    const everywhere = await handler(
+      request("sign-out", { body: { everywhere: true } }),
+    );
+    expect(everywhere.status).toBe(200);
+    await expect(everywhere.json()).resolves.toEqual({ count: 0 });
+
+    const local = await handler(request("sign-out", {}));
+    expect(local.status).toBe(200);
+    await expect(local.json()).resolves.toEqual({});
+
+    expect(handlers.signOut).not.toHaveBeenCalled();
+    expect(handlers.signOutEverywhere).not.toHaveBeenCalled();
+  });
+
   it("translates a legacy app module's missing sign-out-everywhere action", async () => {
     const { handler, handlers } = makeHarness();
     handlers.signOutEverywhere.mockRejectedValue(
@@ -546,6 +566,23 @@ describe("SSR seed", () => {
     const seed = await handler.getInitialToken(
       new Request(`${APP_ORIGIN}/dashboard`, {
         headers: { Cookie: cookie("spent") },
+      }),
+    );
+    expect(seed.initialToken).toBeNull();
+    expect(seed.initialSessionId).toBeNull();
+    expect(seed.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("leaves the cookie intact and returns an empty seed after an unclassifiable error", async () => {
+    // What an unreachable Logto looks like: the component rethrows a raw fetch
+    // failure unclassified on purpose. Rethrowing here would turn that outage
+    // into a 500 document for every signed-in visitor, while the browser
+    // `/token` route treats the same failure as transient and keeps going.
+    const { handler, handlers } = makeHarness();
+    handlers.refresh.mockRejectedValueOnce(new Error("fetch failed"));
+    const seed = await handler.getInitialToken(
+      new Request(`${APP_ORIGIN}/dashboard`, {
+        headers: { Cookie: cookie("still-valid") },
       }),
     );
     expect(seed.initialToken).toBeNull();
