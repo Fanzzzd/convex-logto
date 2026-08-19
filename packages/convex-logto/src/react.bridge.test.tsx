@@ -5,7 +5,7 @@
 // the 0.4 tightening), the `signIn({ returnTo })` contract, and the
 // fetchAccessToken in-flight merge. `@logto/react` and `convex/react` are
 // mocked at the module boundary so every input is controllable.
-import { act } from "react";
+import { StrictMode, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConvexLogtoProviderProps } from "./react";
@@ -269,6 +269,126 @@ it.each(["//evil.example.com", "https://evil.example.com", "back\\slash"])(
     }
   },
 );
+
+it("resolves a cancelled sign-in once, even under StrictMode", async () => {
+  // Every shipped example wraps the provider in StrictMode, where React
+  // double-invokes effects. `takeReturnTo()` is destructive, so a second pass
+  // finds the stash empty and sends the user to `afterSignIn` instead of the
+  // page they were signing in to reach.
+  setUrl("http://localhost:3000/callback?state=xyz&error=access_denied");
+  sessionStorage.setItem("convex-logto:returnTo", "/post/123");
+  const navigate = vi.fn();
+
+  root = createRoot(document.createElement("div"));
+  await act(async () => {
+    root!.render(<StrictMode>{providerTree({ navigate })}</StrictMode>);
+  });
+
+  expect(navigate).toHaveBeenCalledTimes(1);
+  expect(navigate).toHaveBeenCalledWith("/post/123");
+});
+
+it("stops holding isLoading once a callback resolves without authenticating", async () => {
+  // The provider is mounted above the router in every SPA example, so the soft
+  // navigation out of /callback re-renders only the router subtree. Anything the
+  // loading veto reads from `window.location` would stay frozen at "still on
+  // /callback", and Convex would sit at isLoading forever — the app never shows
+  // a Sign in button again, and only a page reload recovers.
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    setUrl("http://localhost:3000/callback?code=abc&state=xyz");
+    mockLogto.error = new Error("state mismatch");
+    const navigate = vi.fn((to: string) => {
+      setUrl(`http://localhost:3000${to}`);
+    });
+
+    await renderProvider({ navigate });
+
+    expect(navigate).toHaveBeenCalledWith("/");
+    expect(capturedAuth?.isLoading).toBe(false);
+    expect(capturedAuth?.isAuthenticated).toBe(false);
+  } finally {
+    consoleError.mockRestore();
+  }
+});
+
+it("reports a sign-out that @logto/react swallowed", async () => {
+  // The SDK reaches OIDC discovery before it clears tokens, then catches the
+  // failure into its own state and resolves the promise — so the user is still
+  // signed in with a live token while the button looks like it worked.
+  const failure = new Error("failed to fetch openid-configuration");
+  const onAuthError = vi.fn<(error: Error) => void>();
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  mockLogto.signOut.mockImplementation(async () => {
+    mockLogto.error = failure;
+  });
+  try {
+    await renderProvider({ probe: true, onAuthError });
+    await act(async () => {
+      void capturedApi!.signOut();
+      await Promise.resolve();
+    });
+
+    // The SDK context update is what exposes the swallowed failure.
+    await rerenderProvider({ probe: true, onAuthError });
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+    expect(onAuthError).toHaveBeenCalledWith(failure);
+
+    // And it is reported once, not on every later render.
+    await rerenderProvider({ probe: true, onAuthError });
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+  } finally {
+    consoleError.mockRestore();
+  }
+});
+
+it("mounts the sign-in error observer once the callback has resolved", async () => {
+  // A router's `navigate` is asynchronous, so a provider re-render right after
+  // the callback resolves can still see /callback in the URL. Gating the
+  // observer on the URL leaves it unmounted for the rest of the page session,
+  // and the swallowed sign-in failure #53 exists to surface is lost again.
+  const failure = new Error("OIDC discovery unreachable");
+  const onAuthError = vi.fn<(error: Error) => void>();
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    setUrl("http://localhost:3000/callback?code=abc&state=xyz");
+    mockLogto.isAuthenticated = true;
+    const navigate = vi.fn();
+
+    await renderProvider({ probe: true, onAuthError, navigate });
+    expect(navigate).toHaveBeenCalledWith("/");
+
+    mockLogto.signIn.mockImplementation(async () => {
+      mockLogto.error = failure;
+    });
+    await act(async () => {
+      void capturedApi!.signIn();
+      await Promise.resolve();
+    });
+    await rerenderProvider({ probe: true, onAuthError, navigate });
+
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+    expect(onAuthError).toHaveBeenCalledWith(failure);
+  } finally {
+    consoleError.mockRestore();
+  }
+});
+
+it("rethrows a sign-out that rejects outright", async () => {
+  const failure = new Error("network down");
+  const onAuthError = vi.fn<(error: Error) => void>();
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  mockLogto.signOut.mockRejectedValue(failure);
+  try {
+    await renderProvider({ probe: true, onAuthError });
+
+    await expect(capturedApi!.signOut()).rejects.toBe(failure);
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+    expect(onAuthError).toHaveBeenCalledWith(failure);
+  } finally {
+    consoleError.mockRestore();
+  }
+});
 
 it("reports an SDK-stored initiation error once when signIn() is discarded", async () => {
   const failure = new Error("OIDC discovery unreachable");
