@@ -600,15 +600,19 @@ export function transient(
 }
 
 /**
- * Re-classify a failure that happened *after* Logto answered 2xx.
+ * Re-classify a failure that happened *after* Logto answered with a well-formed
+ * token response.
  *
- * The response was unusable to us — `iss`/`aud` drift after an endpoint change,
- * a proxy interstitial where JSON was expected, a shape we reject — but Logto
- * processed the grant, so the session is not dead. Terminal here would delete
- * the row, which is how one wrong environment variable takes out every session
- * in a deployment, one refresh at a time. The caller persists any rotated
- * refresh token before raising this; the claim is deliberately left in place so
- * nothing re-presents a token until it ages out.
+ * The response was unusable to us — an `iss`/`aud` drift after an endpoint
+ * change, a missing `openid` scope — but Logto processed the grant and told us
+ * what it did with the refresh token, so the session is not dead. Terminal here
+ * would delete the row, which is how one wrong environment variable takes out
+ * every session in a deployment, one refresh at a time.
+ *
+ * The caller persists any rotation and releases the claim before raising this:
+ * the rotation state is known, so the stored token is the one Logto expects
+ * next. A response we could not parse is a different case — the outcome is
+ * unknown and `outcomeUnknown` handles it.
  */
 export function asDeploymentFault(
   error: unknown,

@@ -580,15 +580,21 @@ recovery anyone needs.
 
 Deployment faults include a wrong `LOGTO_CLIENT_SECRET` (`invalid_client`), a
 `LOGTO_ENDPOINT` that no longer matches the `iss` Logto issues — after moving
-behind a custom domain or a reverse proxy, say — a missing `openid` scope, and a
-proxy or WAF interstitial returned where the token endpoint's JSON was expected.
+behind a custom domain or a reverse proxy, say — and a missing `openid` scope.
 Any of these would otherwise destroy every session in the deployment, one refresh
 at a time.
 
-When Logto answered but the response could not be used, the component persists
-any refresh token Logto rotated before failing. Presenting a superseded refresh
-token again would trip Logto's reuse detection and destroy the whole grant —
-including the sibling sessions that share it.
+What makes keeping the session safe is that Logto *told us what it did*: it
+either returned a rotated refresh token, which the component persists before
+failing, or returned none, which means the stored one is still current.
+Presenting a superseded refresh token again would trip Logto's reuse detection
+and destroy the whole grant, including the sibling sessions that share it.
+
+One case stays conservative: a response the component cannot parse as a token
+response at all — a proxy or WAF interstitial where JSON was expected, or a body
+too large to read. Whether Logto processed the grant is then genuinely unknown,
+so the refresh claim is left to expire and that session requires a fresh sign-in.
+Guessing there is what risks spending a rotated token twice.
 
 ## How the token dance works
 

@@ -781,7 +781,7 @@ describe("bounded token endpoint", () => {
       await expect(promise).rejects.toMatchObject({
         data: { kind: "transient", code: "id_token_mismatch" },
       });
-      expect(runMutation).toHaveBeenCalledTimes(2);
+      expect(runMutation).toHaveBeenCalledTimes(3);
       expect(
         getFunctionName(
           runMutation.mock.calls[1]?.[0] as FunctionReference<
@@ -795,6 +795,17 @@ describe("bounded token endpoint", () => {
       expect(runMutation.mock.calls[1]?.[1]).toMatchObject({
         refreshToken: "rotated-token",
       });
+      // And the claim must be released. Retaining it would age into
+      // `claim-expired` — which deletes the session — so "keeping the session"
+      // would have been a 15-second stay of execution.
+      expect(
+        getFunctionName(
+          runMutation.mock.calls[2]?.[0] as FunctionReference<
+            "mutation",
+            "internal"
+          >,
+        ),
+      ).toBe("lib:releaseClaim");
     } finally {
       fetchSpy.mockRestore();
     }
@@ -824,9 +835,10 @@ describe("bounded token endpoint", () => {
     }
   });
 
-  it("keeps the session when a 2xx body is not the JSON we expected", async () => {
-    // A proxy or WAF interstitial in front of the token endpoint. An unreadable
-    // 2xx already preserved the row; a readable non-JSON one used to delete it.
+  it("treats a 2xx that is not a token response as an unknown outcome", async () => {
+    // A proxy or WAF interstitial in front of the token endpoint. Whether Logto
+    // saw the request at all is unknown, so this takes the same path as a 2xx we
+    // could not read: claim retained, nothing deleted, nothing re-presented.
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response("<html>checking your browser</html>", {
         headers: { "Content-Type": "text/html" },
@@ -835,9 +847,40 @@ describe("bounded token endpoint", () => {
     const { promise, runMutation } = tokenEndpointRefreshHarness();
     try {
       await expect(promise).rejects.toMatchObject({
-        data: { kind: "transient", code: "no_id_token" },
+        data: { code: "logto_outcome_unknown" },
       });
       expectRefreshClaimRetained(runMutation);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("releases the claim when Logto answered but rotated nothing", async () => {
+    // Logto rotates a confidential-client refresh token only at >=70% TTL, so
+    // most refreshes return none — the stored token stays current, which is what
+    // makes releasing the claim safe.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ id_token: idToken({ aud: "other-app" }) }),
+        {
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    );
+    const { promise, runMutation } = tokenEndpointRefreshHarness();
+    try {
+      await expect(promise).rejects.toMatchObject({
+        data: { kind: "transient", code: "id_token_mismatch" },
+      });
+      expect(runMutation).toHaveBeenCalledTimes(2);
+      expect(
+        getFunctionName(
+          runMutation.mock.calls[1]?.[0] as FunctionReference<
+            "mutation",
+            "internal"
+          >,
+        ),
+      ).toBe("lib:releaseClaim");
     } finally {
       fetchSpy.mockRestore();
     }

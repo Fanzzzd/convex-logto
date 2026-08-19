@@ -445,15 +445,26 @@ async function tokenEndpoint(
       );
     }
     let body: unknown;
+    let parsed = true;
     try {
       body = JSON.parse(tokenResponseDecoder.decode(bodyResult.bytes));
     } catch {
       body = {};
+      parsed = false;
     }
     const error =
       isRecord(body) && typeof body.error === "string" ? body.error : undefined;
     if (!res.ok) throw classifyTokenEndpointFailure(res.status, { error });
-    if (!isRecord(body)) return {};
+    if (!parsed || !isRecord(body)) {
+      // A 2xx that is not a token response at all — a proxy or WAF interstitial
+      // where JSON was expected. Whether Logto processed (and rotated) anything
+      // is genuinely unknown, exactly like a 2xx we could not read, so it takes
+      // the same conservative path rather than pretending we know.
+      throw outcomeUnknown(
+        "Logto's token endpoint answered with something that is not a token response — " +
+          "the refresh outcome is unknown.",
+      );
+    }
     return {
       ...(typeof body.id_token === "string" ? { id_token: body.id_token } : {}),
       ...(typeof body.refresh_token === "string"
@@ -774,16 +785,18 @@ export const refresh = action({
           idToken = tokens.id_token;
           claims = decodeIdToken(idToken, args);
         } catch (error) {
-          // Logto answered 2xx: the grant was processed and possibly rotated,
-          // so this is a *deployment* fault (an `iss`/`aud` drift after an
-          // endpoint change, a proxy interstitial, a missing `openid` scope) and
-          // not a dead session. Deleting the row here is how one wrong env var
-          // takes out every session in the deployment.
+          // Logto answered with a well-formed token response, so this is a
+          // *deployment* fault — an `iss`/`aud` drift after an endpoint change,
+          // a missing `openid` scope — and not a dead session. Deleting the row
+          // here is how one wrong env var takes out every session in the
+          // deployment, one refresh at a time.
           //
-          // Persist the rotation first — presenting the superseded refresh token
-          // again would trip Logto's reuse detection and destroy a grant sibling
-          // sessions share — and leave the claim in place so nothing
-          // re-presents anything until it ages into `claim-expired`.
+          // The rotation state is *known* here, which is what makes releasing
+          // the claim safe: either Logto returned a new refresh token, which is
+          // persisted first, or it returned none and the stored one is still
+          // current. Retaining the claim instead would age into `claim-expired`
+          // — and that path deletes the session, so the operator could never
+          // recover it by fixing the configuration.
           if (tokens.refresh_token !== undefined) {
             await ctx.runMutation(internal.lib.persistRotatedRefreshToken, {
               sessionId: begin.sessionId,
@@ -791,6 +804,10 @@ export const refresh = action({
               refreshToken: tokens.refresh_token,
             });
           }
+          await ctx.runMutation(internal.lib.releaseClaim, {
+            sessionId: begin.sessionId,
+            claimId,
+          });
           throw asDeploymentFault(error);
         }
         const completed: CompleteRefreshResult = await ctx.runMutation(
