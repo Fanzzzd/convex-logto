@@ -169,6 +169,17 @@ export function normalizeClientDescriptor(
 export const SESSION_GC_AFTER_MS = 190 * 24 * 60 * 60 * 1000;
 
 /**
+ * GC horizon for a revocation watermark, measured from the moment it was
+ * written. A watermark is what makes a session created at or before it dead, so
+ * collecting one is only safe once nothing can still be governed by it: no
+ * session row it covers remains (the collector checks that directly), and no
+ * session can still *acquire* the marked `sid`, which a refresh can do long
+ * after sign-in. Past this horizon every session that could do either is itself
+ * unconditionally GC-dead, so the two conditions together leave no window.
+ */
+export const REVOCATION_MARKER_GC_AFTER_MS = SESSION_GC_AFTER_MS;
+
+/**
  * GC horizon for webhook-delivery dedupe hashes. Logto's delivery retries land
  * within seconds and the webhook route rejects deliveries older than minutes,
  * so a day of memory is far more than dedupe ever needs.

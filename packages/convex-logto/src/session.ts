@@ -376,7 +376,8 @@ function readSessionConfig(options: LogtoSessionApiOptions): {
  * Build the public auth functions for session mode, backed by the Logto session
  * component. Reads `LOGTO_ENDPOINT`, `LOGTO_APP_ID` and `LOGTO_CLIENT_SECRET`
  * from the deployment's env (the secret never leaves the server). Re-export all
- * six — the frontend provider expects these exact names:
+ * nine — the frontend provider looks them up by these exact names, and a
+ * missing one disables that feature rather than failing the build:
  *
  * @example
  * // convex/auth.ts
@@ -389,6 +390,9 @@ function readSessionConfig(options: LogtoSessionApiOptions): {
  *   refresh,
  *   signOut,
  *   signOutEverywhere,
+ *   listSessions,
+ *   renameSession,
+ *   revokeSession,
  *   sessionValid,
  * } = logtoSessionApi(components.logto);
  */

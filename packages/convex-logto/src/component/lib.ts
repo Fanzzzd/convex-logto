@@ -13,6 +13,7 @@ import { internal } from "./_generated/api.js";
 import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import {
   DEFAULT_REUSE_WINDOW_MS,
+  REVOCATION_MARKER_GC_AFTER_MS,
   SESSION_GC_AFTER_MS,
   SESSION_TOKEN_GENERATION_LIMIT,
   TRANSACTION_TTL_MS,
@@ -116,6 +117,9 @@ const MAX_REVOCATION_BATCHES = 512;
 // so reserve four of the 16 MiB read/write budget for transaction documents.
 const GC_TRANSACTION_BATCH_SIZE = 4;
 const GC_SMALL_DOCUMENT_BATCH_SIZE = 500;
+// Each watermark costs one indexed session lookup on top of its own row, so
+// this batch buys two document reads per unit rather than one.
+const GC_MARKER_BATCH_SIZE = 100;
 
 type SessionTokenMatch =
   | { source: "current"; session: Doc<"sessions"> }
@@ -1786,6 +1790,56 @@ export const forgetWebhookDelivery = mutation({
 
 // --- GC ---------------------------------------------------------------------
 
+/**
+ * Delete revocation watermarks that can no longer kill anything: no session the
+ * marker covers survives, and it is old enough that none can appear. Returns
+ * how many rows were deleted so `gc` knows whether to continue.
+ *
+ * A marker that still governs a surviving row is skipped, not deleted — that
+ * row is logically dead *because* of the marker, and dropping it early would
+ * hand its token back its authority. Skipped markers are the oldest, so they
+ * hold up younger ones until the session sweep in the same mutation removes
+ * what they govern; that is the safe direction to be stuck in.
+ */
+async function collectRevocationMarkers(
+  db: DatabaseWriter,
+  now: number,
+): Promise<number> {
+  const horizon = now - REVOCATION_MARKER_GC_AFTER_MS;
+  let deleted = 0;
+  const subjectMarkers = await db
+    .query("subjectRevocations")
+    .withIndex("by_revokedAt", (q) => q.lt("revokedAt", horizon))
+    .take(GC_MARKER_BATCH_SIZE);
+  for (const marker of subjectMarkers) {
+    const governed = await db
+      .query("sessions")
+      .withIndex("by_subject_createdAt", (q) =>
+        q.eq("subject", marker.subject).lte("createdAt", marker.revokedAt),
+      )
+      .first();
+    if (governed !== null) continue;
+    await db.delete(marker._id);
+    deleted += 1;
+  }
+  const sidMarkers = await db
+    .query("sidRevocations")
+    .withIndex("by_revokedAt", (q) => q.lt("revokedAt", horizon))
+    .take(GC_MARKER_BATCH_SIZE);
+  for (const marker of sidMarkers) {
+    const governed = await db
+      .query("sessions")
+      .withIndex("by_sid_createdAt", (q) =>
+        q.eq("sid", marker.sid).lte("createdAt", marker.revokedAt),
+      )
+      .first();
+    if (governed !== null) continue;
+    await db.delete(marker._id);
+    deleted += 1;
+  }
+  return deleted;
+}
+
 export const gc = internalMutation({
   args: {},
   returns: v.null(),
@@ -1823,13 +1877,21 @@ export const gc = internalMutation({
       )
       .take(GC_SMALL_DOCUMENT_BATCH_SIZE);
     for (const d of staleDeliveries) await ctx.db.delete(d._id);
+    // Revocation watermarks outlive the rows they killed on purpose, but not
+    // forever: back-channel logout writes one per OP session that ever ends,
+    // including logouts that matched nothing, and nothing else ever deletes
+    // them. Collect only a marker that governs no surviving session — deleting
+    // one that still does would make a logically dead row start validating
+    // again — and only past the horizon where a session could still bind it.
+    const collectedMarkers = await collectRevocationMarkers(ctx.db, now);
     // A full batch might have more rows behind it. Continue durably instead of
     // reducing a daily cron to four abandoned sign-ins or eight dead sessions.
     if (
       expiredTransactions.length === GC_TRANSACTION_BATCH_SIZE ||
       deadSessions.length === REVOCATION_BATCH_SIZE ||
       expiredGenerations.length === GC_SMALL_DOCUMENT_BATCH_SIZE ||
-      staleDeliveries.length === GC_SMALL_DOCUMENT_BATCH_SIZE
+      staleDeliveries.length === GC_SMALL_DOCUMENT_BATCH_SIZE ||
+      collectedMarkers === GC_MARKER_BATCH_SIZE
     ) {
       await ctx.scheduler.runAfter(0, internal.lib.gc, {});
     }

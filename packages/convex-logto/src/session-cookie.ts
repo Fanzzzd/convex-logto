@@ -58,7 +58,10 @@ export type LogtoSessionCookieHandlerOptions = {
   action: LogtoSessionAction;
   /** Exact browser origins allowed to call the handler. Wildcards are rejected. */
   allowedOrigins: readonly string[];
-  /** Mount point containing `sign-in`, `callback`, `token`, and `sign-out`. */
+  /**
+   * Mount point containing `sign-in`, `callback`, `token`, `sign-out` and
+   * `sessions`.
+   */
   basePath?: string;
   /**
    * Mirror the session provider's device-binding flag so incompatible
