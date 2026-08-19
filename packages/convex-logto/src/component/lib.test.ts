@@ -1,5 +1,5 @@
 import { getFunctionName, type FunctionReference } from "convex/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   beginRefresh,
   beginSubjectRevocationByToken,
@@ -8,6 +8,7 @@ import {
   devicePublicKeyForToken,
   exchange,
   gc,
+  gcRevocationMarkers,
   killSession,
   killSubjectSessionsByToken,
   deleteOwnedSession,
@@ -450,6 +451,9 @@ const consumeSessionForSignOutHandler = internalHandler<
   SignOutConsumptionResult
 >(consumeSessionForSignOut);
 const gcHandler = internalHandler<Record<string, never>, null>(gc);
+const gcMarkersHandler = internalHandler<Record<string, never>, null>(
+  gcRevocationMarkers,
+);
 
 type SignOutArgs = {
   endpoint: string;
@@ -1844,7 +1848,12 @@ describe("gc token generations", () => {
       ],
     );
 
-    await expect(gcHandler({ db: harness.db }, {})).resolves.toBeNull();
+    await expect(
+      gcHandler(
+        { db: harness.db, scheduler: { runAfter: () => Promise.resolve() } },
+        {},
+      ),
+    ).resolves.toBeNull();
     expect(harness.session()).toBeNull();
     expect(harness.generations()).toEqual([]);
     expect(harness.deleted).toEqual([
@@ -1937,6 +1946,17 @@ describe("gc revocation watermarks", () => {
 
   const NOW = Date.now();
   const ANCIENT = NOW - REVOCATION_MARKER_GC_AFTER_MS - 60_000;
+  const scheduled: unknown[] = [];
+  const scheduler = {
+    runAfter: (_delay: number, ref: unknown) => {
+      scheduled.push(ref);
+      return Promise.resolve();
+    },
+  };
+
+  beforeEach(() => {
+    scheduled.length = 0;
+  });
 
   it("collects a watermark once nothing it governs survives", async () => {
     // Back-channel logout writes one row per OP session that ever ends,
@@ -1960,7 +1980,9 @@ describe("gc revocation watermarks", () => {
       ],
     });
 
-    await expect(gcHandler({ db: harness.db }, {})).resolves.toBeNull();
+    await expect(
+      gcMarkersHandler({ db: harness.db, scheduler }, {}),
+    ).resolves.toBeNull();
     expect(harness.rows("subjectRevocations")).toEqual([]);
     expect(harness.rows("sidRevocations")).toEqual([]);
     expect(harness.rows("sessions")).toEqual(["live"]);
@@ -1985,9 +2007,46 @@ describe("gc revocation watermarks", () => {
       ],
     });
 
-    await expect(gcHandler({ db: harness.db }, {})).resolves.toBeNull();
+    await expect(
+      gcMarkersHandler({ db: harness.db, scheduler }, {}),
+    ).resolves.toBeNull();
     expect(harness.rows("subjectRevocations")).toEqual(["subject-marker"]);
     expect(harness.rows("sidRevocations")).toEqual(["sid-marker"]);
+  });
+
+  it("continues durably only when a full batch was actually collected", async () => {
+    // Rescheduling on a full batch that *skipped* everything would spin on the
+    // same rows forever, since a skipped marker is not deleted.
+    const collectable = Array.from({ length: 8 }, (_, index) => ({
+      _id: `marker-${index}`,
+      subject: `u${index}`,
+      revokedAt: ANCIENT,
+    }));
+    const harness = gcHarness({
+      subjectRevocations: collectable,
+      sidRevocations: [],
+      sessions: [],
+    });
+
+    await gcMarkersHandler({ db: harness.db, scheduler }, {});
+    expect(harness.rows("subjectRevocations")).toEqual([]);
+    expect(scheduled).toHaveLength(1);
+
+    const stuck = gcHarness({
+      subjectRevocations: collectable,
+      sidRevocations: [],
+      sessions: collectable.map((marker, index) => ({
+        _id: `stranded-${index}`,
+        subject: marker.subject,
+        createdAt: ANCIENT - 1,
+        lastRefreshedAt: NOW,
+      })),
+    });
+    scheduled.length = 0;
+
+    await gcMarkersHandler({ db: stuck.db, scheduler }, {});
+    expect(stuck.rows("subjectRevocations")).toHaveLength(8);
+    expect(scheduled).toHaveLength(0);
   });
 
   it("keeps a watermark inside the horizon even with nothing left to kill", async () => {
@@ -2003,7 +2062,9 @@ describe("gc revocation watermarks", () => {
       sessions: [],
     });
 
-    await expect(gcHandler({ db: harness.db }, {})).resolves.toBeNull();
+    await expect(
+      gcMarkersHandler({ db: harness.db, scheduler }, {}),
+    ).resolves.toBeNull();
     expect(harness.rows("subjectRevocations")).toEqual(["subject-marker"]);
     expect(harness.rows("sidRevocations")).toEqual(["sid-marker"]);
   });
