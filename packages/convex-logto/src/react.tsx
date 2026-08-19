@@ -67,9 +67,19 @@ const NOOP_SIGN_IN_ERRORS: BridgeSignInErrors = {
 const BridgeContext = createContext<{
   callbackPath: string;
   signInErrors: BridgeSignInErrors;
+  /**
+   * Is this document still finishing an OIDC redirect? React state, not a read
+   * of `window.location`: the location is not a reactive source, and a provider
+   * mounted *above* the router — the layout every SPA example ships — never
+   * re-renders when the callback soft-navigates away. A value derived from the
+   * URL during render would then stay frozen at "still on /callback" for the
+   * rest of the page session.
+   */
+  callbackActive: boolean;
 }>({
   callbackPath: DEFAULT_CALLBACK_PATH,
   signInErrors: NOOP_SIGN_IN_ERRORS,
+  callbackActive: false,
 });
 
 /** True only when the current document is on the provider's callback route. */
@@ -106,7 +116,7 @@ function takeReturnTo(): string | undefined {
 
 /** Bridges Logto's ID token into the `useAuth` shape `ConvexProviderWithAuth` expects. */
 function useAuthFromLogto() {
-  const { callbackPath } = useContext(BridgeContext);
+  const { callbackActive } = useContext(BridgeContext);
   const {
     isAuthenticated,
     isLoading,
@@ -120,9 +130,15 @@ function useAuthFromLogto() {
   // transient logged-out tick that route guards mistake for a sign-out (#11).
   // Gated to the exact callback route: a stray `?code=&state=` on any other page
   // is not a sign-in transaction and must not pin the app into a loading state.
+  //
+  // `callbackActive` ends when the callback resolves — including when it
+  // resolves *without* authenticating (spent code, lost sign-in session, the
+  // stale-callback timeout). It has veto over `isLoading`, so reading it from
+  // the URL instead would leave an app whose provider never re-renders pinned
+  // at `isLoading: true` forever, with no way back short of a page reload.
   const authFlowPending =
     !isAuthenticated &&
-    onCallbackRoute(callbackPath) &&
+    callbackActive &&
     classifySignInSearch(window.location.search).kind === "pending";
 
   // `@logto/react` toggles `isLoading` around every SDK call; forwarding that to
@@ -230,10 +246,13 @@ function LogtoCallback({
   afterSignIn,
   navigate,
   onAuthError,
+  onResolved,
 }: {
   afterSignIn: string;
   navigate?: (to: string) => void;
   onAuthError?: (error: Error) => void;
+  /** Ends the provider's callback flow, whatever the outcome. */
+  onResolved: () => void;
 }) {
   const goAfterSignIn = useCallback(() => {
     // `returnTo` (validated same-origin path) wins over the static default.
@@ -258,28 +277,50 @@ function LogtoCallback({
   // alive over a spent code if this component re-renders before navigation.
   const [done, setDone] = useState(false);
 
+  // Resolve at most once. StrictMode double-invokes this effect, and in
+  // production it re-runs whenever an inline `navigate`/`onAuthError` arrow —
+  // the documented pattern — changes identity. `takeReturnTo()` is destructive,
+  // so a second pass finds the stash empty and sends the user to `afterSignIn`
+  // instead of where they were headed; an error would also be reported twice.
+  const resolved = useRef(false);
   useEffect(() => {
+    if (resolved.current) return;
+    // On the callback route with no sign-in result to finish. Nothing to do,
+    // but the flow still has to end or it would gate the provider forever.
+    if (outcome.kind === "none") {
+      resolved.current = true;
+      onResolved();
+      return;
+    }
     // The user cancelled / there was no session — just return to the app.
     if (outcome.kind === "benign") {
+      resolved.current = true;
       setDone(true);
+      onResolved();
       goAfterSignIn();
+      return;
     }
     // A setup error (e.g. invalid_scope): recoverable, not fatal. Report and
     // return to the app logged out, instead of throwing during render — a throw
     // would blank any tree without an error boundary above the provider.
     if (outcome.kind === "error") {
+      resolved.current = true;
       setDone(true);
       reportAuthError(onAuthError, new Error(outcome.message));
+      onResolved();
       goAfterSignIn();
     }
-  }, [outcome, goAfterSignIn, onAuthError]);
+  }, [outcome, goAfterSignIn, onAuthError, onResolved]);
 
   // Only a real `?code=` callback runs the token exchange; benign/error redirects
   // never touch the SDK, so a cancelled sign-in can't poison the next one.
   if (outcome.kind === "pending" && !done)
     return (
       <CodeExchange
-        onDone={() => setDone(true)}
+        onDone={() => {
+          setDone(true);
+          onResolved();
+        }}
         goAfterSignIn={goAfterSignIn}
         onAuthError={onAuthError}
       />
@@ -570,9 +611,17 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
       },
     };
   }, []);
+  // Captured once, at mount: a real OIDC redirect always lands as a full-page
+  // load, so mount == landing. Ending it is a state change, which is what makes
+  // both the loading veto and the error observer below react to the callback
+  // finishing even in an app whose provider never re-renders on navigation.
+  const [callbackActive, setCallbackActive] = useState(() =>
+    onCallbackRoute(callbackPath),
+  );
+  const endCallbackFlow = useCallback(() => setCallbackActive(false), []);
   const bridgeValue = useMemo(
-    () => ({ callbackPath, signInErrors }),
-    [callbackPath, signInErrors],
+    () => ({ callbackPath, signInErrors, callbackActive }),
+    [callbackPath, signInErrors, callbackActive],
   );
 
   if (configQuery && fetched.status === "error") {
@@ -587,24 +636,23 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
 
   if (!resolved) return <>{fallback}</>;
 
-  const callbackRoute = onCallbackRoute(callbackPath);
-
   return (
     <BridgeContext.Provider value={bridgeValue}>
       <LogtoProvider config={logtoConfig} unstable_enableCache={discoveryCache}>
         {/* @logto/react catches signIn failures into context and resolves its
             public promise. Observe that state only on the initiating page;
             callback errors are already handled by LogtoCallback below. */}
-        {!callbackRoute ? (
+        {!callbackActive ? (
           <LogtoSignInErrorObserver signInErrors={signInErrors} />
         ) : null}
         {/* Callback handling is gated to the exact callback route: a real OIDC
             redirect always lands as a full-page load, so mount == landing. */}
-        {callbackRoute ? (
+        {callbackActive ? (
           <LogtoCallback
             afterSignIn={afterSignIn}
             navigate={navigate}
             onAuthError={onAuthError}
+            onResolved={endCallbackFlow}
           />
         ) : null}
         <ConvexProviderWithAuth client={client} useAuth={useAuthFromLogto}>
