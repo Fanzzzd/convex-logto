@@ -70,16 +70,35 @@ export function callbackResolved(state: {
 }
 
 /**
+ * A raw ASCII tab, LF, or CR is *removed by the URL parser before it parses
+ * anything*, so `/<TAB>/evil.com` inspects as a same-origin path and then
+ * resolves to `//evil.com`. The rest of the C0 range and DEL are refused with
+ * them: a legitimate path carries a control character percent-encoded, never
+ * raw.
+ */
+function hasControlCharacter(returnTo: string): boolean {
+  for (let index = 0; index < returnTo.length; index += 1) {
+    const code = returnTo.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/**
  * Is `returnTo` a safe post-sign-in destination? Only same-origin path
- * navigation is allowed — a single leading `/`, not `//host` (protocol-relative)
- * and no `\` (some URL parsers fold `\` into `/`, turning `/\evil.com` into
- * `//evil.com`). Anything else would let a crafted link turn the sign-in flow
- * into an open redirect (RFC 9700 §4.11.1 forbids client-side open redirectors).
+ * navigation is allowed — a single leading `/`, not `//host`
+ * (protocol-relative), no `\` (some URL parsers fold `\` into `/`, turning
+ * `/\evil.com` into `//evil.com`), and no raw control character (see above).
+ * Anything else would let a crafted link turn the sign-in flow into an open
+ * redirect (RFC 9700 §4.11.1 forbids client-side open redirectors).
+ *
+ * This is the only gate — every caller navigates with the string unmodified.
  */
 export function isSafeReturnTo(returnTo: string): boolean {
   return (
     returnTo.startsWith("/") &&
     !returnTo.startsWith("//") &&
-    !returnTo.includes("\\")
+    !returnTo.includes("\\") &&
+    !hasControlCharacter(returnTo)
   );
 }
