@@ -25,7 +25,7 @@ export const SESSION_LABEL_MAX_LENGTH = 64;
  * `signIn` is necessarily unauthenticated, and both strings are stored verbatim
  * in a `transactions` row for the transaction TTL. Unbounded, anyone who knows
  * the deployment URL can park documents near Convex's 1 MiB limit in a loop, and
- * GC only drains four transaction documents per mutation. Every other
+ * GC would have to drain them a handful per mutation. Every other
  * caller-supplied string in this component is bounded; these are generous by
  * comparison — a redirect URI that does not fit in 2048 code points is not a
  * redirect URI anyone registered with Logto.
