@@ -337,6 +337,30 @@ describe("SessionStorageArea", () => {
     expect(writeAttempts).toBe(1);
   });
 
+  it("drops the superseded copy when a durable session write fails", () => {
+    // A tab that reads a rotated-away session token presents it, and once the
+    // reuse window has passed the component kills the session for every tab.
+    const values = new Map<string, string>();
+    let failWrites = false;
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        if (failWrites) throw new Error("quota exceeded");
+        values.set(key, value);
+      },
+      removeItem: (key: string) => void values.delete(key),
+    });
+    const store = new SessionStorageArea("ns", "session");
+    store.writeSession({ token: "t1", sessionId: "s" });
+    expect([...values.values()].some((raw) => raw.includes("t1"))).toBe(true);
+
+    failWrites = true;
+    store.writeSession({ token: "t2", sessionId: "s" });
+
+    expect(store.readSession()).toEqual({ token: "t2", sessionId: "s" });
+    expect([...values.values()].some((raw) => raw.includes("t1"))).toBe(false);
+  });
+
   it("reports failed durable removal and clears it after a successful retry", async () => {
     const values = new Map<string, string>();
     let removeAttempts = 0;
@@ -804,6 +828,28 @@ describe("callback", () => {
     });
     await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith("/dash"));
     expect(storage.takeTransaction()).toBeNull(); // stash consumed
+  });
+
+  it("revokes the session it signed in over", async () => {
+    // Logto's SSO cookie makes signing in again a silent redirect, so it is how
+    // a user retries anything that looks like a sign-out. The replaced row would
+    // otherwise hold a live Logto grant no client can reach, and show up in the
+    // user's own device list for 190 days.
+    const { engine, storage, handlers } = makeHarness({
+      storedSession: { token: "old-token", sessionId: "old-session" },
+    });
+    setURL("http://localhost:5173/callback?code=c1&state=s1");
+    storage.stashTransaction({ state: "s1" });
+    handlers.callback.mockResolvedValue(sessionResult(1));
+
+    engine.start();
+    expect((await settled(engine)).status).toBe("authenticated");
+
+    await vi.waitFor(() =>
+      expect(handlers.signOut).toHaveBeenCalledWith({
+        sessionToken: "old-token",
+      }),
+    );
   });
 
   it("bound callback captures the device public key in the new session", async () => {
