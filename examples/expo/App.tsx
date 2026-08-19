@@ -9,6 +9,7 @@ import {
 import { StatusBar } from "expo-status-bar";
 import {
   ActivityIndicator,
+  Alert,
   Button,
   SafeAreaView,
   ScrollView,
@@ -48,7 +49,10 @@ function SignedIn() {
     <View style={styles.stack}>
       <Button
         title={`Sign out (${user?.email ?? user?.sub ?? "user"})`}
-        onPress={() => void signOut()}
+        // The provider's `onAuthError` reports the failure; swallowing the
+        // rejection here just keeps it from also surfacing unhandled. A sign-out
+        // that fails leaves the user signed in — worth telling them about.
+        onPress={() => void signOut().catch(() => {})}
       />
       <Me />
     </View>
@@ -58,7 +62,9 @@ function SignedIn() {
 function SignIn() {
   // `signIn()` defaults to the provider's `redirectUri` ("io.logto://callback").
   const { signIn } = useLogtoAuth();
-  return <Button title="Sign in" onPress={() => void signIn()} />;
+  return (
+    <Button title="Sign in" onPress={() => void signIn().catch(() => {})} />
+  );
 }
 
 export default function App() {
@@ -71,6 +77,10 @@ export default function App() {
       configQuery={api.logto.config}
       redirectUri="io.logto://callback"
       fallback={<Spinner label="Loading config…" />}
+      // `@logto/rn` rejects instead of storing the error, and the two failures
+      // an app actually sees — the user dismissing the system browser, and a
+      // sign-out that could not reach Logto — are both invisible without this.
+      onAuthError={(error) => Alert.alert("Logto", error.message)}
     >
       <SafeAreaView style={styles.screen}>
         <Text style={styles.title}>convex-logto + Expo</Text>
