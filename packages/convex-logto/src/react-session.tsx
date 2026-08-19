@@ -6,7 +6,8 @@ import {
   ConvexProviderWithAuth,
   type ConvexReactClient,
   useConvexAuth,
-  useQuery,
+  useQueries,
+  type RequestForQueries,
 } from "convex/react";
 import {
   createContext,
@@ -21,9 +22,9 @@ import {
 import {
   SessionAuthEngine,
   SessionStorageArea,
-  type SessionTransport,
   type TokenStorageKind,
 } from "./session-client";
+import { defaultSessionTransport } from "./session-transport";
 import type { LogtoAuthEventHandler } from "./auth-events";
 import { createSessionDeviceBinding } from "./session-device";
 import {
@@ -214,7 +215,7 @@ export function ConvexLogtoSessionProvider({
           fetch: cookieFetch,
           deviceBinding: deviceBinding || cookieDeviceBinding,
         })
-      : (client as SessionTransport);
+      : defaultSessionTransport(client);
     return new SessionAuthEngine({
       transport,
       api: sessionApi,
@@ -354,11 +355,30 @@ function RevocationWatcher() {
   );
   const sessionId = snapshot.sessionId;
   const hasSessionId = sessionId !== null && sessionId.length > 0;
-  const valid = useQuery(
-    sessionApi.sessionValid,
-    hasSessionId ? { sessionId } : "skip",
-  );
+  // `useQueries`, not `useQuery`, because `useQuery` rethrows a query error
+  // during render and this component is a sibling of `{children}` — above every
+  // error boundary the app can install. A frontend deployed ahead of its Convex
+  // functions would otherwise blank the page for every signed-in user instead of
+  // merely losing reactive revocation. Here the error arrives as a value.
+  const queries = useMemo(() => {
+    const request: RequestForQueries = {};
+    if (hasSessionId) {
+      request.valid = { query: sessionApi.sessionValid, args: { sessionId } };
+    }
+    return request;
+  }, [hasSessionId, sessionApi, sessionId]);
+  const valid: unknown = useQueries(queries).valid;
   useEffect(() => {
+    if (valid instanceof Error) {
+      engine.reportWatchFailure(
+        new Error(
+          "convex-logto: reactive revocation is off — the sessionValid query failed. " +
+            "Sessions still expire on their own schedule.",
+          { cause: valid },
+        ),
+      );
+      return;
+    }
     if (hasSessionId && valid === false) engine.handleRevoked();
   }, [engine, hasSessionId, valid]);
   return null;

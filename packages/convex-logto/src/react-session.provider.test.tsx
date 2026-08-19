@@ -21,13 +21,37 @@ import {
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 let convexAuthenticated = false;
+let sessionValidResult: unknown = undefined;
 vi.mock("convex/react", () => ({
   ConvexProviderWithAuth: ({ children }: { children: ReactNode }) => children,
   useConvexAuth: () => ({
     isLoading: false,
     isAuthenticated: convexAuthenticated,
   }),
-  useQuery: () => undefined,
+  // Mirrors the real hooks: `useQuery` rethrows a query error during render,
+  // `useQueries` hands it back as a value.
+  useQuery: () => {
+    if (sessionValidResult instanceof Error) throw sessionValidResult;
+    return sessionValidResult;
+  },
+  useQueries: (queries: Record<string, unknown>) =>
+    "valid" in queries ? { valid: sessionValidResult } : {},
+}));
+
+// Session actions must reach the deployment over HTTP, never over the app's
+// WebSocket client — see `session-transport.ts`.
+const httpClientUrls: string[] = [];
+vi.mock("convex/browser", () => ({
+  ConvexHttpClient: class {
+    constructor(url: string) {
+      httpClientUrls.push(url);
+    }
+    action(reference: unknown, args: unknown) {
+      if ((reference as { fn: string }).fn === "callback")
+        return callback(args);
+      return Promise.resolve({});
+    }
+  },
 }));
 
 const callback = vi.fn();
@@ -45,9 +69,8 @@ const api = {
 
 const client = {
   url: "https://example.convex.cloud",
-  action: (reference: unknown, args: unknown) => {
-    if ((reference as { fn: string }).fn === "callback") return callback(args);
-    return Promise.resolve({});
+  action: () => {
+    throw new Error("session action ran on the app's WebSocket client");
   },
 } as never;
 
@@ -61,6 +84,7 @@ function Probe() {
 
 let root: Root | null = null;
 let authEvents: LogtoAuthEvent[] = [];
+let authErrors: Error[] = [];
 async function render(
   clientDescriptor?: LogtoSessionClientDescriptor,
   onAuthEvent?: (event: LogtoAuthEvent) => void,
@@ -73,6 +97,7 @@ async function render(
         sessionApi={api}
         clientDescriptor={clientDescriptor}
         onAuthEvent={onAuthEvent}
+        onAuthError={(error) => authErrors.push(error)}
       >
         <Probe />
       </ConvexLogtoSessionProvider>,
@@ -87,7 +112,10 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   convexAuthenticated = false;
+  sessionValidResult = undefined;
   authEvents = [];
+  httpClientUrls.length = 0;
+  authErrors = [];
   callback.mockReset().mockResolvedValue({
     idToken: "id-token",
     sessionToken: "session-token",
@@ -138,6 +166,49 @@ it("passes the descriptor through to the exchange", async () => {
     expect.objectContaining({
       client: { platform: "web", browser: "Firefox" },
     }),
+  );
+});
+
+it("runs session actions off the app's WebSocket client", async () => {
+  // Convex stops the socket *before* asking for a fresh token, so an action
+  // sent on that client during reauthentication parks forever and the socket is
+  // never restarted. `client.action` throws here to catch a regression.
+  sessionStorage.setItem(
+    "convex-logto:https://example.convex.cloud:txn",
+    JSON.stringify({ state: "st" }),
+  );
+  (
+    window as unknown as { happyDOM: { setURL: (url: string) => void } }
+  ).happyDOM.setURL("http://localhost:5173/callback?code=c&state=st");
+
+  await render(undefined);
+  await vi.waitFor(() => expect(callback).toHaveBeenCalled());
+
+  expect(httpClientUrls).toEqual(["https://example.convex.cloud"]);
+});
+
+it("survives a sessionValid query error instead of blanking the app", async () => {
+  // The watcher is a sibling of `{children}`, above every error boundary an app
+  // can install, so a deployment that has not caught up with the bundle would
+  // take the whole page down. Reactive revocation degrades; sign-in does not.
+  sessionStorage.setItem(
+    "convex-logto:https://example.convex.cloud:txn",
+    JSON.stringify({ state: "st" }),
+  );
+  (
+    window as unknown as { happyDOM: { setURL: (url: string) => void } }
+  ).happyDOM.setURL("http://localhost:5173/callback?code=c&state=st");
+  await render(undefined);
+  await vi.waitFor(() => expect(callback).toHaveBeenCalled());
+
+  sessionValidResult = new Error(
+    "Could not find public function for 'auth:sessionValid'",
+  );
+  await render(undefined);
+
+  expect(capturedSignIn).not.toBeNull();
+  expect(authErrors.map((error) => error.message)).toContainEqual(
+    expect.stringContaining("reactive revocation is off"),
   );
 });
 
