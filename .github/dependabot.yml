@@ -60,6 +60,13 @@ updates:
       - dependency-name: typescript
         update-types:
           - version-update:semver-major
+      # @types/node describes the Node major this workspace actually runs on —
+      # 22, in `ci.yml` and `release.yml`. A newer major types APIs the runtime
+      # does not have, so a script could typecheck green here and throw on the
+      # runner. Bump it deliberately when the workflows move to a new Node.
+      - dependency-name: "@types/node"
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
