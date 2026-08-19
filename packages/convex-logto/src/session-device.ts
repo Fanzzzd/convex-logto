@@ -178,20 +178,30 @@ class IndexedDbDeviceKeyRepository implements SessionDeviceKeyRepository {
     const database = await this.open();
     try {
       return await new Promise((resolve, reject) => {
-        const request = database
-          .transaction(DEVICE_KEY_STORE, "readwrite")
+        const transaction = database.transaction(DEVICE_KEY_STORE, "readwrite");
+        const request = transaction
           .objectStore(DEVICE_KEY_STORE)
           .add(keyPair, DEVICE_KEY_ID);
-        request.onsuccess = () => resolve(true);
+        let alreadyStored = false;
         request.onerror = (event) => {
-          if (request.error?.name === "ConstraintError") {
-            event.preventDefault();
-            event.stopPropagation();
-            resolve(false);
-          } else {
-            reject(request.error ?? unavailable());
-          }
+          // A key is already stored — another tab won the race. Swallow the
+          // error so the transaction still commits, and report the loss;
+          // anything else must abort and be raised.
+          if (request.error?.name !== "ConstraintError") return;
+          event.preventDefault();
+          event.stopPropagation();
+          alreadyStored = true;
         };
+        // Settle on the *transaction*, not the request: a successful `add` is
+        // still undone by a commit-time abort (`QuotaExceededError`), which
+        // IndexedDB reports here and not on the request. Reporting the key as
+        // persisted when it is not degrades the binding to this tab's memory —
+        // the next reload generates a different key, every proof is rejected,
+        // and the component deletes the session on sight. Failing instead
+        // reaches the module's stated contract: no silent fallback.
+        transaction.oncomplete = () => resolve(!alreadyStored);
+        transaction.onabort = () => reject(transaction.error ?? unavailable());
+        transaction.onerror = () => reject(transaction.error ?? unavailable());
       });
     } finally {
       database.close();
