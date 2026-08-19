@@ -8,10 +8,16 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import {
+  getFunctionName,
+  makeFunctionReference,
+  type FunctionReference,
+} from "convex/server";
 import type { LogtoSessionApi } from "./session";
 import {
   ConvexLogtoSessionProvider,
   useLogtoAuth,
+  type ConvexLogtoSessionProviderProps,
   type LogtoAuthEvent,
   type LogtoSessionClientDescriptor,
 } from "./react-session";
@@ -46,25 +52,26 @@ vi.mock("convex/browser", () => ({
     constructor(url: string) {
       httpClientUrls.push(url);
     }
-    action(reference: unknown, args: unknown) {
-      if ((reference as { fn: string }).fn === "callback")
-        return callback(args);
+    action(reference: FunctionReference<"action">, args: unknown) {
+      if (getFunctionName(reference) === "auth:callback") return callback(args);
       return Promise.resolve({});
     }
   },
 }));
 
 const callback = vi.fn();
+// Real references, not stubs: the cookie transport maps every one of them
+// through `getFunctionName`.
 const api = {
-  signIn: { fn: "signIn" },
-  callback: { fn: "callback" },
-  refresh: { fn: "refresh" },
-  signOut: { fn: "signOut" },
-  signOutEverywhere: { fn: "signOutEverywhere" },
-  listSessions: { fn: "listSessions" },
-  renameSession: { fn: "renameSession" },
-  revokeSession: { fn: "revokeSession" },
-  sessionValid: { fn: "sessionValid" },
+  signIn: makeFunctionReference<"action">("auth:signIn"),
+  callback: makeFunctionReference<"action">("auth:callback"),
+  refresh: makeFunctionReference<"action">("auth:refresh"),
+  signOut: makeFunctionReference<"action">("auth:signOut"),
+  signOutEverywhere: makeFunctionReference<"action">("auth:signOutEverywhere"),
+  listSessions: makeFunctionReference<"action">("auth:listSessions"),
+  renameSession: makeFunctionReference<"action">("auth:renameSession"),
+  revokeSession: makeFunctionReference<"action">("auth:revokeSession"),
+  sessionValid: makeFunctionReference<"query">("auth:sessionValid"),
 } as unknown as LogtoSessionApi;
 
 const client = {
@@ -88,6 +95,7 @@ let authErrors: Error[] = [];
 async function render(
   clientDescriptor?: LogtoSessionClientDescriptor,
   onAuthEvent?: (event: LogtoAuthEvent) => void,
+  extra?: Partial<ConvexLogtoSessionProviderProps>,
 ) {
   root ??= createRoot(document.createElement("div"));
   await act(async () => {
@@ -98,6 +106,7 @@ async function render(
         clientDescriptor={clientDescriptor}
         onAuthEvent={onAuthEvent}
         onAuthError={(error) => authErrors.push(error)}
+        {...extra}
       >
         <Probe />
       </ConvexLogtoSessionProvider>,
@@ -146,6 +155,49 @@ it("keeps one engine across an inline descriptor's fresh object identity", async
   const first = capturedSignIn;
 
   await render({ platform: "web" });
+
+  expect(capturedSignIn).toBe(first);
+});
+
+it("keeps one engine when the SSR seed is re-issued", async () => {
+  // `getInitialToken()` rotates the cookie and mints a fresh ID token per call,
+  // so every re-run of the root loader (`router.invalidate()`, a reload) hands
+  // back a different string. That is a new seed, not a new session.
+  const cookieFetch = vi.fn(() => Promise.resolve(new Response("{}")));
+  const cookieTransport = { endpoint: "/api/logto", fetch: cookieFetch };
+  await render(undefined, undefined, {
+    cookieTransport,
+    initialToken: "seed-1",
+    initialSessionId: "session-1",
+  });
+  const first = capturedSignIn;
+
+  await render(undefined, undefined, {
+    cookieTransport,
+    initialToken: "seed-2",
+    initialSessionId: "session-1",
+  });
+
+  expect(capturedSignIn).toBe(first);
+});
+
+it("keeps one engine across an inline cookieTransport fetch", async () => {
+  // `cookieTransport={{ endpoint, fetch: (u, i) => fetch(u, i) }}` is a
+  // documented option; an inline arrow changes identity on every render.
+  await render(undefined, undefined, {
+    cookieTransport: {
+      endpoint: "/api/logto",
+      fetch: () => Promise.resolve(new Response("{}")),
+    },
+  });
+  const first = capturedSignIn;
+
+  await render(undefined, undefined, {
+    cookieTransport: {
+      endpoint: "/api/logto",
+      fetch: () => Promise.resolve(new Response("{}")),
+    },
+  });
 
   expect(capturedSignIn).toBe(first);
 });
