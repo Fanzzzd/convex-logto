@@ -741,14 +741,19 @@ export class SessionAuthEngine {
       );
       // Nothing has been minted yet, so simply abandoning the code is enough.
       if (generation !== this.authGeneration) return;
-      const result = await this.retrying(() =>
-        this.options.transport.action(this.options.api.callback, {
+      // Deliberately not `retrying`: the exchange is single-use. The component
+      // consumes the transaction row before it contacts Logto, so a second
+      // attempt can only report `transaction_not_found` — replacing whatever
+      // actually went wrong with a stale-callback diagnosis.
+      const result = await this.options.transport.action(
+        this.options.api.callback,
+        {
           code,
           state,
           redirectUri,
           ...(devicePublicKey === undefined ? {} : { devicePublicKey }),
           ...(client === undefined ? {} : { client }),
-        }),
+        },
       );
       if (generation !== this.authGeneration) {
         await this.revokeAbandonedSession(result.sessionToken);
