@@ -73,6 +73,31 @@ it("keeps the ConvexError payload the session error taxonomy reads", async () =>
   });
 });
 
+it("gives up on a request that never answers", async () => {
+  // A hung request would park `inflightRefresh` forever: every later token fetch
+  // merges into it and the recovery loop waits on it.
+  vi.useFakeTimers();
+  try {
+    vi.stubGlobal("fetch", () => new Promise<never>(() => {}));
+    const client = {
+      url: "https://example.convex.cloud",
+      action: vi.fn(),
+    } as unknown as ConvexReactClient;
+
+    const pending = defaultSessionTransport(client)
+      .action(refresh, { sessionToken: "st" })
+      .then(
+        () => "resolved",
+        (error: unknown) => (error as Error).message,
+      );
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(pending).resolves.toContain("timed out");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("falls back to the client when it exposes no deployment URL", async () => {
   // `ConvexReactClient.url` exists on every supported version — a client-shaped
   // stub should still mount rather than throw.

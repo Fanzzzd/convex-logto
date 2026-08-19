@@ -40,10 +40,50 @@ export function createDeploymentSessionTransport(
 ): SessionTransport {
   const client = new ConvexHttpClient(url, {
     skipConvexDeploymentUrlCheck: true,
+    // `ConvexHttpClient` calls `fetch` with no signal of its own. A request that
+    // never answers would park `inflightRefresh` forever — every later token
+    // fetch merges into that promise, and the recovery loop waits on it — which
+    // is the same wedge this module exists to avoid, moved from a stopped socket
+    // to a stalled request.
+    fetch: timeoutFetch,
   });
   return {
-    action: (reference, args) => client.action(reference, args),
+    // Belt and braces: `fetch` is a newer constructor option than this package's
+    // `convex` floor, so an older client would ignore it. The race settles the
+    // caller either way.
+    action: (reference, args) => withDeadline(client.action(reference, args)),
   };
+}
+
+/** Same ceiling the cookie transport applies to its own routes. */
+const SESSION_ACTION_TIMEOUT_MS = 10 * 1000;
+
+function timeoutError(): Error {
+  return new Error("convex-logto: the session request timed out.");
+}
+
+const timeoutFetch: typeof globalThis.fetch = (input, init) => {
+  const controller = new AbortController();
+  const error = timeoutError();
+  const timer = setTimeout(
+    () => controller.abort(error),
+    SESSION_ACTION_TIMEOUT_MS,
+  );
+  return globalThis
+    .fetch(input, { ...init, signal: controller.signal })
+    .finally(() => clearTimeout(timer));
+};
+
+async function withDeadline<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(timeoutError()), SESSION_ACTION_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([operation, deadline]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /**

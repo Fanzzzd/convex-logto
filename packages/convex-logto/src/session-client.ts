@@ -580,7 +580,7 @@ export class SessionAuthEngine {
   private inflightSignIn: Promise<void> | null = null;
   private inflightCompletion: Promise<void> | null = null;
   private inflightRefresh: Promise<string | null> | null = null;
-  private recovering = false;
+  private recoveringFor: number | null = null;
   private storagePreparation: Promise<void> | null = null;
   /** Invalidates async credential work that started before a local sign-out. */
   private authGeneration = 0;
@@ -1570,11 +1570,15 @@ export class SessionAuthEngine {
    * attempt count: a five-minute outage must still end with the tab signed in.
    */
   private scheduleRecovery(): void {
-    if (this.recovering) return;
-    this.recovering = true;
+    // Keyed by generation, not a bare flag: a loop left over from before a
+    // sign-out sleeps for up to 30s before it notices, and a bare flag would
+    // make that stale loop swallow the arming of a fresh one — stranding the tab
+    // in exactly the way this exists to prevent.
+    if (this.recoveringFor === this.authGeneration) return;
     const generation = this.authGeneration;
+    this.recoveringFor = generation;
     void this.recover(generation).finally(() => {
-      this.recovering = false;
+      if (this.recoveringFor === generation) this.recoveringFor = null;
     });
   }
 

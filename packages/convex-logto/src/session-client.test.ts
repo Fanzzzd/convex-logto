@@ -785,6 +785,32 @@ it("stops recovering once the session is gone", async () => {
   expect(handlers.refresh).toHaveBeenCalledTimes(attempts);
 });
 
+it("arms a fresh recovery after a sign-out interrupts the old one", async () => {
+  // The stale loop sleeps for up to 30s before it notices the generation
+  // changed. A bare in-progress flag would let it swallow the arming of a new
+  // one, stranding the tab for that whole window.
+  let sleeps = 0;
+  const { engine, storage, handlers } = makeHarness({
+    storedSession: { token: "session-token-0", sessionId: "session-id-0" },
+    storedIdToken: staleToken(),
+    recoverySleep: () => {
+      sleeps += 1;
+      return new Promise<void>(() => {});
+    },
+  });
+  handlers.refresh.mockRejectedValue(transientError());
+
+  engine.start();
+  expect((await settled(engine)).status).toBe("unauthenticated");
+  expect(sleeps).toBe(1);
+
+  engine.handleExternalSignOut();
+  storage.writeSession({ token: "session-token-1", sessionId: "session-id-1" });
+  await engine.fetchAccessToken(true);
+
+  expect(sleeps).toBe(2);
+});
+
 it("agrees it is signed out when a forced fetch cannot refresh", async () => {
   // Convex parks at `noAuth` after a single null and only re-arms when
   // `ConvexProviderWithAuth` calls `setAuth` again, which needs this flip.
