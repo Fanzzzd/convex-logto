@@ -883,6 +883,24 @@ describe("callback", () => {
     await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith("/"));
   });
 
+  it("does not retry a transient exchange failure", async () => {
+    // The component consumes the transaction row before it contacts Logto, so a
+    // second attempt can only report `transaction_not_found` — replacing the
+    // diagnosis Logto just gave with a stale-callback one.
+    const { engine, storage, handlers, onAuthError } = makeHarness();
+    setURL("http://localhost:5173/callback?code=c1&state=s1");
+    storage.stashTransaction({ state: "s1" });
+    handlers.callback.mockRejectedValue(transientError());
+
+    engine.start();
+    expect((await settled(engine)).status).toBe("unauthenticated");
+
+    expect(handlers.callback).toHaveBeenCalledTimes(1);
+    expect(onAuthError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("down") }),
+    );
+  });
+
   it("benign ?error=access_denied → back to the app without reporting an error", async () => {
     const { engine, navigate, onAuthError } = makeHarness();
     setURL("http://localhost:5173/callback?error=access_denied&state=s1");

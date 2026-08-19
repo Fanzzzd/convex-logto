@@ -19,6 +19,7 @@ import {
   TRANSACTION_TTL_MS,
   WEBHOOK_DELIVERY_GC_AFTER_MS,
   asDeploymentFault,
+  asSpentAuthorizationCode,
   assertDeviceProof,
   buildAuthorizeUrl,
   buildEndSessionUrl,
@@ -576,12 +577,21 @@ export const exchange = action({
         now: Date.now(),
       },
     );
-    const tokens = await tokenEndpoint(args, {
-      grant_type: "authorization_code",
-      code: args.code,
-      redirect_uri: args.redirectUri,
-      code_verifier: transaction.codeVerifier,
-    });
+    let tokens: Awaited<ReturnType<typeof tokenEndpoint>>;
+    try {
+      tokens = await tokenEndpoint(args, {
+        grant_type: "authorization_code",
+        code: args.code,
+        redirect_uri: args.redirectUri,
+        code_verifier: transaction.codeVerifier,
+      });
+    } catch (error) {
+      // `tokenEndpoint` classifies for refresh, where transient is the safe
+      // default. Here the transaction is already consumed, so a retry finds
+      // nothing and reports `transaction_not_found` — losing Logto's own answer,
+      // which is usually the one an operator needs.
+      throw asSpentAuthorizationCode(error);
+    }
     if (!tokens.tokenResponse || tokens.id_token === undefined) {
       // Sign-in cannot retry: the authorization code is spent either way, so
       // there is nothing to gain by calling this transient.

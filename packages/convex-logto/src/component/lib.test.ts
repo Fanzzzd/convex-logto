@@ -903,6 +903,44 @@ describe("bounded token endpoint", () => {
     }
   });
 
+  it("reports Logto's own rejection on the sign-in path, terminally", async () => {
+    // `classifyTokenEndpointFailure` calls this transient for refresh's sake.
+    // Here the transaction is already consumed, so a retry can only report
+    // `transaction_not_found` — and the operator never learns their client
+    // secret is wrong.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: "invalid_client" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const runMutation = vi.fn().mockResolvedValueOnce({
+      codeVerifier: "verifier",
+      returnTo: undefined,
+    });
+    try {
+      await expect(
+        exchangeActionHandler(
+          { runQuery: () => Promise.resolve(null), runMutation },
+          {
+            ...refreshArgs,
+            code: "code",
+            state: "state",
+            redirectUri: "https://app.example.com/callback",
+          },
+        ),
+      ).rejects.toMatchObject({
+        data: {
+          kind: "terminal",
+          code: "invalid_client",
+          message: expect.stringContaining("LOGTO_CLIENT_SECRET"),
+        },
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("releases the claim when Logto answered but rotated nothing", async () => {
     // Logto rotates a confidential-client refresh token only at >=70% TTL, so
     // most refreshes return none — the stored token stays current, which is what
