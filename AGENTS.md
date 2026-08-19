@@ -30,7 +30,7 @@ Guidance for AI agents and human contributors working in this repository.
   - `src/session-device.ts` — opt-in device binding (non-extractable ECDSA P-256 in IndexedDB); bound sessions must present a proof to refresh or sign out.
   - `src/native.tsx` + `src/native-session.tsx` + `src/native-session-client.ts` — the React Native / Expo entries for bridge and session mode.
 - `docs/` — the documentation site (Fumadocs on TanStack Start; deployed to Vercel).
-- `examples/` — one app per integration. Their `convex/_generated` stubs and framework-generated files (`next-env.d.ts`, `routeTree.gen.ts`) are **committed**: CI has no Convex deployment, so a clean checkout must typecheck and build without running `convex dev`.
+- `examples/` — one app per integration. Their `convex/_generated` stubs and framework-generated files (`next-env.d.ts`, `routeTree.gen.ts`) are **committed**: CI has no Convex deployment, so a clean checkout must typecheck and build without running `convex dev`. Each example's `check-types` runs `tsc --noEmit` **twice** — once for the app, once for `convex/` — because that second project is the only place the component's public type boundary (`logtoSessionApi(components.logto)`, the shape in `_generated/component.d.ts`) is checked against a consumer.
 - `scripts/audit-dependencies.mjs` — the fail-closed dependency gate. Advisories are allowed only by exact version *and* dependency path, recorded in `SECURITY.md` with a review date. Never silence one with a `pnpm.overrides` entry.
 - `.changeset/` — Changesets config + pending release notes (workspace-level).
 
