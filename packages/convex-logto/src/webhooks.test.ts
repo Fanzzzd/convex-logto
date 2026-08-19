@@ -193,16 +193,14 @@ describe("registerLogtoWebhook route", () => {
   });
 
   it.each([
-    ["missing hookId", { hookId: undefined }],
-    ["wrong profile field type", { data: { id: "u1", primaryEmail: 42 } }],
+    ["no entity at all", { data: null }],
+    ["a non-string entity id", { data: { id: 42 } }],
+    ["an entity that is not an object", { data: "user_abc" }],
     [
-      "wrong suspension flag type",
-      {
-        event: "User.SuspensionStatus.Updated",
-        data: { id: "u1", isSuspended: "true" },
-      },
+      "a User.Deleted with no id anywhere",
+      { event: "User.Deleted", data: null, params: {} },
     ],
-  ])("returns 400 on a malformed known payload (%s)", async (_name, patch) => {
+  ])("returns 400 when the user id is unusable (%s)", async (_name, patch) => {
     const handler = captureWebhookRoute({ signingKey });
     const malformed = JSON.stringify(freshPayload(patch));
     const runMutation = vi.fn();
@@ -445,6 +443,88 @@ describe("registerLogtoWebhook with sessions", () => {
     expect(response.status).toBe(200);
     expect(handlers.kill).toHaveBeenCalledWith({ subject: "u-current" });
     expect(calls.map((c) => c.fn)).toEqual(["record", "kill", "sync"]);
+  });
+
+  it.each([
+    ["a null envelope string", { userAgent: null }],
+    ["a missing hookId", { hookId: undefined }],
+    ["a stringified status", { status: "204" }],
+    [
+      "an entity field that changed type",
+      {
+        data: { id: "u-current", identities: [], lastSignInAt: "2026-01-01" },
+        params: { userId: "u-current" },
+      },
+    ],
+  ])(
+    "still revokes a deleted user's sessions despite %s",
+    async (_name, patch) => {
+      // The regression this guards: revocation used to hinge on the type of
+      // every advisory field. One drift and the delivery 400s — which Logto
+      // does not retry — so a deleted user's sessions stayed alive.
+      const { handler, runMutation, runAction, handlers, calls } =
+        sessionsHarness();
+      const deleted = JSON.stringify(
+        freshPayload({
+          event: "User.Deleted",
+          data: { id: "u-current" },
+          params: { userId: "u-current" },
+          ...patch,
+        }),
+      );
+
+      const response = await handler(
+        { runMutation, runAction },
+        post(sign(signingKey, deleted), deleted),
+      );
+
+      expect(response.status).toBe(200);
+      expect(handlers.kill).toHaveBeenCalledWith({ subject: "u-current" });
+      expect(calls.map((c) => c.fn)).toEqual(["record", "kill", "sync"]);
+    },
+  );
+
+  it("rejects User.Deleted when the entity id is present but unreadable", async () => {
+    // Not the same as "no entity": an id that is present and not a string could
+    // be naming someone other than the route params, and the destructive path
+    // must not run on a guess.
+    const { handler, runMutation, runAction, handlers } = sessionsHarness();
+    const unreadable = JSON.stringify(
+      freshPayload({
+        event: "User.Deleted",
+        data: { id: 42 },
+        params: { userId: "u-current" },
+      }),
+    );
+
+    const response = await handler(
+      { runMutation, runAction },
+      post(sign(signingKey, unreadable), unreadable),
+    );
+
+    expect(response.status).toBe(400);
+    expect(handlers.kill).not.toHaveBeenCalled();
+  });
+
+  it("accepts a User.Deleted whose entity names no one", async () => {
+    // `data: {}` carries the same information as the documented `data: null`
+    // shape — nothing to contradict the route params.
+    const { handler, runMutation, runAction, handlers } = sessionsHarness();
+    const empty = JSON.stringify(
+      freshPayload({
+        event: "User.Deleted",
+        data: {},
+        params: { userId: "u-current" },
+      }),
+    );
+
+    const response = await handler(
+      { runMutation, runAction },
+      post(sign(signingKey, empty), empty),
+    );
+
+    expect(response.status).toBe(200);
+    expect(handlers.kill).toHaveBeenCalledWith({ subject: "u-current" });
   });
 
   it("rejects User.Deleted when data.id and params.userId disagree", async () => {
@@ -694,7 +774,7 @@ describe("logtoSync dispatch", () => {
     ).rejects.toThrow(/known Logto User\.\* event/);
   });
 
-  it("throws before dispatching a known event with a malformed user", async () => {
+  it("throws before dispatching an event whose user has no id", async () => {
     const handler = vi.fn();
     const { sync } = logtoSync({ "User.Created": handler });
     await expect(
@@ -705,10 +785,51 @@ describe("logtoSync dispatch", () => {
           event: "User.Created",
           hookId: "h",
           createdAt: "t",
-          data: { id: "u1", primaryEmail: 42 },
+          data: { primaryEmail: "a@b.com" },
         },
       ),
     ).rejects.toThrow(/known Logto User\.\* event/);
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("drops a drifted advisory field instead of the delivery", async () => {
+    // Refusing a signature-verified delivery over a field this library never
+    // reads is how Logto schema drift becomes permanent event loss: Logto
+    // retries a 5xx, not a 4xx. The handler still gets a `LogtoUserEntity`
+    // that matches its declared type, and the raw value stays on `payload`.
+    const handler = vi.fn();
+    const { sync } = logtoSync({ "User.Created": handler });
+    await callSync(
+      sync,
+      { db: {} },
+      {
+        event: "User.Created",
+        hookId: 42,
+        ip: null,
+        status: "204",
+        createdAt: "t",
+        data: {
+          id: "u1",
+          primaryEmail: "a@b.com",
+          identities: [],
+          lastSignInAt: "2026-01-01T00:00:00.000Z",
+          newFieldLogtoAddedLater: { anything: true },
+        },
+      },
+    );
+    expect(handler).toHaveBeenCalledTimes(1);
+    const [, user, payload] = handler.mock.calls[0]!;
+    // Drifted fields are gone; a field this library has never heard of is not.
+    expect(user).toEqual({
+      id: "u1",
+      primaryEmail: "a@b.com",
+      newFieldLogtoAddedLater: { anything: true },
+    });
+    expect(payload.hookId).toBeUndefined();
+    expect(payload.ip).toBeUndefined();
+    expect(payload.status).toBeUndefined();
+    // Nothing is actually lost: the delivery is reachable verbatim.
+    expect(payload.data.identities).toEqual([]);
+    expect(payload.data.lastSignInAt).toBe("2026-01-01T00:00:00.000Z");
   });
 });
