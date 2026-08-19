@@ -2,11 +2,13 @@
 // carries a `state` param, so a stray `?error=`/`?code=` on an ordinary app route
 // is ignored rather than mistaken for a sign-in result.
 
-const OAUTH_ERROR_HINTS: Record<string, string> = {
-  invalid_scope:
+const OAUTH_ERROR_HINTS = new Map<string, string>([
+  [
+    "invalid_scope",
     "This usually means a requested scope isn't allowed — check any extra `scopes` " +
-    "you passed, and that LOGTO_APP_ID points at a Single-page app (not a Third-party app).",
-};
+      "you passed, and that LOGTO_APP_ID points at a Single-page app (not a Third-party app).",
+  ],
+]);
 
 // OAuth errors that just mean "no session" (e.g. the user cancelled): return to the app.
 const BENIGN_OAUTH_ERRORS = new Set([
@@ -30,7 +32,10 @@ export function classifySignInSearch(search: string): SignInOutcome {
   if (error) {
     if (BENIGN_OAUTH_ERRORS.has(error)) return { kind: "benign" };
     const description = params.get("error_description");
-    const hint = OAUTH_ERROR_HINTS[error];
+    // A Map, not an object: `error` is straight off the query string, and an
+    // object lookup would resolve `?error=constructor` through the prototype
+    // chain and splice a function's source into the message the app displays.
+    const hint = OAUTH_ERROR_HINTS.get(error);
     return {
       kind: "error",
       message:
