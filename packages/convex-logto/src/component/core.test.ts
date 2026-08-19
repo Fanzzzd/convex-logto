@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_REUSE_WINDOW_MS,
   assertDeviceProof,
+  assertUsableDevicePublicKey,
   buildAuthorizeUrl,
   buildEndSessionUrl,
   classifyTokenEndpointFailure,
@@ -20,6 +21,7 @@ import {
   normalizeClientDescriptor,
   normalizeSignInTargets,
   normalizeSessionLabel,
+  sessionReadCost,
   rotateTokenHashes,
   terminal,
   toBase64Url,
@@ -650,5 +652,53 @@ describe("session labels and client descriptors", () => {
     ).toEqual({ platform: "web", browser: "y".repeat(32) });
     expect(normalizeClientDescriptor({})).toBeUndefined();
     expect(normalizeClientDescriptor(undefined)).toBeUndefined();
+  });
+});
+
+describe("assertUsableDevicePublicKey", () => {
+  // `x` and `y` are the only caller-supplied strings the component stores
+  // without a bound of their own, and the key is otherwise parsed only at verify
+  // time inside a try/catch — so nothing on the write path would notice.
+  const coordinate = "a".repeat(43);
+
+  it("accepts a real P-256 coordinate pair", () => {
+    expect(() =>
+      assertUsableDevicePublicKey({
+        kty: "EC",
+        crv: "P-256",
+        x: coordinate,
+        y: coordinate,
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects a coordinate that is not 43 base64url characters", () => {
+    for (const bad of [
+      "a".repeat(500_000),
+      "a".repeat(42),
+      `${"a".repeat(42)}+`,
+    ]) {
+      expect(() =>
+        assertUsableDevicePublicKey({
+          kty: "EC",
+          crv: "P-256",
+          x: bad,
+          y: coordinate,
+        }),
+      ).toThrow(ConvexError);
+    }
+  });
+
+  it("counts the key against the list scan budget", () => {
+    const row = {
+      logtoRefreshToken: "r",
+      lastIdToken: "i",
+    };
+    expect(
+      sessionReadCost({
+        ...row,
+        devicePublicKey: { x: coordinate, y: coordinate },
+      }),
+    ).toBe(sessionReadCost(row) + coordinate.length * 2);
   });
 });

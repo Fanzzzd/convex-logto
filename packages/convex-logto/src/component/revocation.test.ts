@@ -1,6 +1,7 @@
 import { getFunctionName } from "convex/server";
 import { describe, expect, it } from "vitest";
 import {
+  GC_TRANSACTION_BATCH_SIZE,
   REVOCATION_BATCH_SIZE,
   beginRefresh,
   beginSidRevocation,
@@ -269,16 +270,48 @@ describe("bounded session revocation", () => {
     };
 
     await expect(handler({ db, scheduler }, {})).resolves.toBeNull();
-    expect(transactionTakeLimit).toBe(4);
+    expect(transactionTakeLimit).toBe(GC_TRANSACTION_BATCH_SIZE);
     expect(sessionTakeLimit).toBe(REVOCATION_BATCH_SIZE);
     expect(deleted).toHaveLength(REVOCATION_BATCH_SIZE);
-    // The watermark sweep runs in its own transaction — proving a watermark
-    // governs nothing reads session documents, and this budget is spent.
-    expect(scheduled.map((entry) => entry.name)).toEqual([
-      "lib:gcRevocationMarkers",
-      "lib:gc",
-    ]);
+    // A full batch continues the chain; the watermark sweep waits for the last
+    // one, because every sweep re-reads session documents.
+    expect(scheduled.map((entry) => entry.name)).toEqual(["lib:gc"]);
     expect(scheduled.every((entry) => entry.delay === 0)).toBe(true);
+  });
+
+  it("sweeps watermarks once, after the last GC batch", async () => {
+    // Every sweep re-reads session documents to prove a marker governs nothing.
+    // Scheduling one per chained batch multiplies that by the length of the
+    // chain — which an unauthenticated caller controls, since anyone who knows
+    // the deployment URL can create `transactions` rows in a loop.
+    const scheduled: string[] = [];
+    const db = {
+      query: () => ({
+        withIndex: () => ({
+          take: () => Promise.resolve([]),
+          collect: () => Promise.resolve([]),
+        }),
+      }),
+      delete: () => Promise.resolve(),
+    };
+    const handler = handlerOf<Record<string, never>, null>(gc);
+
+    await expect(
+      handler(
+        {
+          db,
+          scheduler: {
+            runAfter: (_delay: number, reference: unknown) => {
+              scheduled.push(getFunctionName(reference as never));
+              return Promise.resolve("scheduled");
+            },
+          },
+        },
+        {},
+      ),
+    ).resolves.toBeNull();
+
+    expect(scheduled).toEqual(["lib:gcRevocationMarkers"]);
   });
 
   it("includes a session committed after the action sampled its clock", async () => {
