@@ -37,6 +37,7 @@ import type {
 const SessionContext = createContext<{
   engine: SessionAuthEngine;
   sessionApi: LogtoSessionApi;
+  redirectUri: string;
 } | null>(null);
 
 function useSessionContext(caller: string) {
@@ -139,8 +140,8 @@ export function ConvexLogtoSessionProvider({
   }, [engine]);
 
   const contextValue = useMemo(
-    () => ({ engine, sessionApi }),
-    [engine, sessionApi],
+    () => ({ engine, sessionApi, redirectUri }),
+    [engine, sessionApi, redirectUri],
   );
 
   return (
@@ -259,6 +260,33 @@ export type LogtoSessionAuth = {
    */
   signIn: () => Promise<void>;
   /**
+   * Finish a sign-in whose deep link came back outside the system-browser
+   * promise — the OS reclaimed the app while Logto had it, so the app
+   * cold-started on the redirect instead of resuming.
+   *
+   * Web needs no equivalent: the callback lives in the URL and the provider
+   * re-reads it on the next mount. Native's flow otherwise lives entirely in one
+   * in-memory promise, so without this the user returns signed in at Logto and
+   * signed out in the app, with no error.
+   *
+   * Wire it to both Expo `Linking` entry points and pass the URL through
+   * unchanged; anything that is not this app's `redirectUri` is ignored:
+   *
+   * ```tsx
+   * useEffect(() => {
+   *   void Linking.getInitialURL().then((url) => url && completeSignIn(url));
+   *   const sub = Linking.addEventListener("url", ({ url }) => {
+   *     void completeSignIn(url);
+   *   });
+   *   return () => sub.remove();
+   * }, [completeSignIn]);
+   * ```
+   *
+   * A user who cancelled in the browser is not recoverable this way, by design:
+   * cancelling discards the OIDC state so a later deep link cannot replay it.
+   */
+  completeSignIn: (url: string) => Promise<void>;
+  /**
    * Revoke the session, clear SecureStore, and end browser SSO by default.
    * Rejects with `SessionSignOutError` when durable cleanup fails twice; its
    * `serverSessionStatus` distinguishes a successful revocation from a dual failure.
@@ -300,7 +328,7 @@ export type LogtoSessionAuth = {
 };
 
 export function useLogtoAuth(): LogtoSessionAuth {
-  const { engine } = useSessionContext("useLogtoAuth");
+  const { engine, redirectUri } = useSessionContext("useLogtoAuth");
   const { isAuthenticated, isLoading } = useConvexAuth();
   const snapshot = useSyncExternalStore(
     engine.subscribe,
@@ -308,6 +336,15 @@ export function useLogtoAuth(): LogtoSessionAuth {
     engine.getServerSnapshot,
   );
   const signIn = useCallback(() => engine.signIn(), [engine]);
+  const completeSignIn = useCallback(
+    async (url: string) => {
+      // Apps hand over every deep link they receive, most of which are their
+      // own routes. Only this flow's redirect can carry an OIDC response.
+      if (!url.startsWith(redirectUri)) return;
+      await engine.completeSignIn(url, redirectUri);
+    },
+    [engine, redirectUri],
+  );
   const signOut = useCallback(
     (options?: { postLogoutRedirectUri?: string; federated?: boolean }) =>
       engine.signOut(options),
@@ -334,6 +371,7 @@ export function useLogtoAuth(): LogtoSessionAuth {
       isLoading,
       user: isAuthenticated ? snapshot.user : undefined,
       signIn,
+      completeSignIn,
       signOut,
       signOutEverywhere,
       listSessions,
@@ -345,6 +383,7 @@ export function useLogtoAuth(): LogtoSessionAuth {
       isLoading,
       snapshot.user,
       signIn,
+      completeSignIn,
       signOut,
       signOutEverywhere,
       listSessions,
