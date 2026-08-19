@@ -113,10 +113,12 @@ type SignOutConsumptionResult =
 // their tiny, bounded generation rows stays below the 16 MiB transaction limits.
 export const REVOCATION_BATCH_SIZE = 8;
 const MAX_REVOCATION_BATCHES = 512;
-// Transactions contain caller-provided redirect URLs and, like sessions, can
-// approach Convex's 1 MiB document limit. GC processes both in one mutation,
-// so reserve four of the 16 MiB read/write budget for transaction documents.
-const GC_TRANSACTION_BATCH_SIZE = 4;
+// A transaction row is `state` + `codeVerifier` (43 each) plus two strings
+// bounded at SIGN_IN_URL_MAX_LENGTH — under 5 KB, not the near-1 MiB document
+// this batch was originally sized for. 128 of them is well inside the share of
+// the 16 MiB budget this mutation can spare, and abandoned sign-ins are the one
+// table an unauthenticated caller can fill.
+export const GC_TRANSACTION_BATCH_SIZE = 128;
 const GC_SMALL_DOCUMENT_BATCH_SIZE = 500;
 // A watermark row is tiny, but proving it governs nothing reads a *session*
 // document, which can approach Convex's 1 MiB limit. Bound the batch by that
@@ -1934,15 +1936,8 @@ export const gc = internalMutation({
       )
       .take(GC_SMALL_DOCUMENT_BATCH_SIZE);
     for (const d of staleDeliveries) await ctx.db.delete(d._id);
-    // Revocation watermarks outlive the rows they killed on purpose, but not
-    // forever: back-channel logout writes one per OP session that ever ends,
-    // including logouts that matched nothing, and nothing else ever deletes
-    // them. They sweep in their own transaction because proving a marker
-    // governs nothing reads session documents, which this mutation has already
-    // spent most of its budget on.
-    await ctx.scheduler.runAfter(0, internal.lib.gcRevocationMarkers, {});
     // A full batch might have more rows behind it. Continue durably instead of
-    // reducing a daily cron to four abandoned sign-ins or eight dead sessions.
+    // reducing a daily cron to one batch of each table.
     if (
       expiredTransactions.length === GC_TRANSACTION_BATCH_SIZE ||
       deadSessions.length === REVOCATION_BATCH_SIZE ||
@@ -1950,7 +1945,16 @@ export const gc = internalMutation({
       staleDeliveries.length === GC_SMALL_DOCUMENT_BATCH_SIZE
     ) {
       await ctx.scheduler.runAfter(0, internal.lib.gc, {});
+      return null;
     }
+    // Revocation watermarks outlive the rows they killed on purpose, but not
+    // forever: back-channel logout writes one per OP session that ever ends,
+    // including logouts that matched nothing, and nothing else ever deletes
+    // them. They sweep in their own transaction because proving a marker
+    // governs nothing reads session documents, which this mutation has already
+    // spent most of its budget on — and once per `gc` run, not once per chained
+    // batch, since each sweep re-reads those documents.
+    await ctx.scheduler.runAfter(0, internal.lib.gcRevocationMarkers, {});
     return null;
   },
 });
