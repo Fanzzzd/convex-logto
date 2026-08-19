@@ -191,10 +191,13 @@ function useAuthFromSession() {
  */
 function ConvexAuthPhaseWatcher({ engine }: { engine: SessionAuthEngine }) {
   const { isAuthenticated } = useConvexAuth();
-  const reported = useRef(false);
+  // Keyed by engine, not a bare boolean: a replaced engine emits its own
+  // `bootstrap_start`, and a `reported` that survived it would leave that span
+  // open forever.
+  const reportedFor = useRef<SessionAuthEngine | null>(null);
   useEffect(() => {
-    if (!isAuthenticated || reported.current) return;
-    reported.current = true;
+    if (!isAuthenticated || reportedFor.current === engine) return;
+    reportedFor.current = engine;
     engine.reportConvexAuthenticated();
   }, [engine, isAuthenticated]);
   return null;

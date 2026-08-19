@@ -204,6 +204,27 @@ export function ConvexLogtoSessionProvider({
   // ref that still held the previous render's handler.
   onAuthEventRef.current = onAuthEvent;
 
+  // Seed values, not dependencies. `handler.getInitialToken()` rotates the
+  // cookie and mints a fresh ID token on every call, so re-running the SSR
+  // loader — `router.invalidate()`, a reload — hands back a different string
+  // every time. Rebuilding the engine for that abandons an in-flight exchange,
+  // spends the callback's single-use transaction under its replacement, and
+  // renders `isAuthenticated: false` with `isLoading: false` for a full
+  // re-auth round trip: a real signed-out flash.
+  const seedRef = useRef({ initialToken, initialSessionId });
+  seedRef.current = { initialToken, initialSessionId };
+  // Same reason: `cookieTransport={{ fetch: (u, i) => fetch(u, i) }}` is a
+  // documented option, and an inline arrow changes identity on every render.
+  const cookieFetchRef = useRef(cookieFetch);
+  cookieFetchRef.current = cookieFetch;
+  const cookieFetchProxy = useCallback<typeof fetch>(
+    (input, init) =>
+      cookieFetchRef.current
+        ? cookieFetchRef.current(input, init)
+        : globalThis.fetch(input, init),
+    [],
+  );
+
   const engine = useMemo(() => {
     // Namespace storage by deployment so two dev apps on the same origin
     // (localhost) don't cross-read each other's sessions.
@@ -212,7 +233,7 @@ export function ConvexLogtoSessionProvider({
     const transport = usesCookieTransport
       ? createLogtoSessionCookieTransport(sessionApi, {
           endpoint: cookieEndpoint,
-          fetch: cookieFetch,
+          fetch: cookieFetchProxy,
           deviceBinding: deviceBinding || cookieDeviceBinding,
         })
       : defaultSessionTransport(client);
@@ -222,12 +243,15 @@ export function ConvexLogtoSessionProvider({
       storage,
       callbackPath,
       afterSignIn,
-      initialToken: initialToken ?? undefined,
+      initialToken: seedRef.current.initialToken ?? undefined,
       // Cookie mode always writes a non-secret marker. That both overwrites a
       // legacy localStorage credential and makes reload attempt the /token
       // route even though JavaScript cannot inspect the HttpOnly cookie.
       initialSession: usesCookieTransport
-        ? createCookieSessionMarker(storage.readSession(), initialSessionId)
+        ? createCookieSessionMarker(
+            storage.readSession(),
+            seedRef.current.initialSessionId,
+          )
         : undefined,
       // The credential is an HttpOnly cookie only the server can expire, so a
       // failed revoke is a failed sign-out — not something to swallow.
@@ -256,11 +280,9 @@ export function ConvexLogtoSessionProvider({
     afterSignIn,
     usesCookieTransport,
     cookieEndpoint,
-    cookieFetch,
+    cookieFetchProxy,
     cookieDeviceBinding,
     deviceBinding,
-    initialToken,
-    initialSessionId,
   ]);
 
   useEffect(() => {
@@ -332,10 +354,13 @@ function useAuthFromSession() {
  */
 function ConvexAuthPhaseWatcher({ engine }: { engine: SessionAuthEngine }) {
   const { isAuthenticated } = useConvexAuth();
-  const reported = useRef(false);
+  // Keyed by engine, not a bare boolean: a replaced engine emits its own
+  // `bootstrap_start`, and a `reported` that survived it would leave that span
+  // open forever.
+  const reportedFor = useRef<SessionAuthEngine | null>(null);
   useEffect(() => {
-    if (!isAuthenticated || reported.current) return;
-    reported.current = true;
+    if (!isAuthenticated || reportedFor.current === engine) return;
+    reportedFor.current = engine;
     engine.reportConvexAuthenticated();
   }, [engine, isAuthenticated]);
   return null;
