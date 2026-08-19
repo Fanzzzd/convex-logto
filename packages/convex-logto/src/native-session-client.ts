@@ -7,6 +7,9 @@ import type {
 type StoredTransaction = { state: string };
 type StoredName = "session" | "idToken" | "txn";
 
+/** Artifacts whose durable removal failure must keep reaching the caller. */
+const CREDENTIAL_NAMES = new Set<StoredName>(["session", "idToken"]);
+
 /** Structural subset of expo-secure-store used by native session mode. */
 export type NativeSecureStore = {
   isAvailableAsync?(): Promise<boolean>;
@@ -56,6 +59,15 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
   private preparation: Promise<void> | null = null;
   private pendingWrites: Promise<void> = Promise.resolve();
   private pendingWriteError: unknown;
+  /**
+   * Credential deletes SecureStore refused, kept until one actually lands.
+   *
+   * A write fault is consumed by the flush that reports it — the engine reacts
+   * once and moves on. A *removal* fault is a different thing: the credential is
+   * still on the device, so sign-out has not happened, and forgetting it after
+   * one report would let every later flush claim success.
+   */
+  private pendingRemovals = new Map<StoredName, unknown>();
   private prefix: string;
 
   constructor(
@@ -81,6 +93,18 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
 
   async flush(): Promise<void> {
     await this.pendingWrites;
+    if (this.pendingRemovals.size > 0) {
+      // Fold any write fault into the same report and consume it. Reporting the
+      // removals first is right — a credential still on the device is the worse
+      // failure — but leaving the write error queued behind them would surface
+      // it much later, long after the flush it belonged to.
+      const causes: unknown[] = [...this.pendingRemovals.values()];
+      if (this.pendingWriteError !== undefined) {
+        causes.push(this.pendingWriteError);
+        this.pendingWriteError = undefined;
+      }
+      throw storageError(causes);
+    }
     if (this.pendingWriteError !== undefined) {
       const cause = this.pendingWriteError;
       this.pendingWriteError = undefined;
@@ -151,7 +175,18 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
     }
     const names = ["session", "idToken", "txn"] as const;
     const stored = await Promise.all(
-      names.map((name) => this.secureStore.getItemAsync(this.key(name))),
+      names.map(async (name) => {
+        try {
+          return await this.secureStore.getItemAsync(this.key(name));
+        } catch {
+          // One unreadable key is not a broken store. A locked device, or an
+          // entry written under a stricter keychain accessibility class, fails
+          // only its own read. Treat it as absent for now and leave it in place:
+          // failing the whole load, or deleting the key, would cost the user a
+          // session over a condition that clears by itself on the next unlock.
+          return null;
+        }
+      }),
     );
     for (let index = 0; index < names.length; index++) {
       const name = names[index];
@@ -185,7 +220,18 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
 
   private remove(name: StoredName): void {
     this.values.delete(name);
-    this.enqueue(() => this.secureStore.deleteItemAsync(this.key(name)));
+    this.enqueue(async () => {
+      try {
+        await this.secureStore.deleteItemAsync(this.key(name));
+        this.pendingRemovals.delete(name);
+      } catch (error) {
+        // A spent `txn` stash holds the OIDC `state` string, not a bearer, so it
+        // stays on the ordinary write-fault path. A credential that survived its
+        // delete is the case that has to keep being reported.
+        if (!CREDENTIAL_NAMES.has(name)) throw error;
+        this.pendingRemovals.set(name, error);
+      }
+    });
   }
 
   private enqueue(operation: () => Promise<void>): void {

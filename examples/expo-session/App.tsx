@@ -10,6 +10,7 @@ import {
   Unauthenticated,
   useQuery,
 } from "convex/react";
+import * as Linking from "expo-linking";
 import { StatusBar } from "expo-status-bar";
 import { Component, useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
@@ -178,11 +179,11 @@ function SignedIn() {
     <View style={styles.stack}>
       <Button
         title={`Sign out (${user?.email ?? user?.sub ?? "user"})`}
-        onPress={() => void signOut()}
+        onPress={() => void signOut().catch(() => {})}
       />
       <Button
         title="Sign out everywhere"
-        onPress={() => void signOutEverywhere()}
+        onPress={() => void signOutEverywhere().catch(() => {})}
       />
       <SessionBoundary>
         <Me />
@@ -196,7 +197,29 @@ function SignIn() {
   // No callback route: `signIn()` opens the system browser and resolves when the
   // deep link returns to the provider's `redirectUri`.
   const { signIn } = useLogtoAuth();
-  return <Button title="Sign in" onPress={() => void signIn()} />;
+  // The provider's `onAuthError` reports the failure; swallowing the rejection
+  // here just keeps it from also surfacing unhandled.
+  return <Button title="Sign in" onPress={() => void signIn().catch(() => {})} />;
+}
+
+// The sign-in flow lives in one in-memory promise. If the OS reclaims the app
+// while Logto has the browser — routine on a low-memory Android device — that
+// promise dies with the process and the redirect arrives as a cold-start deep
+// link instead. Handing every link to `completeSignIn` finishes the exchange;
+// anything that is not this app's redirect, or carries no OIDC response, is
+// ignored without disturbing a sign-in already in progress.
+function DeepLinkBridge() {
+  const { completeSignIn } = useLogtoAuth();
+  useEffect(() => {
+    void Linking.getInitialURL().then((url) => {
+      if (url) void completeSignIn(url);
+    });
+    const subscription = Linking.addEventListener("url", ({ url }) => {
+      void completeSignIn(url);
+    });
+    return () => subscription.remove();
+  }, [completeSignIn]);
+  return null;
 }
 
 export default function App() {
@@ -208,7 +231,14 @@ export default function App() {
       // Advisory, app-supplied device description shown by listSessions(). The
       // library never inspects the device — this is exactly what you pass.
       clientDescriptor={{ platform: "native", os: Platform.OS }}
+      // `signIn` / `signOut` reject rather than storing the error, so without
+      // this a dismissed browser sheet or an offline sign-out is an unhandled
+      // rejection and nothing else.
+      onAuthError={(error) => {
+        console.error("auth error", error);
+      }}
     >
+      <DeepLinkBridge />
       <SafeAreaView style={styles.screen}>
         <Text style={styles.title}>convex-logto native session mode</Text>
         {/* Convex's own auth state: a cold start with a live SecureStore ID

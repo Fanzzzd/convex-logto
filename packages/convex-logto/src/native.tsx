@@ -44,6 +44,7 @@ import { normalizeLogtoPublicConfig } from "./component/endpoint";
 function useAuthFromLogto() {
   const { isAuthenticated, isInitialized, getIdToken, getAccessToken, client } =
     useLogto();
+  const tokenFailure = useContext(TokenFailureContext);
 
   // One loading frame on the render Logto first authenticates, reported as
   // not-yet-authenticated, so Convex resets cleanly instead of surfacing the
@@ -58,26 +59,76 @@ function useAuthFromLogto() {
           // Clearing the access token forces a token-endpoint round-trip that also
           // rotates the ID token; bail if it fails rather than return a stale token.
           await client.clearAccessToken();
-          if (!(await getAccessToken())) return null;
+          if (!(await getAccessToken())) {
+            tokenFailure?.onFailed();
+            return null;
+          }
         }
-        return (await getIdToken()) ?? null;
+        const idToken = (await getIdToken()) ?? null;
+        if (idToken === null) tokenFailure?.onFailed();
+        return idToken;
       } catch {
         // The refresh token expired or Logto is unreachable: report "no token" so
         // Convex transitions cleanly to unauthenticated instead of surfacing a
         // rejection (which is how a returning user's stale session should resolve).
+        tokenFailure?.onFailed();
         return null;
       }
     },
-    [client, getIdToken, getAccessToken],
+    [client, getIdToken, getAccessToken, tokenFailure],
   );
+
+  // Convex stops asking for a token after one `null`, and re-arms only when the
+  // `isAuthenticated` we report goes false→true. `@logto/rn` latches its own
+  // flag true and never moves it, so without folding the failure in here the
+  // provider stays disarmed for the life of the process and Sign in cannot
+  // recover it — the token never fails *again*, so nothing re-triggers.
+  const failed = tokenFailure?.failed ?? false;
+
+  // The SDK genuinely going unauthenticated and back (a sign-out, then a fresh
+  // sign-in) is a recovery too, and it happens without anyone calling `onRetry`.
+  const previouslyAuthenticated = useRef(isAuthenticated);
+  useEffect(() => {
+    const recovered = !previouslyAuthenticated.current && isAuthenticated;
+    previouslyAuthenticated.current = isAuthenticated;
+    if (recovered) tokenFailure?.onRetry();
+  }, [isAuthenticated, tokenFailure]);
 
   return useMemo(
     () => ({
       isLoading,
-      isAuthenticated: reportedAuthenticated,
+      isAuthenticated: reportedAuthenticated && !failed,
       fetchAccessToken,
     }),
-    [isLoading, reportedAuthenticated, fetchAccessToken],
+    [isLoading, reportedAuthenticated, failed, fetchAccessToken],
+  );
+}
+
+/**
+ * Whether the last token fetch failed, and the two ways out of it.
+ *
+ * Lives above `<ConvexProviderWithAuth>` so `useAuthFromLogto` (which runs
+ * inside it) can fold the failure into what it reports, and `useLogtoAuth`
+ * (which runs inside the app) can clear it when the user signs in again.
+ */
+type TokenFailureState = {
+  failed: boolean;
+  onFailed: () => void;
+  onRetry: () => void;
+};
+const TokenFailureContext = createContext<TokenFailureState | undefined>(
+  undefined,
+);
+
+function useTokenFailureState(): TokenFailureState {
+  const [failed, setFailed] = useState(false);
+  return useMemo(
+    () => ({
+      failed,
+      onFailed: () => setFailed(true),
+      onRetry: () => setFailed(false),
+    }),
+    [failed],
   );
 }
 
@@ -233,6 +284,8 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
   // configQuery mode.
   const [fetched, setFetched] = useState<ConfigState>({ status: "loading" });
 
+  const tokenFailure = useTokenFailureState();
+
   useEffect(() => {
     if (!configQuery) return undefined;
     let active = true;
@@ -291,12 +344,14 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
   return (
     <RedirectUriContext.Provider value={redirectUri}>
       <AuthErrorContext.Provider value={onAuthError}>
-        <LogtoProvider config={logtoConfig}>
-          <ConvexProviderWithAuth client={client} useAuth={useAuthFromLogto}>
-            <ConvexAuthPhaseWatcher events={events} />
-            {children}
-          </ConvexProviderWithAuth>
-        </LogtoProvider>
+        <TokenFailureContext.Provider value={tokenFailure}>
+          <LogtoProvider config={logtoConfig}>
+            <ConvexProviderWithAuth client={client} useAuth={useAuthFromLogto}>
+              <ConvexAuthPhaseWatcher events={events} />
+              {children}
+            </ConvexProviderWithAuth>
+          </LogtoProvider>
+        </TokenFailureContext.Provider>
       </AuthErrorContext.Provider>
     </RedirectUriContext.Provider>
   );
@@ -349,6 +404,7 @@ export function useLogtoAuth(): LogtoAuth {
   const { signIn, signOut, getIdTokenClaims } = useLogto();
   const defaultRedirectUri = useContext(RedirectUriContext);
   const onAuthError = useContext(AuthErrorContext);
+  const tokenFailure = useContext(TokenFailureContext);
   const [user, setUser] = useState<IdTokenClaims>();
 
   useEffect(() => {
@@ -382,6 +438,11 @@ export function useLogtoAuth(): LogtoAuth {
           );
         }
         await signIn(uri);
+        // After, never before: a background fetch racing the browser sheet could
+        // re-arm Convex against a token that is still broken, and setting it back
+        // to failed would then be the *stale* write. Once `signIn` resolves the
+        // SDK holds fresh tokens, so this is the point where retrying is honest.
+        tokenFailure?.onRetry();
       } catch (caught) {
         // Dismissing the system browser rejects with `auth_session_failed`.
         // Report it so an app's "signing in…" state has something to clear on.
@@ -393,7 +454,7 @@ export function useLogtoAuth(): LogtoAuth {
         throw failure;
       }
     },
-    [signIn, defaultRedirectUri, onAuthError],
+    [signIn, defaultRedirectUri, onAuthError, tokenFailure],
   );
   const doSignOut = useCallback(async () => {
     try {

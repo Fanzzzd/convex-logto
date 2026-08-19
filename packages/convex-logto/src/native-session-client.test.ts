@@ -654,3 +654,71 @@ describe("native session adapters", () => {
     expect(webBrowser.openAuthSessionAsync).not.toHaveBeenCalled();
   });
 });
+
+describe("native storage faults", () => {
+  it("one unreadable key does not lose the whole store", async () => {
+    // A locked device, or an entry written under a stricter keychain
+    // accessibility class, fails only its own read. Failing the load would sign
+    // the user out over a condition that clears on the next unlock.
+    const secureStore = fakeSecureStore();
+    await seedSession(secureStore, freshToken());
+    const readable = secureStore.getItemAsync;
+    secureStore.getItemAsync = vi.fn((key: string) =>
+      key.endsWith(".txn")
+        ? Promise.reject(new Error("keychain item is not accessible"))
+        : readable(key),
+    );
+
+    const storage = new NativeSessionStorageArea(
+      "https://native.convex.cloud",
+      secureStore,
+    );
+    await expect(storage.prepare()).resolves.toBeUndefined();
+    expect(storage.readSession()?.token).toBe("session-token-old");
+    // Never deleted: the value is unreadable now, not gone.
+    expect(secureStore.deleteItemAsync).not.toHaveBeenCalled();
+  });
+
+  it("still refuses SecureStore that reports itself unavailable", async () => {
+    const secureStore = fakeSecureStore();
+    secureStore.isAvailableAsync = vi.fn().mockResolvedValue(false);
+    const storage = new NativeSessionStorageArea(
+      "https://native.convex.cloud",
+      secureStore,
+    );
+    await expect(storage.prepare()).rejects.toBeInstanceOf(
+      NativeSessionStorageError,
+    );
+  });
+
+  it("keeps reporting a credential that survived its delete", async () => {
+    // Unlike a write fault, this one is not consumed by the flush that reports
+    // it: the credential is still on the device, so sign-out has not happened
+    // and every later flush must keep saying so.
+    const secureStore = fakeSecureStore();
+    await seedSession(secureStore, freshToken());
+    const storage = new NativeSessionStorageArea(
+      "https://native.convex.cloud",
+      secureStore,
+    );
+    await storage.prepare();
+    secureStore.deleteItemAsync = vi.fn(() =>
+      Promise.reject(new Error("keychain delete failed")),
+    );
+
+    storage.clearAll();
+    await expect(storage.flush()).rejects.toBeInstanceOf(
+      NativeSessionStorageError,
+    );
+    await expect(storage.flush()).rejects.toBeInstanceOf(
+      NativeSessionStorageError,
+    );
+
+    secureStore.deleteItemAsync = vi.fn((key: string) => {
+      secureStore.data.delete(key);
+      return Promise.resolve();
+    });
+    storage.clearAll();
+    await expect(storage.flush()).resolves.toBeUndefined();
+  });
+});
