@@ -18,6 +18,19 @@ export const SESSION_TOKEN_GENERATION_LIMIT = 8;
 
 /** Longest accepted user-chosen session label, in code points. */
 export const SESSION_LABEL_MAX_LENGTH = 64;
+
+/**
+ * Longest accepted sign-in redirect URI / `returnTo`, in code points.
+ *
+ * `signIn` is necessarily unauthenticated, and both strings are stored verbatim
+ * in a `transactions` row for the transaction TTL. Unbounded, anyone who knows
+ * the deployment URL can park documents near Convex's 1 MiB limit in a loop, and
+ * GC only drains four transaction documents per mutation. Every other
+ * caller-supplied string in this component is bounded; these are generous by
+ * comparison — a redirect URI that does not fit in 2048 code points is not a
+ * redirect URI anyone registered with Logto.
+ */
+export const SIGN_IN_URL_MAX_LENGTH = 2048;
 /** Longest accepted value for each self-reported client descriptor field. */
 export const CLIENT_DESCRIPTOR_MAX_LENGTH = 32;
 /**
@@ -373,7 +386,7 @@ export function decodeIdToken(
   const { iss, aud, sub, sid, exp } = payload;
   if (
     iss !== buildLogtoEndpointUrl(expected.endpoint, "") ||
-    aud !== expected.appId
+    !audienceMatches(aud, expected.appId)
   ) {
     throw terminal(
       "id_token_mismatch",
@@ -495,6 +508,71 @@ export function rotateTokenHashes(
   };
 }
 
+/**
+ * Bound and sanity-check the two caller-supplied strings a sign-in stores.
+ *
+ * `redirectUri` only has to be a parseable absolute URI with no embedded
+ * credentials: native flows legitimately use a custom scheme
+ * (`io.logto://callback`), and Logto itself rejects any URI the app has not
+ * registered, so anything stricter here would break platforms rather than
+ * protect them.
+ */
+export function normalizeSignInTargets(targets: {
+  redirectUri: string;
+  returnTo?: string;
+}): { redirectUri: string; returnTo?: string } {
+  if (Array.from(targets.redirectUri).length > SIGN_IN_URL_MAX_LENGTH) {
+    throw terminal(
+      "redirect_uri_too_long",
+      `The sign-in redirect URI exceeds ${SIGN_IN_URL_MAX_LENGTH} characters.`,
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(targets.redirectUri);
+  } catch {
+    throw terminal(
+      "redirect_uri_invalid",
+      "The sign-in redirect URI is not an absolute URI.",
+    );
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw terminal(
+      "redirect_uri_invalid",
+      "The sign-in redirect URI must not embed credentials.",
+    );
+  }
+  if (
+    targets.returnTo !== undefined &&
+    Array.from(targets.returnTo).length > SIGN_IN_URL_MAX_LENGTH
+  ) {
+    throw terminal(
+      "return_to_too_long",
+      `\`returnTo\` exceeds ${SIGN_IN_URL_MAX_LENGTH} characters.`,
+    );
+  }
+  return {
+    redirectUri: targets.redirectUri,
+    ...(targets.returnTo === undefined ? {} : { returnTo: targets.returnTo }),
+  };
+}
+
+/**
+ * OIDC Core §2 allows `aud` to be an array, Convex's own ID-token validation
+ * accepts one, and this library's back-channel-logout verifier always has — so
+ * rejecting it here would fail a token every other party considers valid, and
+ * on the refresh path that costs the session.
+ */
+export function audienceMatches(value: unknown, appId: string): boolean {
+  return (
+    value === appId ||
+    (Array.isArray(value) &&
+      value.length > 0 &&
+      value.every((audience) => typeof audience === "string") &&
+      value.includes(appId))
+  );
+}
+
 // --- error taxonomy ---------------------------------------------------------
 //
 // Terminal: the session/transaction is gone for good — the client clears its
@@ -519,6 +597,45 @@ export function transient(
   message: string,
 ): ConvexError<SessionErrorData> {
   return new ConvexError({ kind: "transient" as const, code, message });
+}
+
+/**
+ * Re-classify a failure that happened *after* Logto answered with a well-formed
+ * token response.
+ *
+ * The response was unusable to us — an `iss`/`aud` drift after an endpoint
+ * change, a missing `openid` scope — but Logto processed the grant and told us
+ * what it did with the refresh token, so the session is not dead. Terminal here
+ * would delete the row, which is how one wrong environment variable takes out
+ * every session in a deployment, one refresh at a time.
+ *
+ * The caller persists any rotation and releases the claim before raising this:
+ * the rotation state is known, so the stored token is the one Logto expects
+ * next. A response we could not parse is a different case — the outcome is
+ * unknown and `outcomeUnknown` handles it.
+ */
+export function asDeploymentFault(
+  error: unknown,
+): ConvexError<SessionErrorData> {
+  if (error instanceof ConvexError && isSessionErrorData(error.data)) {
+    return transient(
+      error.data.code,
+      `${error.data.message} The session was kept: this looks like a deployment ` +
+        `fault rather than a dead session.`,
+    );
+  }
+  return transient(
+    "logto_response_unusable",
+    "Logto's token response could not be used, but the session was kept.",
+  );
+}
+
+function isSessionErrorData(data: unknown): data is SessionErrorData {
+  return (
+    isRecord(data) &&
+    typeof data.code === "string" &&
+    typeof data.message === "string"
+  );
 }
 
 /** Terminal signal for a superseded generation presented after its Reuse window. */

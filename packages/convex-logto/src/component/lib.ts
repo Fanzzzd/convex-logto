@@ -17,6 +17,7 @@ import {
   SESSION_TOKEN_GENERATION_LIMIT,
   TRANSACTION_TTL_MS,
   WEBHOOK_DELIVERY_GC_AFTER_MS,
+  asDeploymentFault,
   assertDeviceProof,
   buildAuthorizeUrl,
   buildEndSessionUrl,
@@ -25,6 +26,7 @@ import {
   decodeIdToken,
   generatePkce,
   generateToken,
+  normalizeSignInTargets,
   hashToken,
   SESSION_LIST_LIMIT,
   SESSION_LIST_SCAN_BYTES,
@@ -103,9 +105,10 @@ type SignOutConsumptionResult =
   | { outcome: "not-found" };
 
 // A session document may be as large as Convex's 1 MiB document limit.
-// Ordinary batches delete eight aggregate roots; the authenticated final batch
-// may also delete its separately preserved caller. Nine session documents plus
-// their tiny, bounded generation rows stay below the 16 MiB transaction limits.
+// Ordinary batches delete eight aggregate roots; a batch takes two extra rows to
+// see whether more remain, and the authenticated final batch also reads its
+// separately preserved caller — eleven session documents at worst. That plus
+// their tiny, bounded generation rows stays below the 16 MiB transaction limits.
 export const REVOCATION_BATCH_SIZE = 8;
 const MAX_REVOCATION_BATCHES = 512;
 // Transactions contain caller-provided redirect URLs and, like sessions, can
@@ -386,12 +389,22 @@ function basicAuth(config: OidcConfig): string {
   return `Basic ${btoa(`${config.appId}:${config.clientSecret}`)}`;
 }
 
-/** POST to Logto's token endpoint; classify failures terminal vs transient. */
+/**
+ * POST to Logto's token endpoint; classify failures terminal vs transient.
+ *
+ * A 2xx that does not carry usable tokens is *not* classified here, because the
+ * two callers need opposite answers. Sign-in has no session to lose and cannot
+ * retry a spent authorization code, so it fails terminally; a refresh has to
+ * weigh what Logto may already have done to the grant. Both get the facts —
+ * whether the body was a token response at all, and which tokens it held.
+ */
 async function tokenEndpoint(
   config: OidcConfig,
   params: Record<string, string>,
 ): Promise<{
-  id_token: string;
+  /** False when a 2xx body was not JSON at all — e.g. a proxy or WAF interstitial. */
+  tokenResponse: boolean;
+  id_token?: string;
   refresh_token?: string;
   access_token?: string;
 }> {
@@ -435,22 +448,20 @@ async function tokenEndpoint(
       );
     }
     let body: unknown;
+    let parsed = true;
     try {
       body = JSON.parse(tokenResponseDecoder.decode(bodyResult.bytes));
     } catch {
       body = {};
+      parsed = false;
     }
     const error =
       isRecord(body) && typeof body.error === "string" ? body.error : undefined;
     if (!res.ok) throw classifyTokenEndpointFailure(res.status, { error });
-    if (!isRecord(body) || typeof body.id_token !== "string") {
-      throw terminal(
-        "no_id_token",
-        "Logto's token response carried no id_token — is `openid` scope enabled?",
-      );
-    }
+    if (!parsed || !isRecord(body)) return { tokenResponse: false };
     return {
-      id_token: body.id_token,
+      tokenResponse: true,
+      ...(typeof body.id_token === "string" ? { id_token: body.id_token } : {}),
       ...(typeof body.refresh_token === "string"
         ? { refresh_token: body.refresh_token }
         : {}),
@@ -482,20 +493,26 @@ export const createSignInUrl = action({
   },
   returns: v.object({ url: v.string() }),
   handler: async (ctx, args) => {
+    // `signIn` is unauthenticated by necessity, and both strings are stored for
+    // the transaction TTL — bound them before anything is written.
+    const targets = normalizeSignInTargets({
+      redirectUri: args.redirectUri,
+      returnTo: args.returnTo,
+    });
     const state = generateToken();
     const { verifier, challenge } = await generatePkce();
     await ctx.runMutation(internal.lib.createTransaction, {
       state,
       codeVerifier: verifier,
-      redirectUri: args.redirectUri,
-      returnTo: args.returnTo,
+      redirectUri: targets.redirectUri,
+      returnTo: targets.returnTo,
       expiresAt: Date.now() + TRANSACTION_TTL_MS,
     });
     return {
       url: buildAuthorizeUrl({
         endpoint: args.endpoint,
         appId: args.appId,
-        redirectUri: args.redirectUri,
+        redirectUri: targets.redirectUri,
         state,
         challenge,
         scopes: args.scopes,
@@ -558,6 +575,16 @@ export const exchange = action({
       redirect_uri: args.redirectUri,
       code_verifier: transaction.codeVerifier,
     });
+    if (!tokens.tokenResponse || tokens.id_token === undefined) {
+      // Sign-in cannot retry: the authorization code is spent either way, so
+      // there is nothing to gain by calling this transient.
+      throw terminal(
+        "no_id_token",
+        tokens.tokenResponse
+          ? "Logto's token response carried no id_token — is `openid` scope enabled?"
+          : "Logto's token endpoint answered with something that is not a token response.",
+      );
+    }
     if (!tokens.refresh_token) {
       throw terminal(
         "no_refresh_token",
@@ -745,18 +772,49 @@ export const refresh = action({
           }
           throw error;
         }
+        if (!tokens.tokenResponse) {
+          // A 2xx that is not a token response at all — a proxy or WAF
+          // interstitial where JSON was expected. Whether Logto processed (and
+          // rotated) the grant is genuinely unknown, exactly like a 2xx we could
+          // not read, so the claim is deliberately left to age into
+          // `claim-expired` rather than guessing.
+          throw outcomeUnknown(
+            "Logto's token endpoint answered with something that is not a token response — " +
+              "the refresh outcome is unknown.",
+          );
+        }
         let claims: ReturnType<typeof decodeIdToken>;
+        let idToken: string;
         try {
-          claims = decodeIdToken(tokens.id_token, args);
+          if (tokens.id_token === undefined) {
+            throw terminal(
+              "no_id_token",
+              "Logto's token response carried no id_token — is `openid` scope enabled?",
+            );
+          }
+          idToken = tokens.id_token;
+          claims = decodeIdToken(idToken, args);
         } catch (error) {
-          // A terminally malformed/mismatched response must not leave the
-          // refresh claim wedged. Ownership fencing makes this safe even if a
-          // concurrent sign-out already removed the session.
-          await ctx.runMutation(internal.lib.killSession, {
+          // Logto answered with a well-formed token response, so this is a
+          // *deployment* fault — an `iss`/`aud` drift after an endpoint change,
+          // a missing `openid` scope — and not a dead session. Deleting the row
+          // here is how one wrong env var takes out every session in the
+          // deployment, one refresh at a time.
+          //
+          // The rotation state is *known* here, which is what makes releasing
+          // the claim safe: either Logto returned a new refresh token, stored in
+          // the same transaction that releases, or it returned none and the
+          // stored one is still current. Retaining the claim instead would age
+          // into `claim-expired` — and that path deletes the session, so the
+          // operator could never recover it by fixing the configuration.
+          await ctx.runMutation(internal.lib.abandonRefreshWithRotation, {
             sessionId: begin.sessionId,
             claimId,
+            ...(tokens.refresh_token === undefined
+              ? {}
+              : { refreshToken: tokens.refresh_token }),
           });
-          throw error;
+          throw asDeploymentFault(error);
         }
         const completed: CompleteRefreshResult = await ctx.runMutation(
           internal.lib.completeRefresh,
@@ -767,7 +825,7 @@ export const refresh = action({
             // Logto rotates the confidential-client refresh token only at ≥70%
             // TTL; persist the new one atomically whenever it arrives.
             newRefreshToken: tokens.refresh_token,
-            idToken: tokens.id_token,
+            idToken,
             idTokenExp: claims.expiresAtMs,
             sid: claims.sid,
             now: Date.now(),
@@ -787,7 +845,7 @@ export const refresh = action({
           );
         }
         return {
-          idToken: tokens.id_token,
+          idToken,
           sessionToken: candidate,
           sessionId: begin.sessionId,
         };
@@ -990,6 +1048,42 @@ export const completeRefresh = internalMutation({
         : {}),
     });
     return { outcome: "committed" as const };
+  },
+});
+
+/**
+ * Finish a refresh whose response Logto answered but we could not use: store any
+ * rotation and release the claim, in **one** transaction.
+ *
+ * Both halves have to commit together. Persisting the rotation without
+ * releasing would leave the row holding a claim that ages into `claim-expired`
+ * — which deletes the session this path exists to preserve — and releasing
+ * without persisting would leave the next refresh presenting a token Logto has
+ * already superseded, tripping reuse detection on a grant sibling sessions
+ * share. An action interrupted between two mutations would land in exactly one
+ * of those states, so there is only one mutation.
+ */
+export const abandonRefreshWithRotation = internalMutation({
+  args: {
+    sessionId: v.string(),
+    claimId: v.string(),
+    refreshToken: v.optional(v.string()),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const id = ctx.db.normalizeId("sessions", args.sessionId);
+    const session = id && (await ctx.db.get(id));
+    // Ownership fencing: a concurrent sign-out or a re-claim means this response
+    // is no longer the one the row is waiting for.
+    if (!session || session.refreshClaimId !== args.claimId) return false;
+    await ctx.db.patch(session._id, {
+      refreshingSince: undefined,
+      refreshClaimId: undefined,
+      ...(args.refreshToken === undefined
+        ? {}
+        : { logtoRefreshToken: args.refreshToken }),
+    });
+    return true;
   },
 });
 
