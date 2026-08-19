@@ -138,7 +138,9 @@ rejection into its own error state.
 
 In any Convex function, the Logto identity is already there:
 
-```ts
+```ts title="convex/me.ts"
+import { query } from "./_generated/server";
+
 export const me = query({
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();

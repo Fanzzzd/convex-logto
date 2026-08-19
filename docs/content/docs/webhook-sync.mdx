@@ -91,6 +91,8 @@ Create the row from an **authenticated mutation** instead — it runs as the sig
 user, so it always fires — and let the webhook keep it in sync afterward:
 
 ```ts title="convex/users.ts"
+import { mutation } from "./_generated/server";
+
 export const ensureUser = mutation({
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();

@@ -9,6 +9,14 @@ client boundary to add — use the same single provider you'd use in a SPA.
 ([How it works → Server-side rendering](/docs/how-it-works#server-side-rendering)
 explains the inert-client trick that makes this safe.)
 
+`configQuery` resolves the Logto endpoint and app id from the Convex deployment,
+so the frontend needs no Logto env vars. Add the query it reads:
+
+```ts title="convex/logto.ts"
+import { logtoConfigQuery } from "convex-logto";
+export const config = logtoConfigQuery();
+```
+
 ## Provider
 
 ```tsx title="src/router.tsx"
