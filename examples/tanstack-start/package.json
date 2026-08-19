@@ -6,7 +6,7 @@
     "dev": "vite dev",
     "build": "vite build && tsc --noEmit",
     "start": "node .output/server/index.mjs",
-    "check-types": "tsc --noEmit",
+    "check-types": "tsc --noEmit && tsc --noEmit -p convex",
     "typecheck": "pnpm check-types"
   },
   "dependencies": {
