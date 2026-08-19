@@ -67,7 +67,8 @@ clean clone (`git clone --no-hardlinks . /tmp/x && cd /tmp/x && pnpm install
 
 - **Lint/format:** OXC — `oxlint` + `oxfmt`. Run `format` before committing; CI enforces `lint` + `format:check`. oxfmt is scoped to `src/` (never reformats `package.json` / `CHANGELOG.md` / lockfiles).
 - **Runtime:** the library must run in Convex's **V8 runtime** — use Web APIs (e.g. `crypto.subtle`), not Node-only APIs.
-- **TypeScript:** strict, `verbatimModuleSyntax`.
+- **TypeScript:** strict, `verbatimModuleSyntax`. `check-types` runs **two** projects: `tsconfig.json` (the library, `types: []` — no ambient Node globals, because it runs in Convex's V8 runtime) and `tsconfig.test.json` (the same options plus `@types/node` and ES2023, over the test files the base config excludes so tsup and the component build never emit them). A new test file is covered automatically; a test that needs a Node API belongs in the second project only.
+- **Build verification:** `packages/convex-logto/scripts/verify-build-artifacts.mjs` runs at the end of every build. It asserts every path in `package.json#exports` exists, and — since nothing else ever loads them — that every relative specifier under `dist/component/` resolves and `dist/component/convex.config.js` imports. Without it a broken component emit surfaces on a *user's* next `convex dev` push.
 - **`convex-logto/react` is ESM-only** because it depends on `@logto/react@4` (ESM-only). The root `convex-logto` entry is dual ESM+CJS.
 - **Auth model:** validate Logto's **ID token** over OIDC (Convex rejects `at+jwt` access tokens). No manual JWT config — the signing algorithm and JWKS are auto-discovered.
 - **Component schema evolution:** new fields on existing component tables must be `v.optional(...)`. There is no migration mechanism — the schema ships inside the npm package and is validated against existing rows on the app's next push. A brand-new table may have required fields.
@@ -85,7 +86,14 @@ clean clone (`git clone --no-hardlinks . /tmp/x && cd /tmp/x && pnpm install
 
 ## Releasing
 
-Changesets + npm **OIDC trusted publishing** (provenance, no tokens):
+Changesets + npm **OIDC trusted publishing** (provenance, no tokens). The
+Release workflow is split in two jobs on purpose: `verify` runs the whole
+workspace's install scripts, tests and builds with `contents: read` only, and
+`release` — the single job granted `id-token: write` — does nothing but check
+out, install, and hand off to `changesets/action`. Never move `id-token: write`
+back to the workflow level; it would put an npm publish credential within reach
+of every dependency's build script.
+
 
 1. `pnpm changeset` — describe the change (patch/minor/major); commit the generated `.changeset/*.md`.
 2. Merge to `main` → a **"Version Packages" PR** opens automatically (bumps version + updates `CHANGELOG.md`).

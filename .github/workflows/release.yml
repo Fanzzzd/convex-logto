@@ -6,13 +6,17 @@ on:
 
 concurrency: release-${{ github.ref }}
 
+# Deliberately minimal at the workflow level. The verification job below runs
+# the whole workspace's install scripts, tests and builds — every one of them
+# third-party code — and must never do so with the ability to mint an npm
+# publish token. `id-token: write` is granted to the publish job alone.
 permissions:
-  contents: write # changesets opens/updates the "Version Packages" PR
-  pull-requests: write # changesets opens/updates the "Version Packages" PR
-  id-token: write # OIDC trusted publishing to npm (provenance, no token)
+  contents: read
 
 jobs:
-  release:
+  # Same sequence as the `verify` check on pull requests, re-run against the
+  # merge commit. No write permissions and no OIDC.
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -25,12 +29,6 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          registry-url: https://registry.npmjs.org
-
-      # Trusted publishing (OIDC) requires npm >= 11.5.1; the runner ships older.
-      # Pin exactly to avoid a future npm release silently changing publish behavior.
-      - name: Update npm for trusted publishing
-        run: npm install -g npm@11.19.0
 
       - run: pnpm install --frozen-lockfile
 
@@ -52,6 +50,36 @@ jobs:
 
       - run: pnpm lint:package
 
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # changesets opens/updates the "Version Packages" PR
+      pull-requests: write # changesets opens/updates the "Version Packages" PR
+      id-token: write # OIDC trusted publishing to npm (provenance, no token)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing (OIDC) requires npm >= 11.5.1; the runner ships older.
+      # Pin exactly to avoid a future npm release silently changing publish behavior.
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@11.19.0
+
+      - run: pnpm install --frozen-lockfile
+
+      # No build step: the package's own `prepublishOnly` builds it, and only if
+      # changesets actually publishes. Nothing else in the workspace is touched
+      # while the OIDC credential is live.
       - name: Create "Version Packages" PR or publish to npm
         uses: changesets/action@198f833dd7d863100ea6e28967bc9a9fdefadb0a # v2.1.0
         with:

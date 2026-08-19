@@ -74,7 +74,9 @@ function makeHarness(options?: { deviceBinding?: boolean }) {
     const name = getFunctionName(
       reference as FunctionReference<"action">,
     ).split(":")[1] as HandlerName;
-    return handlers[name](args);
+    return (handlers[name] as unknown as (a: unknown) => Promise<unknown>)(
+      args,
+    );
   }) as unknown as LogtoSessionAction;
   const handler = createLogtoSessionCookieHandler({
     sessionApi: api,

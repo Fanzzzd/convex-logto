@@ -126,7 +126,11 @@ function makeHarness(options?: {
   };
   const transport = {
     action: (ref: unknown, args: unknown) =>
-      handlers[(ref as { fn: keyof Handlers }).fn](args),
+      (
+        handlers[(ref as { fn: keyof Handlers }).fn] as unknown as (
+          a: unknown,
+        ) => Promise<unknown>
+      )(args),
   } as SessionTransport;
   const storage =
     options?.storage ??
@@ -993,7 +997,7 @@ describe("callback", () => {
     setURL("http://localhost:5173/callback?code=c1&state=s1");
     storage.stashTransaction({ state: "s1" });
     const flushed = deferred<void>();
-    const realFlush = storage.flush.bind(storage);
+    const realFlush = storage.flush!.bind(storage);
     let signOutDuringFlush: Promise<void> | undefined;
     storage.flush = () => {
       if (signOutDuringFlush === undefined && storage.readSession() !== null) {
