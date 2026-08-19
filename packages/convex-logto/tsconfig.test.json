@@ -1,0 +1,16 @@
+{
+  // The base config excludes `src/**/*.test.ts` so tsup and the component build
+  // never emit test files. That exclude also meant nothing typechecked them:
+  // vitest transpiles without checking, so type drift in a test was invisible.
+  // This config is the missing half — same options, tests included, emit off.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Tests may use Node APIs (the webhook signature fixtures) and newer library
+    // methods; neither is available to the library itself.
+    "types": ["node"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "noEmit": true
+  },
+  "include": ["src"],
+  "exclude": ["dist", "node_modules"]
+}

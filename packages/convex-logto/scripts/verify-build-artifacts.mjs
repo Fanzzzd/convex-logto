@@ -7,7 +7,7 @@
 // new export added without a matching tsup entry.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(
@@ -81,3 +81,75 @@ if (missing.length > 0) {
   );
   process.exit(1);
 }
+
+/**
+ * The component half is not bundled: the Convex CLI walks `dist/component/` and
+ * bundles the modules it finds there, so every relative specifier in the emitted
+ * tree has to resolve on disk. `publint` and `attw` only look at the exports map,
+ * and nothing else ever loads these files — so a missing emit, or a specifier
+ * `tsc` rewrote in a way Node cannot resolve, would ship and surface on the
+ * *user's* next `convex dev` push instead of here.
+ */
+const componentDir = resolve(packageDir, "dist/component");
+
+function componentModules(directory, found = []) {
+  let entries;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return found;
+  }
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) componentModules(path, found);
+    else if (entry.name.endsWith(".js")) found.push(path);
+  }
+  return found;
+}
+
+/** Relative `import`/`export ... from` specifiers, as emitted (quotes included). */
+const RELATIVE_SPECIFIER = /\bfrom\s*["'](\.[^"']*)["']/g;
+
+const modules = componentModules(componentDir);
+if (modules.length === 0) {
+  console.error(
+    "convex-logto: the build produced no modules under dist/component/. " +
+      "The Convex CLI bundles that directory; an empty one ships a broken component.",
+  );
+  process.exit(1);
+}
+
+const unresolved = [];
+for (const modulePath of modules) {
+  const source = readFileSync(modulePath, "utf8");
+  for (const [, specifier] of source.matchAll(RELATIVE_SPECIFIER)) {
+    const target = resolve(dirname(modulePath), specifier);
+    // tsc emits extensionless specifiers under `moduleResolution: Bundler`;
+    // accept either form, since the CLI's bundler resolves both.
+    if (isFile(target) || isFile(`${target}.js`) || isFile(join(target, "index.js"))) {
+      continue;
+    }
+    unresolved.push(
+      `${modulePath.slice(packageDir.length + 1)} -> ${specifier}`,
+    );
+  }
+}
+
+if (unresolved.length > 0) {
+  console.error(
+    `convex-logto: ${unresolved.length} relative specifier(s) in dist/component/ ` +
+      `do not resolve to a file:\n  ${unresolved.join("\n  ")}`,
+  );
+  process.exit(1);
+}
+
+// The component's entry point must also actually load.
+await import(pathToFileURL(resolve(componentDir, "convex.config.js")).href).catch(
+  (error) => {
+    console.error(
+      "convex-logto: dist/component/convex.config.js could not be imported.",
+      error,
+    );
+    process.exit(1);
+  },
+);

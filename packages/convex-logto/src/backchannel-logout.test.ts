@@ -179,12 +179,12 @@ function harness(options?: {
   const runMutation = vi.fn((ref: unknown, args: unknown) => {
     const fn = (ref as { fn: string }).fn;
     calls.push({ fn, args });
-    return handlers[fn]!(args);
+    return (handlers[fn] as unknown as (a: unknown) => Promise<unknown>)(args);
   });
   const runAction = vi.fn((ref: unknown, args: unknown) => {
     const fn = (ref as { fn: string }).fn;
     calls.push({ fn, args });
-    return handlers[fn]!(args);
+    return (handlers[fn] as unknown as (a: unknown) => Promise<unknown>)(args);
   });
   const http = httpRouter();
   registerLogtoBackchannelLogout(http, {

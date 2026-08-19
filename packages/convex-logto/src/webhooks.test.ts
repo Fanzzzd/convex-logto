@@ -352,12 +352,12 @@ function sessionsHarness(overrides?: {
   const runMutation = vi.fn((ref: unknown, args: unknown) => {
     const fn = (ref as { fn?: string }).fn ?? "sync";
     calls.push({ fn, args });
-    return handlers[fn]!(args);
+    return (handlers[fn] as unknown as (a: unknown) => Promise<unknown>)(args);
   });
   const runAction = vi.fn((ref: unknown, args: unknown) => {
     const fn = (ref as { fn?: string }).fn ?? "kill";
     calls.push({ fn, args });
-    return handlers[fn]!(args);
+    return (handlers[fn] as unknown as (a: unknown) => Promise<unknown>)(args);
   });
   const http = httpRouter();
   registerLogtoWebhook(http, SYNC_REF as never, {

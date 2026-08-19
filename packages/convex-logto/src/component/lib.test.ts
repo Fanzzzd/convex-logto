@@ -84,7 +84,8 @@ function subjectSessionHarness(
             first: () =>
               Promise.resolve(
                 [...matching()].toSorted(
-                  (left, right) => right.createdAt - left.createdAt,
+                  (left, right) =>
+                    Number(right.createdAt) - Number(left.createdAt),
                 )[0] ?? null,
               ),
           }),
@@ -483,6 +484,8 @@ const exchangeActionHandler = internalHandler<
     code: string;
     state: string;
     redirectUri: string;
+    devicePublicKey?: { kty: "EC"; crv: "P-256"; x: string; y: string };
+    client?: { platform?: string; os?: string; browser?: string };
   },
   {
     idToken: string;
@@ -2527,9 +2530,11 @@ describe("listSubjectSessions", () => {
       { subject: "subject-1", callerSessionId: "session-live" },
     );
 
-    expect(result.sessions.map((session) => session.sessionId)).toEqual([
-      "session-live",
-    ]);
+    expect(
+      result.sessions.map(
+        (session) => (session as { sessionId: string }).sessionId,
+      ),
+    ).toEqual(["session-live"]);
     expect(result.truncated).toBe(false);
   });
 

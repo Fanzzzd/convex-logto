@@ -201,7 +201,7 @@ describe("bounded session revocation", () => {
         },
       };
       const handler = handlerOf<
-        Record<string, string | number>,
+        Record<string, string | number | undefined>,
         { deleted: number; done: boolean }
       >(test.mutation);
 

@@ -116,7 +116,11 @@ function makeHarness(options?: {
   };
   const transport = {
     action: (reference: unknown, args: unknown) =>
-      handlers[(reference as { fn: keyof Handlers }).fn](args),
+      (
+        handlers[(reference as { fn: keyof Handlers }).fn] as unknown as (
+          a: unknown,
+        ) => Promise<unknown>
+      )(args),
   } as SessionTransport;
   const onAuthError = vi.fn();
   const navigate = vi.fn();
