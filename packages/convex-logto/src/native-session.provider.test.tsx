@@ -20,9 +20,15 @@ import { ConvexLogtoSessionProvider, useLogtoAuth } from "./native-session";
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 const store = new Map<string, string>();
+// Held open to model a cold start: SecureStore reads are two bridge round trips,
+// and `Linking.getInitialURL()` is one, so the deep link normally arrives first.
+let readGate: Promise<void> | null = null;
 vi.mock("expo-secure-store", () => ({
   isAvailableAsync: () => Promise.resolve(true),
-  getItemAsync: (key: string) => Promise.resolve(store.get(key) ?? null),
+  getItemAsync: async (key: string) => {
+    if (readGate) await readGate;
+    return store.get(key) ?? null;
+  },
   setItemAsync: (key: string, value: string) => {
     store.set(key, value);
     return Promise.resolve();
@@ -108,6 +114,7 @@ async function render() {
 
 beforeEach(() => {
   store.clear();
+  readGate = null;
   signInAction.mockClear();
   callbackAction.mockClear();
   openAuthSessionAsync.mockClear();
@@ -126,6 +133,58 @@ it("finishes a sign-in whose deep link outlived the browser promise", async () =
   });
   await vi.waitFor(() => expect(openAuthSessionAsync).toHaveBeenCalled());
 
+  await act(async () => {
+    await capturedApi!.completeSignIn("myapp://callback?code=c&state=st");
+  });
+
+  expect(callbackAction).toHaveBeenCalledWith(
+    expect.objectContaining({ code: "c", state: "st" }),
+  );
+});
+
+it("completes a cold-start deep link that beats storage preparation", async () => {
+  // The stash lives in SecureStore and reads as absent until `prepare()` has
+  // run, so without awaiting it this deletes the transaction it came to spend.
+  await render();
+  await act(async () => {
+    void capturedApi!.signIn();
+  });
+  await vi.waitFor(() => expect(openAuthSessionAsync).toHaveBeenCalled());
+  await act(async () => root!.unmount());
+  root = null;
+
+  // A new process: the engine is fresh, SecureStore still holds the stash.
+  let release = () => {};
+  readGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await render();
+  let completed: Promise<void>;
+  await act(async () => {
+    completed = capturedApi!.completeSignIn("myapp://callback?code=c&state=st");
+  });
+  await act(async () => {
+    release();
+    await completed;
+  });
+
+  expect(callbackAction).toHaveBeenCalledWith(
+    expect.objectContaining({ code: "c", state: "st" }),
+  );
+});
+
+it("leaves the stash alone for a deep link carrying no OIDC response", async () => {
+  // Apps forward every link they receive, and the guard is a prefix match — so
+  // `myapp://callback/done` must not destroy an in-flight sign-in.
+  await render();
+  await act(async () => {
+    void capturedApi!.signIn();
+  });
+  await vi.waitFor(() => expect(openAuthSessionAsync).toHaveBeenCalled());
+
+  await act(async () => {
+    await capturedApi!.completeSignIn("myapp://callback/done");
+  });
   await act(async () => {
     await capturedApi!.completeSignIn("myapp://callback?code=c&state=st");
   });

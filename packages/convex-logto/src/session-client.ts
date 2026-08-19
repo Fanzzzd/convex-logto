@@ -578,6 +578,7 @@ export class SessionAuthEngine {
   /** The first settle is the one that answers "how long until the app could query". */
   private settleReported = false;
   private inflightSignIn: Promise<void> | null = null;
+  private inflightCompletion: Promise<void> | null = null;
   private inflightRefresh: Promise<string | null> | null = null;
   private recovering = false;
   private storagePreparation: Promise<void> | null = null;
@@ -1133,25 +1134,90 @@ export class SessionAuthEngine {
       await this.flushStorage();
       return;
     }
-    await this.completeSignIn(callbackUrl, redirectUri);
+    await this.runCompletion(callbackUrl, redirectUri, {
+      spendOnUnrecognized: true,
+    });
   }
 
-  /** Complete a native system-browser return. Public for deep-link adapters/tests. */
+  /**
+   * Complete a native sign-in from a deep link that arrived outside the
+   * system-browser promise. Public for deep-link adapters.
+   *
+   * Two things this has to do that the in-flow path gets for free.
+   *
+   * Storage is prepared first. The cold start this exists for delivers the link
+   * *before* the provider's mount effect — React commits child effects before
+   * parent ones — and the OIDC stash lives in SecureStore, which reads as absent
+   * until `prepare()` has run. Without the await, the deep link normally loses
+   * that race and deletes the very transaction it came to spend.
+   *
+   * And it shares `signIn`'s single flight, because the documented wiring hands
+   * the same URL to both `Linking.getInitialURL()` and the `url` listener, and
+   * on Android `openAuthSessionAsync` resolving *and* Linking emitting is
+   * routine. One transaction slot, one flow.
+   */
   async completeSignIn(
     callbackUrl: string,
     redirectUri: string,
+  ): Promise<void> {
+    try {
+      await this.prepareStorage();
+    } catch (error) {
+      this.reportError(this.asError(error));
+      return;
+    }
+    await this.runCompletion(callbackUrl, redirectUri, {
+      spendOnUnrecognized: false,
+    });
+  }
+
+  /**
+   * One completion at a time, whichever door the return came through.
+   *
+   * Deliberately not `inflightSignIn`: the case this whole path exists for is a
+   * browser promise that never settles, so waiting on it would hang. This latch
+   * only spans a completion, which always finishes.
+   */
+  private runCompletion(
+    callbackUrl: string,
+    redirectUri: string,
+    options: { spendOnUnrecognized: boolean },
+  ): Promise<void> {
+    const existing = this.inflightCompletion;
+    // The owner reports; a duplicate delivery only needs to wait for it.
+    if (existing !== null) return existing.catch(() => {});
+    const run = this.completeSignInInner(callbackUrl, redirectUri, options);
+    this.inflightCompletion = run.finally(() => {
+      this.inflightCompletion = null;
+    });
+    return this.inflightCompletion;
+  }
+
+  /**
+   * `spendOnUnrecognized` separates the two callers. A URL handed back by the
+   * system browser *is* this sign-in's return, so anything unusable about it
+   * still spends the login-CSRF state — there is no callback route to revisit on
+   * native. A deep link is only a candidate: the app forwards every link it
+   * receives, and one that carries no OIDC response must leave an in-flight
+   * sign-in alone.
+   */
+  private async completeSignInInner(
+    callbackUrl: string,
+    redirectUri: string,
+    options: { spendOnUnrecognized: boolean },
   ): Promise<void> {
     let url: URL;
     try {
       url = new URL(callbackUrl);
     } catch (error) {
-      this.options.storage.takeTransaction();
-      await this.flushStorageReporting();
       this.reportError(
         new Error("convex-logto: the native sign-in return URL is invalid.", {
           cause: error,
         }),
       );
+      if (!options.spendOnUnrecognized) return;
+      this.options.storage.takeTransaction();
+      await this.flushStorageReporting();
       await this.restore();
       this.navigateReplace(this.options.afterSignIn);
       return;
@@ -1161,19 +1227,20 @@ export class SessionAuthEngine {
       await this.completeCallback(url.searchParams, redirectUri);
       return;
     }
+    if (outcome.kind === "none" && !options.spendOnUnrecognized) return;
 
-    // A returned browser session spends the state even when Logto returned an
-    // OAuth error or a malformed callback. This keeps the login-CSRF binding
-    // single-use on native, where there is no callback route to revisit.
     this.options.storage.takeTransaction();
     await this.flushStorageReporting();
-    this.reportError(
-      new Error(
-        outcome.kind === "error"
-          ? outcome.message
-          : "convex-logto: the native sign-in return did not include an authorization code and state.",
-      ),
-    );
+    // `benign` is the user declining at Logto — a completed flow, not a fault.
+    if (outcome.kind === "error") {
+      this.reportError(new Error(outcome.message));
+    } else if (outcome.kind === "none") {
+      this.reportError(
+        new Error(
+          "convex-logto: the native sign-in return did not include an authorization code and state.",
+        ),
+      );
+    }
     await this.restore();
     this.navigateReplace(this.options.afterSignIn);
   }

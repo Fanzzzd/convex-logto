@@ -282,6 +282,10 @@ export type LogtoSessionAuth = {
    * }, [completeSignIn]);
    * ```
    *
+   * Safe to call with any link: one that is not this app's `redirectUri`, or
+   * that carries no OIDC response, is ignored without disturbing a sign-in in
+   * progress, and a duplicate delivery of the same URL waits for the first.
+   *
    * A user who cancelled in the browser is not recoverable this way, by design:
    * cancelling discards the OIDC state so a later deep link cannot replay it.
    */
