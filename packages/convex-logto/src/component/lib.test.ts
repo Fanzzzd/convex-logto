@@ -2017,6 +2017,30 @@ describe("gc revocation watermarks", () => {
     expect(harness.rows("sidRevocations")).toEqual(["sid-marker"]);
   });
 
+  it("continues when either table filled its batch", async () => {
+    // Counting the two tables together would stop the chain exactly when both
+    // are backlogged, which is when it is needed most.
+    const harness = gcHarness({
+      subjectRevocations: Array.from({ length: 8 }, (_, index) => ({
+        _id: `subject-${index}`,
+        subject: `u${index}`,
+        revokedAt: ANCIENT,
+      })),
+      sidRevocations: Array.from({ length: 8 }, (_, index) => ({
+        _id: `sid-${index}`,
+        sid: `s${index}`,
+        revokedAt: ANCIENT,
+      })),
+      sessions: [],
+    });
+
+    await gcMarkersHandler({ db: harness.db, scheduler }, {});
+
+    expect(harness.rows("subjectRevocations")).toEqual([]);
+    expect(harness.rows("sidRevocations")).toEqual([]);
+    expect(scheduled).toHaveLength(1);
+  });
+
   it("continues durably only when a full batch was actually collected", async () => {
     // Rescheduling on a full batch that *skipped* everything would spin on the
     // same rows forever, since a skipped marker is not deleted.
