@@ -25,6 +25,71 @@ function memoryRepository(): SessionDeviceKeyRepository & {
   };
 }
 
+/**
+ * The narrowest IndexedDB that can model a commit-time abort: a request that
+ * succeeds, followed by a transaction that does not.
+ */
+function fakeIndexedDb(options: {
+  abortCommitWith?: string;
+  occupied?: boolean;
+}): IDBFactory {
+  const stored = new Map<string, unknown>();
+  if (options.occupied) stored.set("device-key", { winner: true });
+  const fire = (handler: unknown, event: unknown) => {
+    if (typeof handler === "function") handler(event);
+  };
+  const database = {
+    objectStoreNames: { contains: () => true },
+    close: () => undefined,
+    transaction: (_store: string, mode: string) => {
+      const transaction: Record<string, unknown> = { error: null };
+      transaction["objectStore"] = () => ({
+        get: (key: string) => {
+          const request: Record<string, unknown> = { result: stored.get(key) };
+          queueMicrotask(() => fire(request["onsuccess"], { target: request }));
+          return request;
+        },
+        add: (value: unknown, key: string) => {
+          const request: Record<string, unknown> = { error: null };
+          queueMicrotask(() => {
+            if (stored.has(key)) {
+              request["error"] = { name: "ConstraintError" };
+              fire(request["onerror"], {
+                preventDefault: () => undefined,
+                stopPropagation: () => undefined,
+              });
+            } else {
+              stored.set(key, value);
+              fire(request["onsuccess"], { target: request });
+            }
+            queueMicrotask(() => {
+              if (
+                options.abortCommitWith !== undefined &&
+                mode === "readwrite"
+              ) {
+                stored.delete(key);
+                transaction["error"] = { name: options.abortCommitWith };
+                fire(transaction["onabort"], {});
+                return;
+              }
+              fire(transaction["oncomplete"], {});
+            });
+          });
+          return request;
+        },
+      });
+      return transaction;
+    },
+  };
+  return {
+    open: () => {
+      const request: Record<string, unknown> = { result: database };
+      queueMicrotask(() => fire(request["onsuccess"], { target: request }));
+      return request;
+    },
+  } as unknown as IDBFactory;
+}
+
 describe("WebCryptoSessionDeviceBinding", () => {
   it("persists a non-extractable P-256 key and signs a verifiable token proof", async () => {
     const repository = memoryRepository();
@@ -50,6 +115,32 @@ describe("WebCryptoSessionDeviceBinding", () => {
     // A fresh binding instance (another tab/reload) adopts the persisted key.
     const reloaded = new WebCryptoSessionDeviceBinding(repository);
     await expect(reloaded.getPublicKey()).resolves.toEqual(publicKey);
+  });
+
+  it("fails loudly when the key's transaction aborts at commit", async () => {
+    // IndexedDB reports a quota failure on the transaction, after the `add`
+    // request has already succeeded. Believing the request would leave the key
+    // in this tab's memory only: the next reload generates a different one,
+    // every device proof is rejected, and the component deletes the session.
+    const binding = createSessionDeviceBinding(
+      "deployment",
+      fakeIndexedDb({ abortCommitWith: "QuotaExceededError" }),
+    );
+
+    await expect(binding.prepare()).rejects.toBeInstanceOf(
+      SessionDeviceBindingError,
+    );
+  });
+
+  it("adopts another tab's key when the add loses the race", async () => {
+    // A ConstraintError is swallowed so the transaction still commits, and the
+    // caller re-reads the winner instead of failing.
+    const binding = createSessionDeviceBinding(
+      "deployment",
+      fakeIndexedDb({ occupied: true }),
+    );
+
+    await expect(binding.prepare()).resolves.toBeUndefined();
   });
 
   it("defers an unavailable IndexedDB failure until preparation", async () => {
