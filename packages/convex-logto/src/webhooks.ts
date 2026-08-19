@@ -501,11 +501,16 @@ export function registerLogtoWebhook(
       let bodyHash: string | undefined;
       if (sessions) {
         bodyHash = toHex(await crypto.subtle.digest("SHA-256", rawBody));
-        const firstSeen = await ctx.runMutation(
+        const delivery = await ctx.runMutation(
           sessions.lib.recordWebhookDelivery,
           { bodyHash, now: Date.now() },
         );
-        if (!firstSeen) return new Response(null, { status: 200 });
+        // Unlike back-channel logout, this route deliberately answers a claimed
+        // delivery without redoing anything, finished or not: an app's sync
+        // handlers write to its own tables and are not idempotent, so running
+        // them twice is worse than answering slightly early for one still in
+        // flight. A delivery whose work failed releases its claim below.
+        if (!delivery.claimed) return new Response(null, { status: 200 });
       }
 
       try {

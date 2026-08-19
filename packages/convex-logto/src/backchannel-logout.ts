@@ -468,13 +468,21 @@ export function createLogtoBackchannelLogoutHandler(
     const bodyHash = await deliveryKey(claims);
     let claimed = false;
     try {
-      claimed = await ctx.runMutation(
+      const delivery = await ctx.runMutation(
         options.sessions.lib.recordWebhookDelivery,
         { bodyHash, now: Date.now() },
       );
-      // A valid replay is already fully handled. Always return the same 200 as
-      // a first delivery so neither jti nor session existence leaks.
-      if (!claimed) return successResponse();
+      claimed = delivery.claimed;
+      // A *completed* replay is already fully handled. Always return the same
+      // 200 as a first delivery so neither jti nor session existence leaks.
+      //
+      // A claim that has not completed is not the same thing: the revocation
+      // may never have committed, and a release that itself failed keeps the
+      // claim for the whole dedupe window. Redo the work instead — revocation
+      // is idempotent (the marker takes the max of what it already holds, and
+      // the drain deletes rows that are already dead), so the worst case for
+      // two deliveries racing inside that window is doing it twice.
+      if (!claimed && delivery.completed) return successResponse();
       if (claims.sid !== undefined) {
         await ctx.runAction(options.sessions.lib.killSessionsBySid, {
           sid: claims.sid,
@@ -486,6 +494,14 @@ export function createLogtoBackchannelLogoutHandler(
       } else {
         throw new Error("Verified logout token has no subject or sid.");
       }
+      // Only now is a later replay safe to answer without working. Suppressing
+      // replays still matters: a `sub`-only logout token revokes everything the
+      // subject has *at the time it runs*, so a replay after the user signs in
+      // again would sign them out a second time.
+      await ctx.runMutation(options.sessions.lib.completeWebhookDelivery, {
+        bodyHash,
+        now: Date.now(),
+      });
       return successResponse();
     } catch {
       if (claimed) {

@@ -1755,28 +1755,68 @@ export const deleteSidSessionsBatch = internalMutation({
 
 /**
  * Claim a verified Logto delivery by a SHA-256 key (webhook body or issuer+jti).
- * Returns `true` the first time; `false` on a retry whose original 200 was lost.
+ *
+ * `claimed` is true only for the caller that created the row — the first
+ * delivery, or the first retry after a released claim. `completed` reports
+ * whether some caller got as far as {@link completeWebhookDelivery}: a claim on
+ * its own proves a delivery *started*, not that its work committed, so a caller
+ * whose work is idempotent should redo an unfinished one rather than answer for
+ * it.
  */
 export const recordWebhookDelivery = mutation({
   args: { bodyHash: v.string(), now: v.number() },
-  returns: v.boolean(),
+  returns: v.object({ claimed: v.boolean(), completed: v.boolean() }),
   handler: async (ctx, args) => {
     const existing = await ctx.db
       .query("webhookDeliveries")
       .withIndex("by_bodyHash", (q) => q.eq("bodyHash", args.bodyHash))
       .unique();
-    if (existing) return false;
+    if (existing) {
+      return { claimed: false, completed: existing.completedAt !== undefined };
+    }
     await ctx.db.insert("webhookDeliveries", {
       bodyHash: args.bodyHash,
       seenAt: args.now,
     });
-    return true;
+    return { claimed: true, completed: false };
+  },
+});
+
+/**
+ * Record that a delivery's work committed. Inserts when the row is gone, so a
+ * caller that took over an abandoned claim — one whose owner failed and
+ * released it — still leaves proof behind for the next retry.
+ */
+export const completeWebhookDelivery = mutation({
+  args: { bodyHash: v.string(), now: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("webhookDeliveries")
+      .withIndex("by_bodyHash", (q) => q.eq("bodyHash", args.bodyHash))
+      .unique();
+    if (existing === null) {
+      await ctx.db.insert("webhookDeliveries", {
+        bodyHash: args.bodyHash,
+        seenAt: args.now,
+        completedAt: args.now,
+      });
+    } else if (existing.completedAt === undefined) {
+      await ctx.db.patch(existing._id, { completedAt: args.now });
+    }
+    return null;
   },
 });
 
 /**
  * Release a claimed delivery after processing failed, so Logto's retry isn't
  * deduplicated into a lost event.
+ *
+ * Never releases a *completed* delivery. A caller that took over an abandoned
+ * claim can finish while the original owner is still failing, and deleting the
+ * row then would erase the only proof the work happened — re-arming a replay of
+ * a `sub`-only logout token, which revokes whatever the subject has when it
+ * runs, including sessions created since.
  */
 export const forgetWebhookDelivery = mutation({
   args: { bodyHash: v.string() },
@@ -1786,7 +1826,9 @@ export const forgetWebhookDelivery = mutation({
       .query("webhookDeliveries")
       .withIndex("by_bodyHash", (q) => q.eq("bodyHash", args.bodyHash))
       .unique();
-    if (existing) await ctx.db.delete(existing._id);
+    if (existing && existing.completedAt === undefined) {
+      await ctx.db.delete(existing._id);
+    }
     return null;
   },
 });

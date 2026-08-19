@@ -204,7 +204,13 @@ export type LogtoSessionComponent = {
       "mutation",
       "internal",
       { bodyHash: string; now: number },
-      boolean
+      { claimed: boolean; completed: boolean }
+    >;
+    completeWebhookDelivery: FunctionReference<
+      "mutation",
+      "internal",
+      { bodyHash: string; now: number },
+      null
     >;
     forgetWebhookDelivery: FunctionReference<
       "mutation",

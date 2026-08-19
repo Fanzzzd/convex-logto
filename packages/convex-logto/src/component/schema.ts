@@ -32,6 +32,10 @@ export default defineSchema({
   webhookDeliveries: defineTable({
     bodyHash: v.string(),
     seenAt: v.number(),
+    // Set once the delivery's work committed. A claim proves a delivery
+    // *started*; only this proves it finished, which is what lets a caller whose
+    // work is idempotent redo an abandoned one instead of answering for it.
+    completedAt: v.optional(v.number()),
   })
     .index("by_bodyHash", ["bodyHash"])
     .index("by_seenAt", ["seenAt"]),
