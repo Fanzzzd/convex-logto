@@ -659,8 +659,10 @@ rejects the response and leaves uncommitted remote credentials unreachable.
 | `reactiveRevocation` | `true` | Subscribe to session liveness and drop auth live on revocation. |
 | `onAuthError` | — | Sign-in initiation and callback failures, plus opted-in device-key storage failures. Initiation failures are reported before `signIn()` rejects, so `void signIn()` remains observable. |
 
-`logtoSessionApi(component, opts?)` accepts `scopes`, `resources` (server-set —
-the browser can't request its own), `reuseWindowMs`, and env overrides.
+`logtoSessionApi(component, opts?)` accepts `scopes` (server-set — the browser
+can't request its own), `reuseWindowMs`, and env overrides. `resources` is
+deprecated in session mode: only the ID token reaches the browser, so the access
+token it buys is discarded.
 
 ## Choosing a mode
 

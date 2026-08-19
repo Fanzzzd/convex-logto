@@ -344,7 +344,15 @@ export type LogtoSessionApiOptions = LogtoEndpointPolicy & {
    * Server-configured — the browser can't request scopes on its own.
    */
   scopes?: string[];
-  /** API resource indicators to request access for (Logto API resources). */
+  /**
+   * API resource indicators appended to the authorize request.
+   *
+   * @deprecated Session mode has nothing to hand you in return: the component
+   * holds the refresh token and exposes only the ID token, so the resource-
+   * scoped access token this buys is discarded, and the refresh grant never
+   * asks for another. Setting a resource Logto does not have registered breaks
+   * sign-in outright. Kept for compatibility; it will go in the next major.
+   */
   resources?: string[];
   /**
    * How long (ms) recently superseded Session-token generations stay accepted,
