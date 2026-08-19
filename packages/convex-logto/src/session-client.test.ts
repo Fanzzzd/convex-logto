@@ -878,6 +878,28 @@ describe("callback", () => {
     );
   });
 
+  it("waits for the superseded revoke before navigating away", async () => {
+    // With no `navigate` prop the navigation is `location.replace`, which tears
+    // down the in-flight request — so a fire-and-forget revoke would be lost in
+    // exactly the default configuration.
+    const { engine, storage, handlers, navigate } = makeHarness({
+      storedSession: { token: "old-token", sessionId: "old-session" },
+    });
+    setURL("http://localhost:5173/callback?code=c1&state=s1");
+    storage.stashTransaction({ state: "s1" });
+    handlers.callback.mockResolvedValue(sessionResult(1));
+    const revoke = deferred<Record<string, never>>();
+    handlers.signOut.mockReturnValue(revoke.promise);
+
+    engine.start();
+    expect((await settled(engine)).status).toBe("authenticated");
+    await vi.waitFor(() => expect(handlers.signOut).toHaveBeenCalled());
+    expect(navigate).not.toHaveBeenCalled();
+
+    revoke.resolve({});
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith("/"));
+  });
+
   it("never revokes the superseded session in cookie mode", async () => {
     // The stored value there is a marker, not a credential, and the same-origin
     // sign-out route reads the *cookie* — which the callback just replaced. A
@@ -1815,6 +1837,26 @@ describe("external events", () => {
     expect(storage.readSession()).toBeNull();
     expect(storage.readIdToken()).toBeNull();
     expect(engine.getSnapshot().status).toBe("unauthenticated");
+  });
+
+  it("handleRevoked adopts a credential another tab wrote instead of deleting it", async () => {
+    // The credential is shared by every tab on the origin, but the session id
+    // this engine watches is its own. Another tab signing in replaces that
+    // credential without telling us; revoking the session we *used* to hold must
+    // not delete the one that took its place.
+    const { engine, storage } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    storage.writeIdToken(freshToken());
+    engine.start();
+    await settled(engine);
+    storage.writeSession({ token: "t2", sessionId: "s2" });
+
+    engine.handleRevoked();
+
+    await vi.waitFor(() => expect(engine.getSnapshot().sessionId).toBe("s2"));
+    expect(storage.readSession()).toEqual({ token: "t2", sessionId: "s2" });
+    expect(storage.readIdToken()).not.toBeNull();
+    expect(engine.getSnapshot().status).toBe("authenticated");
   });
 
   it("handleExternalSignOut clears this tab's bearer and flips unauthenticated", async () => {
