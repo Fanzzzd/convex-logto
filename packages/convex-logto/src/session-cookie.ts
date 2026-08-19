@@ -58,7 +58,10 @@ export type LogtoSessionCookieHandlerOptions = {
   action: LogtoSessionAction;
   /** Exact browser origins allowed to call the handler. Wildcards are rejected. */
   allowedOrigins: readonly string[];
-  /** Mount point containing `sign-in`, `callback`, `token`, and `sign-out`. */
+  /**
+   * Mount point containing `sign-in`, `callback`, `token`, `sign-out` and
+   * `sessions`.
+   */
   basePath?: string;
   /**
    * Mirror the session provider's device-binding flag so incompatible
@@ -571,8 +574,16 @@ export function createLogtoSessionCookieHandler(
           );
           const everywhere = optionalBoolean(body, "everywhere") ?? false;
           const sessionToken = readCookie(request);
+          // Nothing to sign out of, but the answer still has to match the call:
+          // the client validates `signOutEverywhere` responses on `count`, and
+          // a bare `{}` fails that check, retries twice and then throws — a
+          // hard error for what is a clean no-op.
           if (sessionToken === null)
-            return jsonResponse({}, { headers }, origin);
+            return jsonResponse(
+              everywhere ? { count: 0 } : {},
+              { headers },
+              origin,
+            );
           try {
             const signOutEverywhere = options.sessionApi.signOutEverywhere;
             if (everywhere && signOutEverywhere === undefined) {
@@ -813,8 +824,16 @@ export function createLogtoSessionCookieHandler(
           initialSessionId: result.sessionId,
           headers,
         };
-      } catch (error) {
-        if (errorData(error) === null) throw error;
+      } catch {
+        // Every failed seed returns empty without changing the cookie —
+        // including an error this transport cannot classify, which is what an
+        // unreachable Logto looks like (the component rethrows a raw `fetch`
+        // failure unclassified on purpose, so that an outage does not force a
+        // reauthentication). Rethrowing would turn that outage into a 500
+        // document for every signed-in visitor, while the browser `/token`
+        // route — the authoritative one — treats the same failure as transient
+        // and keeps the session. A genuine misconfiguration still surfaces
+        // there, loudly, on the first request after hydration.
         return {
           initialToken: null,
           initialSessionId: null,

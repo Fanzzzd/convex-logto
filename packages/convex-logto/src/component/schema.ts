@@ -101,16 +101,24 @@ export default defineSchema({
   // or before the marker is dead even while its row is waiting for a bounded
   // cleanup batch; a later sign-in receives a strictly newer `createdAt`.
   // Watermarks remain after cleanup so a delayed create mutation can never
-  // reuse an older timestamp and accidentally reactivate revoked state.
+  // reuse an older timestamp and accidentally reactivate revoked state. GC
+  // collects one only once it governs no surviving session and is older than
+  // any session that could still bind it — `by_revokedAt` is how it finds
+  // candidates without scanning, since back-channel logout writes one row per
+  // OP session that ever ends.
   subjectRevocations: defineTable({
     subject: v.string(),
     revokedAt: v.number(),
-  }).index("by_subject", ["subject"]),
+  })
+    .index("by_subject", ["subject"])
+    .index("by_revokedAt", ["revokedAt"]),
 
   sidRevocations: defineTable({
     sid: v.string(),
     revokedAt: v.number(),
-  }).index("by_sid", ["sid"]),
+  })
+    .index("by_sid", ["sid"])
+    .index("by_revokedAt", ["revokedAt"]),
 
   // Bounded, indexed grace history for responses that arrive out of order.
   // `prevTokenHash` remains on sessions as a legacy adapter for rows created

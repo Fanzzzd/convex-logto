@@ -175,10 +175,19 @@ synthetic payload, so read the status it gets back rather than expecting a `200`
 | Status | Meaning |
 | --- | --- |
 | `200` | Verified and dispatched to your `sync` mutation (or a deduplicated retry). |
-| `400` | Body wasn't valid JSON, wasn't a recognized `User.*` event, or its `createdAt` fell outside the freshness window. |
+| `400` | Body wasn't valid JSON, wasn't a recognized `User.*` event, named no user, or its `createdAt` fell outside the freshness window. |
 | `401` | Signature didn't match — wrong (or unset) `LOGTO_WEBHOOK_SIGNING_KEY`. |
 | `413` | Body over 1 MB. |
 | `500` | `LOGTO_WEBHOOK_SIGNING_KEY` isn't set on the deployment. |
+
+A verified delivery is never refused over a field the library doesn't read.
+Logto retries a `5xx` and not a `4xx`, so a `400` is permanent — and the same
+route revokes sessions for deleted and suspended users, which makes "reject the
+odd-looking delivery" the wrong default. Acceptance turns on the event, the
+`createdAt` freshness window and a usable user id; a field whose type drifts out
+of the published `LogtoUserEntity` shape is dropped from the `user` your handler
+receives, and the delivery still arrives verbatim as the third argument. Fields
+Logto adds later pass straight through.
 
 ## RBAC
 

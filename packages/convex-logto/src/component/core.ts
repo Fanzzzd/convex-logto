@@ -109,6 +109,19 @@ function normalizeDisplayText(raw: string): string {
 }
 
 /**
+ * Would this label be rejected for its length? Exported so the browser half can
+ * pre-empt the round-trip against *exactly* the rule the component applies:
+ * normalization first, then a code-point count. Measuring the raw string
+ * instead would reject a label the component would have accepted, because
+ * normalization collapses whitespace and drops invisible characters.
+ */
+export function sessionLabelTooLong(raw: string): boolean {
+  return (
+    Array.from(normalizeDisplayText(raw)).length > SESSION_LABEL_MAX_LENGTH
+  );
+}
+
+/**
  * Normalize a user-chosen session label. Rejects rather than truncates: a
  * silently shortened label is worse than a clear error, because the user is
  * naming a device they need to recognise later.
@@ -119,7 +132,7 @@ export function normalizeSessionLabel(
   if (raw === undefined) return undefined;
   const label = normalizeDisplayText(raw);
   if (label === "") return undefined;
-  if (Array.from(label).length > SESSION_LABEL_MAX_LENGTH) {
+  if (sessionLabelTooLong(label)) {
     throw terminal(
       "session_label_too_long",
       `A session label may be at most ${SESSION_LABEL_MAX_LENGTH} characters.`,
@@ -154,6 +167,17 @@ export function normalizeClientDescriptor(
  * a session not refreshed for longer than this can never refresh again.
  */
 export const SESSION_GC_AFTER_MS = 190 * 24 * 60 * 60 * 1000;
+
+/**
+ * GC horizon for a revocation watermark, measured from the moment it was
+ * written. A watermark is what makes a session created at or before it dead, so
+ * collecting one is only safe once nothing can still be governed by it: no
+ * session row it covers remains (the collector checks that directly), and no
+ * session can still *acquire* the marked `sid`, which a refresh can do long
+ * after sign-in. Past this horizon every session that could do either is itself
+ * unconditionally GC-dead, so the two conditions together leave no window.
+ */
+export const REVOCATION_MARKER_GC_AFTER_MS = SESSION_GC_AFTER_MS;
 
 /**
  * GC horizon for webhook-delivery dedupe hashes. Logto's delivery retries land
@@ -578,6 +602,12 @@ export function audienceMatches(value: unknown, appId: string): boolean {
 // Terminal: the session/transaction is gone for good — the client clears its
 // state and transitions to unauthenticated. Transient: network/5xx/contention —
 // the client retries with backoff and NEVER treats it as a sign-out.
+//
+// One class of terminal error is about the *input*, not the session: a rejected
+// session label means "do not retry this value", and nothing about the session
+// died. The client validates label length before the round-trip so an app never
+// has to tell the two apart, and this guard stays as defence in depth for a
+// caller reaching the component directly.
 
 export type SessionErrorData = {
   kind: "terminal" | "transient";
