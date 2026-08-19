@@ -1,0 +1,64 @@
+// The transport session actions travel over.
+//
+// It must NOT be the app's `ConvexReactClient`. Convex stops the WebSocket
+// *before* asking for a fresh token:
+//
+//   await this.stopSocket();
+//   const token = await this.fetchTokenAndGuardAgainstRace(fetchToken, {
+//     forceRefreshToken: true,
+//   });
+//   ...
+//   this.tryRestartSocket();
+//
+// (convex/browser/sync/authentication_manager.js, `tryToReauthenticate`.)
+//
+// Our `fetchAccessToken` answers that call by running the `refresh` action. On
+// a stopped socket `sendMessage` returns false and the action parks as
+// `"NotSent"` in a promise that never settles, so `tryRestartSocket()` is never
+// reached — and it is the only caller of `tryRestart()`. The app wedges until a
+// reload: queries stop updating, mutations queue silently, and every later
+// refresh merges into the dead promise. A backgrounded tab or a suspended
+// native app reaches that path routinely.
+//
+// Session actions carry their own credential in their arguments and never use
+// Convex auth, so a plain HTTP client is all they need.
+
+import { ConvexHttpClient } from "convex/browser";
+import type { ConvexReactClient } from "convex/react";
+import type { SessionTransport } from "./session-client";
+
+/**
+ * A session transport that reaches the deployment over HTTP, independent of the
+ * app's WebSocket.
+ *
+ * The URL already passed `ConvexReactClient`'s own validation, so revalidating
+ * it here could only reject a deployment the app is otherwise talking to
+ * happily (a proxied origin, a self-hosted backend).
+ */
+export function createDeploymentSessionTransport(
+  url: string,
+): SessionTransport {
+  const client = new ConvexHttpClient(url, {
+    skipConvexDeploymentUrlCheck: true,
+  });
+  return {
+    action: (reference, args) => client.action(reference, args),
+  };
+}
+
+/**
+ * The default transport for a provider: HTTP when the client exposes its URL,
+ * otherwise the client itself.
+ *
+ * `ConvexReactClient.url` exists on every version this package supports; the
+ * fallback only keeps a client-shaped stub working rather than throwing at
+ * mount.
+ */
+export function defaultSessionTransport(
+  client: ConvexReactClient,
+): SessionTransport {
+  const url = (client as { url?: unknown }).url;
+  return typeof url === "string" && url !== ""
+    ? createDeploymentSessionTransport(url)
+    : client;
+}
