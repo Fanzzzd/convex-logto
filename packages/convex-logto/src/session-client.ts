@@ -811,9 +811,13 @@ export class SessionAuthEngine {
         superseded.sessionId !== "" &&
         superseded.sessionId !== result.sessionId
       ) {
-        // Not awaited: the user is signed in and navigating. A failure here is
-        // reported, never fatal.
-        void this.revokeAbandonedSession(
+        // Awaited, and before the navigation: with no `navigate` prop the next
+        // line is `location.replace`, which tears down an in-flight request —
+        // so fire-and-forget would make the cleanup unreliable in exactly the
+        // default configuration. Bounded by the transport's own deadline, and
+        // reported rather than thrown, so it can delay a sign-in but never fail
+        // one.
+        await this.revokeAbandonedSession(
           superseded.token,
           "signed in over an existing session",
         );
@@ -839,15 +843,13 @@ export class SessionAuthEngine {
   }
 
   /**
-   * Kill a session the server minted for a sign-in the client has since
-   * abandoned. Without this the row — and the Logto grant behind it — would
-   * outlive every credential anyone holds for it.
-   */
-  /**
-   * Drop a component session no client holds a credential for any more.
+   * Drop a component session no client holds a credential for any more — one the
+   * server minted for a sign-in that was abandoned, or one a fresh sign-in
+   * replaced. Without this the row, and the Logto grant behind it, outlive every
+   * credential anyone holds for them.
    *
-   * Never federated and never an RFC 7009 revoke — the component only deletes
-   * its own row, because the Logto grant behind it can be shared with sibling
+   * Never federated and never an RFC 7009 revoke: the component only deletes its
+   * own row, because the Logto grant behind it can be shared with sibling
    * sessions of the same OP session.
    */
   private async revokeAbandonedSession(
@@ -1621,19 +1623,37 @@ export class SessionAuthEngine {
     this.events("convex_authenticated");
   }
 
-  /** The reactive `sessionValid` subscription pushed `false`: the session was revoked. */
   /**
    * Surface a failure the provider detected rather than the engine — today a
    * broken `sessionValid` subscription. Routed through the same observer as
-   * every other auth error, and deduped by Error identity, so a re-render that
-   * hands back the same object stays quiet.
+   * every other auth error.
    */
   reportWatchFailure(error: Error): void {
     this.reportError(error);
   }
 
+  /** The reactive `sessionValid` subscription pushed `false`: the session was revoked. */
   handleRevoked(): void {
     this.authGeneration += 1;
+    // The credential in storage is shared with every tab on this origin, and the
+    // session id this engine watches is its own. Another tab signing in replaces
+    // that credential without telling us, so a revocation of the session we
+    // *used* to hold must not delete the one that took its place — that would
+    // sign every tab out and orphan the session just created. Adopt it instead.
+    const stored = this.options.storage.readSession();
+    const watched = this.snapshot.sessionId;
+    if (
+      this.options.serverHeldCredential !== true &&
+      stored !== null &&
+      watched !== null &&
+      stored.sessionId !== "" &&
+      stored.sessionId !== watched
+    ) {
+      void this.restore().catch((error: unknown) => {
+        this.reportError(this.asError(error));
+      });
+      return;
+    }
     this.events("revoked");
     this.options.storage.clearAll();
     void this.flushStorage().catch((error: unknown) => {
