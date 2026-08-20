@@ -4,3 +4,8 @@ dist
 .DS_Store
 .turbo
 .scratch
+
+# Live e2e artefacts (see e2e/README.md)
+e2e/failure.png
+e2e/.env.e2e
+e2e/package-lock.json
