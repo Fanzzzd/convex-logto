@@ -25,6 +25,7 @@ API* role. Then:
 export LOGTO_ENDPOINT=https://auth.example.com
 export LOGTO_M2M_APP_ID=...
 export LOGTO_M2M_APP_SECRET=...
+export E2E_USER_PASSWORD=...      # you choose it; the script never invents one
 
 node provision.mjs
 ```
@@ -33,12 +34,16 @@ Find-or-create, and it *repairs* — an app that exists but has lost a redirect 
 is the failure that actually happens (a port changes, someone edits the console),
 and it presents as an opaque HTTP 400 from `/oidc/auth`. Running it twice is safe.
 
-It prints the environment for both modes. Nothing is written to disk; pipe it
-where you want it:
+Secrets are written to **`e2e/.env.e2e`** with mode `0600` (gitignored), never to
+stdout — a terminal is a scrollback buffer, and in CI it is a log. Only the
+non-secret values are printed. `--out <path>` moves the file.
 
 ```bash
-node provision.mjs > .env.e2e
+set -a; . ./.env.e2e; set +a
 ```
+
+The script never invents the test user's password: a secret it generated would
+have to be printed to be useful.
 
 ## 2. Point an example at it
 
@@ -58,8 +63,8 @@ registers as redirect URIs — Logto rejects any other origin with a bare 400.
 
 ```bash
 npm install                       # playwright-core only; no browser download
+set -a; . ./.env.e2e; set +a
 export E2E_APP_URL=http://localhost:5174
-export E2E_USER_EMAIL=... E2E_USER_PASSWORD=...   # printed by provision.mjs
 node session-flow.mjs
 ```
 
