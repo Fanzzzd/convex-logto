@@ -30,6 +30,16 @@ export E2E_USER_PASSWORD=...      # you choose it; the script never invents one
 node provision.mjs
 ```
 
+If that fails with `invalid_client`, the secret is probably fine and the *issuer*
+is wrong. A self-hosted Logto with the admin console enabled runs two OIDC
+issuers, and the built-in `m-default` client exists only in the admin one — while
+the Management API it grants access to is served from `LOGTO_ENDPOINT`. Point the
+token request at the admin console and keep the API where it is:
+
+```bash
+export LOGTO_ADMIN_ENDPOINT=https://admin.example.com
+```
+
 Find-or-create, and it *repairs* — an app that exists but has lost a redirect URI
 is the failure that actually happens (a port changes, someone edits the console),
 and it presents as an opaque HTTP 400 from `/oidc/auth`. Running it twice is safe.
@@ -92,6 +102,38 @@ example's UI.
 Chrome must be installed: `playwright-core` drives the system browser rather than
 downloading its own, which keeps this directory small enough to stay out of the
 way.
+
+## Probes
+
+`session-flow.mjs` is a regression: it asserts known-good behaviour. A **probe**
+is the opposite — it asks the deployment a question whose answer is not known
+yet, and its output is a finding, not a pass or a fail.
+
+```bash
+set -a; . ./.env.e2e; set +a
+export LOGTO_M2M_APP_ID=... LOGTO_M2M_APP_SECRET=...   # same as provisioning
+node probe-org-tokens.mjs
+```
+
+`probe-org-tokens.mjs` settled [ADR
+0003](../docs/adr/0003-organization-token-exchange.md): whether organization
+roles reach the ID token, whether an organization-token grant returns an
+`id_token`, whether it rotates the refresh token, whether a *rejected* grant
+still spends it, and what makes a resource askable. It creates its own
+organization, role, API resource and scope — all find-or-create, all named
+`convex-logto-e2e-*`.
+
+Findings go to **stderr** (redirect with `2>`), like everything else here. The
+decoded claims are credentials and go to `.probe-org-tokens.json` (mode `0600`,
+gitignored), rewritten after every finding so a late failure does not discard
+evidence that cost real authorization grants.
+
+> **Design the experiment so the answer is visible.** Rotation is invisible on
+> any *confidential* client's fresh refresh token — Logto only rotates one past
+> 70% of its lifetime — so asking that client answers "no rotation" no matter
+> what the rule is. The probe asks the **public** SPA client instead, where the
+> same rule rotates on every grant. Reaching for a second configuration beats
+> inferring from a null result.
 
 ## Cleanup
 
