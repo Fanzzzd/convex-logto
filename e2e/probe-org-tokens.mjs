@@ -33,7 +33,8 @@
 // `.probe-org-tokens.json` (mode 0600, gitignored), written after every finding
 // so a phase that fails late does not discard what the earlier phases cost.
 
-import { writeFileSync } from "node:fs";
+import { chmodSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createHash, randomBytes } from "node:crypto";
 import { chromium } from "playwright-core";
@@ -433,10 +434,45 @@ async function authorizationCode(client, { resource, scopes = [] } = {}) {
 
 const report = { grants: {}, phases: {} };
 const findings = [];
+assertReportIsIgnored();
+
+/**
+ * Refuse to write a report git would track.
+ *
+ * The ignore rule for this file lives in the repository's `.gitignore`, and a
+ * `.gitignore` is per-branch: check out a branch that predates the rule, run
+ * `git add -A`, and a dump of decoded ID token claims lands in a commit. That
+ * is not hypothetical — it happened once. Checking costs one subprocess at
+ * startup and turns a silent commit into a refusal that says why.
+ */
+function assertReportIsIgnored() {
+  try {
+    execFileSync("git", ["check-ignore", "-q", reportPath], {
+      stdio: "ignore",
+      cwd: fileURLToPath(new URL(".", import.meta.url)),
+    });
+  } catch (error) {
+    // Exit code 1 means "not ignored". Anything else — git missing, not a
+    // repository at all — is not this check's business, and refusing then
+    // would make the probe unrunnable outside a checkout.
+    if (error?.status !== 1) return;
+    console.error(
+      `probe-org-tokens: ${reportPath} is not gitignored, and it holds decoded\n` +
+        "ID token claims. Add `e2e/.probe-*.json` to .gitignore (or check out a\n" +
+        "branch that has it) before running this.",
+    );
+    process.exit(1);
+  }
+}
 
 function persist() {
   report.findings = findings;
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+  // `mode` only applies when Node *creates* the file. A report left behind by
+  // an earlier run — or by a `--out` path someone made themselves — keeps
+  // whatever permissions it already had, and this file holds decoded ID token
+  // claims, including the user's email.
+  chmodSync(reportPath, 0o600);
 }
 
 function finding(question, answer, detail) {
@@ -693,33 +729,53 @@ try {
 
   const phase5 = await signIn(PUBLIC, "phase5", { scopes: ORG_SCOPES });
   const spentProbe = phase5.chain.token();
-  const failed = await tokenRequest(PUBLIC, {
+  const rejected = await tokenRequest(PUBLIC, {
     grant_type: "refresh_token",
     refresh_token: spentProbe,
     resource: resource.indicator,
   });
-  const after = await tokenRequest(PUBLIC, {
-    grant_type: "refresh_token",
-    refresh_token: spentProbe,
-  });
-  report.grants["public: failed grant, then the same token again"] = {
-    phase: "phase5",
-    client: PUBLIC.label,
-    failedStatus: failed.status,
-    failedError: failed.body.error,
-    replayOk: after.ok,
-    replayStatus: after.status,
-    replayError: after.body.error,
-  };
-  finding(
-    "Q3b. Does a grant that Logto rejects still spend the refresh token?",
-    after.ok
-      ? "NO — the same token still works afterwards"
-      : `YES — replaying it answers ${after.status} ${after.body.error ?? ""}`,
-    `The rejected grant was ${failed.status} ${failed.body.error ?? ""}. ` +
-      "This decides whether a failed exchange may release the claim or must " +
-      "leave it to age.",
-  );
+  if (rejected.ok) {
+    // The premise did not hold: this grant was meant to be refused. Replaying
+    // the token now would fail because it was *legitimately* rotated, and
+    // reporting that as "a rejected grant spends the token" would be a
+    // confident inversion of the answer.
+    report.grants["public: intended-failure grant unexpectedly succeeded"] = {
+      phase: "phase5",
+      client: PUBLIC.label,
+      rotated: Boolean(rejected.body.refresh_token),
+    };
+    finding(
+      "Q3b. Does a grant that Logto rejects still spend the refresh token?",
+      "UNANSWERED — the grant meant to be rejected succeeded",
+      "The resource was not named at sign-in, so Logto should have answered " +
+        "`invalid_target`. It issued a token instead, which means this " +
+        "deployment reaches resources differently and the experiment needs a " +
+        "target it genuinely refuses.",
+    );
+  } else {
+    const after = await tokenRequest(PUBLIC, {
+      grant_type: "refresh_token",
+      refresh_token: spentProbe,
+    });
+    report.grants["public: rejected grant, then the same token again"] = {
+      phase: "phase5",
+      client: PUBLIC.label,
+      rejectedStatus: rejected.status,
+      rejectedError: rejected.body.error,
+      replayOk: after.ok,
+      replayStatus: after.status,
+      replayError: after.body.error,
+    };
+    finding(
+      "Q3b. Does a grant that Logto rejects still spend the refresh token?",
+      after.ok
+        ? "NO — the same token still works afterwards"
+        : `YES — replaying it answers ${after.status} ${after.body.error ?? ""}`,
+      `The rejected grant was ${rejected.status} ${rejected.body.error ?? ""}. ` +
+        "This decides whether a failed exchange may release the claim or must " +
+        "leave it to age.",
+    );
+  }
 } finally {
   persist();
   console.error(`\n\nFull decoded claims → ${reportPath} (mode 0600, gitignored).`);
