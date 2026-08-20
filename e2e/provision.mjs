@@ -116,6 +116,29 @@ function api(token) {
 }
 
 /**
+ * Walk a paginated Management API collection until `match` hits.
+ *
+ * Logto rejects `page_size` above 100 with `guard.invalid_pagination`, so a
+ * single oversized page is not an option — and a single page of 100 would
+ * silently miss an app in a tenant that has more, reporting "not found" and
+ * then failing to create it because the name is taken. Paging until a short
+ * page is the only answer that is right at both ends.
+ */
+async function findPaged(call, path, match, { pageSize = 100, maxPages = 50 } = {}) {
+  const separator = path.includes("?") ? "&" : "?";
+  for (let page = 1; page <= maxPages; page += 1) {
+    const items = await call(`${path}${separator}page=${page}&page_size=${pageSize}`);
+    const hit = items.find(match);
+    if (hit) return hit;
+    if (items.length < pageSize) return undefined;
+  }
+  throw new Error(
+    `${path}: scanned ${maxPages} pages of ${pageSize} without finding a match ` +
+      "or reaching the end. Narrow the search rather than raising the bound.",
+  );
+}
+
+/**
  * Find-or-create, and *repair*: an app that exists but has lost a redirect URI
  * is the failure mode that actually happens (a port changes, someone edits the
  * console), and it presents as an opaque HTTP 400 from `/oidc/auth`.
@@ -123,9 +146,7 @@ function api(token) {
 async function ensureApplication(call, { name, type, origin }) {
   const redirectUris = [`${origin}/callback`];
   const postLogoutRedirectUris = [origin];
-  const existing = (await call("/applications?page=1&page_size=200")).find(
-    (app) => app.name === name,
-  );
+  const existing = await findPaged(call, "/applications", (app) => app.name === name);
   if (existing) {
     const metadata = existing.oidcClientMetadata ?? {};
     const missing =
@@ -167,10 +188,11 @@ async function ensureApplication(call, { name, type, origin }) {
 }
 
 async function ensureUser(call) {
-  const found = await call(
-    `/users?search=${encodeURIComponent(USER_EMAIL)}&page=1&page_size=20`,
+  const existing = await findPaged(
+    call,
+    `/users?search=${encodeURIComponent(USER_EMAIL)}`,
+    (user) => user.primaryEmail === USER_EMAIL,
   );
-  const existing = found.find((user) => user.primaryEmail === USER_EMAIL);
   if (existing) {
     // Always reset: the password is the one thing a live run cannot discover,
     // and a user whose password drifted is indistinguishable from a broken sign-in.
