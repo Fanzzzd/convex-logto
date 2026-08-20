@@ -1,5 +1,4 @@
 import {
-  type IdTokenClaims,
   type LogtoConfig,
   LogtoProvider,
   UserScope,
@@ -26,6 +25,7 @@ import {
   type AuthEventEmitter,
   type LogtoAuthEventHandler,
 } from "./auth-events";
+import { asUserClaims, type LogtoUserClaims } from "./claims";
 import { nextAuthLoading } from "./auth-loading";
 import {
   type SignInOutcome,
@@ -676,8 +676,12 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
 export type LogtoAuth = {
   isAuthenticated: boolean;
   isLoading: boolean;
-  /** Decoded ID token claims (sub, email, name, ...), once authenticated. */
-  user: IdTokenClaims | undefined;
+  /**
+   * Decoded ID token claims (sub, email, name, ...), once authenticated.
+   * Display only — a Convex function reads the same claims through
+   * `ctx.auth.getUserIdentity()`, which is where they are trustworthy.
+   */
+  user: LogtoUserClaims | undefined;
   /**
    * Start sign-in. Redirects to Logto and back to the provider's `callbackPath`.
    * `returnTo` (a same-origin path starting with `/`) is where the user lands
@@ -685,21 +689,13 @@ export type LogtoAuth = {
    * Initiation failures are always sent to the provider's `onAuthError`, even
    * when the caller deliberately discards this promise with `void signIn()`.
    */
-  signIn: {
-    (options?: { returnTo?: string }): Promise<void>;
-    /**
-     * @deprecated Pass `{ returnTo }` instead, and set `callbackPath` on the
-     * provider if your callback route isn't `/callback`. A redirect URI whose
-     * path differs from `callbackPath` will not be handled.
-     */
-    (redirectUri: string): Promise<void>;
-  };
+  signIn: (options?: { returnTo?: string }) => Promise<void>;
   /**
    * Sign out: ends the Logto session, then returns to `window.location.origin`,
    * which you must register as a **Post sign-out redirect URI** (exact match, no
    * trailing slash). Pass another registered URI to land elsewhere.
    */
-  signOut: (postLogoutRedirectUri?: string) => Promise<void>;
+  signOut: (options?: { postLogoutRedirectUri?: string }) => Promise<void>;
 };
 
 /**
@@ -713,7 +709,7 @@ export function useLogtoAuth(): LogtoAuth {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const { signIn, signOut, getIdTokenClaims, error } = useLogto();
   const { callbackPath, authErrors } = useContext(BridgeContext);
-  const [user, setUser] = useState<IdTokenClaims>();
+  const [user, setUser] = useState<LogtoUserClaims>();
 
   useEffect(() => {
     let active = true;
@@ -721,8 +717,12 @@ export function useLogtoAuth(): LogtoAuth {
       // The SDK documents undefined on failure; still contain an unexpected
       // rejection so a third-party regression cannot become unhandled.
       void getIdTokenClaims()
+        // Narrowed through the same gate session mode uses, so both modes hand
+        // back one type: the SDK's `IdTokenClaims` is an interface and carries
+        // no index signature, which is exactly what makes a custom claim
+        // unreachable in bridge mode today.
         .then((claims) => {
-          if (active) setUser(claims);
+          if (active) setUser(asUserClaims(claims));
         })
         .catch(() => {
           if (active) setUser(undefined);
@@ -736,29 +736,10 @@ export function useLogtoAuth(): LogtoAuth {
   }, [isAuthenticated, getIdTokenClaims]);
 
   const doSignIn = useCallback(
-    async (redirectUriOrOptions?: string | { returnTo?: string }) => {
+    async (options?: { returnTo?: string }) => {
       const attempt = authErrors.begin(error);
       try {
-        // Deprecated escape hatch: a full redirect URI. Kept working for 0.3.x
-        // callers, but callback handling only runs on `callbackPath` — warn loudly
-        // when the two can't meet.
-        if (typeof redirectUriOrOptions === "string") {
-          try {
-            const url = new URL(redirectUriOrOptions, window.location.origin);
-            if (url.pathname !== callbackPath) {
-              console.error(
-                `convex-logto: signIn("${redirectUriOrOptions}") uses a path that isn't the ` +
-                  `provider's callbackPath ("${callbackPath}"), so the sign-in redirect will ` +
-                  `not be handled. Set callbackPath on <ConvexLogtoProvider> instead.`,
-              );
-            }
-          } catch {
-            // Unparseable URI: let the SDK surface its own error.
-          }
-          await signIn(redirectUriOrOptions);
-          return;
-        }
-        const returnTo = redirectUriOrOptions?.returnTo;
+        const returnTo = options?.returnTo;
         if (returnTo !== undefined) {
           if (!isSafeReturnTo(returnTo)) {
             throw new Error(
@@ -784,7 +765,7 @@ export function useLogtoAuth(): LogtoAuth {
   // Federated sign-out: ends the SSO session (so the next sign-in isn't silent),
   // then returns to origin — which must be a registered Post sign-out redirect URI.
   const doSignOut = useCallback(
-    async (postLogoutRedirectUri?: string) => {
+    async (options?: { postLogoutRedirectUri?: string }) => {
       // Sign-out is swallowed the same way sign-in is: `@logto/react` catches
       // the failure into its own state and resolves this promise. Worse, the
       // SDK reaches OIDC discovery *before* clearing tokens, so an unreachable
@@ -793,7 +774,7 @@ export function useLogtoAuth(): LogtoAuth {
       // whatever the SDK stored.
       const attempt = authErrors.begin(error);
       try {
-        await signOut(postLogoutRedirectUri ?? window.location.origin);
+        await signOut(options?.postLogoutRedirectUri ?? window.location.origin);
       } catch (caught) {
         const failure = asAuthError(
           caught,

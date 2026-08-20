@@ -15,6 +15,7 @@ import {
   type LogtoAuthEventSource,
 } from "./auth-events";
 import { classifySignInSearch, isSafeReturnTo } from "./callback";
+import { asUserClaims, type LogtoUserClaims } from "./claims";
 import {
   SESSION_LABEL_MAX_LENGTH,
   decodeJwtSegment,
@@ -53,7 +54,7 @@ export type SessionSnapshot = {
   status: "restoring" | "authenticated" | "unauthenticated";
   sessionId: string | null;
   /** Decoded ID token claims (display only — verification is Convex's job). */
-  user: Record<string, unknown> | undefined;
+  user: LogtoUserClaims | undefined;
 };
 
 /** Structural slice of `ConvexReactClient` the engine needs — stubbed in tests. */
@@ -621,7 +622,7 @@ export class SessionAuthEngine {
       this.snapshot = {
         status: "authenticated",
         sessionId: options.initialSession.sessionId,
-        user: decodeJwtPayload(options.initialToken) ?? undefined,
+        user: asUserClaims(decodeJwtPayload(options.initialToken)),
       };
     } else {
       this.snapshot = SERVER_SNAPSHOT;
@@ -662,7 +663,7 @@ export class SessionAuthEngine {
     this.setSnapshot({
       status: "authenticated",
       sessionId: this.options.storage.readSession()?.sessionId ?? null,
-      user: decodeJwtPayload(idToken) ?? undefined,
+      user: asUserClaims(decodeJwtPayload(idToken)),
     });
   }
 

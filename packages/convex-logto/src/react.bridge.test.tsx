@@ -460,25 +460,23 @@ it("does not double-report callback errors through the initiation observer", asy
   }
 });
 
-it("deprecated signIn(string) passes through, warning when the path can't be handled", async () => {
+it("signIn always redirects to the provider's callbackPath", async () => {
+  // The 0.3.x `signIn(redirectUri)` overload is gone: a redirect URI whose path
+  // was not `callbackPath` produced a sign-in nothing handled, and warning about
+  // it after the fact was never a fix. There is now one way to say it.
   await renderProvider({ probe: true });
-  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-  try {
-    await act(async () => {
-      await capturedApi!.signIn("http://localhost:3000/callback");
-    });
-    expect(consoleError).not.toHaveBeenCalled();
-    await act(async () => {
-      await capturedApi!.signIn("http://localhost:3000/custom-callback");
-    });
-    expect(consoleError).toHaveBeenCalledTimes(1);
-    expect(String(consoleError.mock.calls[0]?.[0])).toMatch(/callbackPath/);
-    expect(mockLogto.signIn).toHaveBeenLastCalledWith(
-      "http://localhost:3000/custom-callback",
-    );
-  } finally {
-    consoleError.mockRestore();
-  }
+  await act(async () => {
+    await capturedApi!.signIn();
+  });
+  expect(mockLogto.signIn).toHaveBeenLastCalledWith(
+    "http://localhost:3000/callback",
+  );
+  await act(async () => {
+    await capturedApi!.signIn({ returnTo: "/dashboard" });
+  });
+  expect(mockLogto.signIn).toHaveBeenLastCalledWith(
+    "http://localhost:3000/callback",
+  );
 });
 
 // --- fetchAccessToken -------------------------------------------------------

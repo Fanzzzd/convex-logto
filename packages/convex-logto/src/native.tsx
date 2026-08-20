@@ -1,5 +1,4 @@
 import {
-  type IdTokenClaims,
   type LogtoConfig,
   LogtoProvider,
   UserScope,
@@ -25,6 +24,7 @@ import {
   type AuthEventEmitter,
   type LogtoAuthEventHandler,
 } from "./auth-events";
+import { asUserClaims, type LogtoUserClaims } from "./claims";
 import { useNativeAuthState } from "./auth-loading";
 import type { LogtoConfigQueryRef, LogtoPublicConfig } from "./config";
 import { normalizeLogtoPublicConfig } from "./component/endpoint";
@@ -375,21 +375,29 @@ function ConvexAuthPhaseWatcher({ events }: { events: AuthEventEmitter }) {
 export type LogtoAuth = {
   isAuthenticated: boolean;
   isLoading: boolean;
-  /** Decoded ID token claims (sub, email, name, ...), once authenticated. */
-  user: IdTokenClaims | undefined;
+  /**
+   * Decoded ID token claims (sub, email, name, ...), once authenticated.
+   * Display only — a Convex function reads the same claims through
+   * `ctx.auth.getUserIdentity()`, which is where they are trustworthy.
+   */
+  user: LogtoUserClaims | undefined;
   /**
    * Start sign-in. Opens the system browser and resolves when the deep link
    * returns. Defaults the redirect to the provider's `redirectUri`; pass one
    * explicitly to override (must be registered on the Logto app).
+   *
+   * Takes an options object like every other entry — the native override is a
+   * redirect URI rather than the web's `returnTo`, because there is no in-app
+   * route to come back to until the deep link lands.
    */
-  signIn: (redirectUri?: string) => Promise<void>;
+  signIn: (options?: { redirectUri?: string }) => Promise<void>;
   /**
    * Sign out: revokes the tokens and clears local storage. Unlike the web, it
    * does not open the browser — `@logto/rn` skips the federated sign-out flow by
    * default — so the Logto SSO session in the system browser may persist and a
    * later sign-in can be seamless.
    */
-  signOut: () => Promise<void>;
+  signOut: (options?: { postLogoutRedirectUri?: string }) => Promise<void>;
 };
 
 /**
@@ -405,14 +413,17 @@ export function useLogtoAuth(): LogtoAuth {
   const defaultRedirectUri = useContext(RedirectUriContext);
   const onAuthError = useContext(AuthErrorContext);
   const tokenFailure = useContext(TokenFailureContext);
-  const [user, setUser] = useState<IdTokenClaims>();
+  const [user, setUser] = useState<LogtoUserClaims>();
 
   useEffect(() => {
     let active = true;
     if (isAuthenticated) {
       getIdTokenClaims()
+        // Narrowed through the same gate session mode uses, so both modes hand
+        // back one type — the SDK's `IdTokenClaims` is an interface with no
+        // index signature, which is what makes a custom claim unreachable here.
         .then((claims) => {
-          if (active) setUser(claims);
+          if (active) setUser(asUserClaims(claims));
         })
         // Native's getIdTokenClaims rejects if the token is gone; treat as no user.
         .catch(() => {
@@ -427,8 +438,8 @@ export function useLogtoAuth(): LogtoAuth {
   }, [isAuthenticated, getIdTokenClaims]);
 
   const doSignIn = useCallback(
-    async (redirectUri?: string) => {
-      const uri = redirectUri ?? defaultRedirectUri;
+    async (options?: { redirectUri?: string }) => {
+      const uri = options?.redirectUri ?? defaultRedirectUri;
       try {
         if (!uri) {
           throw new Error(
@@ -456,21 +467,24 @@ export function useLogtoAuth(): LogtoAuth {
     },
     [signIn, defaultRedirectUri, onAuthError, tokenFailure],
   );
-  const doSignOut = useCallback(async () => {
-    try {
-      await signOut();
-    } catch (caught) {
-      // `@logto/client` reaches OIDC discovery before it clears tokens, so an
-      // unreachable Logto leaves the user signed in with a live ID token while
-      // the button looks like it worked.
-      const failure = asAuthError(
-        caught,
-        "convex-logto: Logto sign-out failed.",
-      );
-      reportAuthError(onAuthError, failure);
-      throw failure;
-    }
-  }, [signOut, onAuthError]);
+  const doSignOut = useCallback(
+    async (options?: { postLogoutRedirectUri?: string }) => {
+      try {
+        await signOut(options?.postLogoutRedirectUri);
+      } catch (caught) {
+        // `@logto/client` reaches OIDC discovery before it clears tokens, so an
+        // unreachable Logto leaves the user signed in with a live ID token while
+        // the button looks like it worked.
+        const failure = asAuthError(
+          caught,
+          "convex-logto: Logto sign-out failed.",
+        );
+        reportAuthError(onAuthError, failure);
+        throw failure;
+      }
+    },
+    [signOut, onAuthError],
+  );
 
   return useMemo(
     () => ({

@@ -145,8 +145,9 @@ provider logs the failure and delivers it to `onAuthError`, even though
 `onAuthError` to `ConvexLogtoProvider` to show a toast or send telemetry.
 
 `signOut()` ends the Logto session and returns the user to your app's origin (the
-**Post sign-out redirect URI** from step 1). Pass `signOut("https://app.com/bye")`
-to land somewhere else — just register that URI too.
+**Post sign-out redirect URI** from step 1). Pass
+`signOut({ postLogoutRedirectUri: "https://app.com/bye" })` to land somewhere
+else — just register that URI too.
 
 In any Convex function, the Logto identity is already there:
 

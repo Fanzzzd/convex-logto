@@ -25,6 +25,7 @@ import {
   createNativeSessionAuthFlow,
   NativeSessionStorageArea,
 } from "./native-session-client";
+import type { LogtoUserClaims } from "./claims";
 import type { LogtoAuthEventHandler } from "./auth-events";
 import { SessionAuthEngine } from "./session-client";
 import { defaultSessionTransport } from "./session-transport";
@@ -252,7 +253,7 @@ export type LogtoSessionAuth = {
   isAuthenticated: boolean;
   isLoading: boolean;
   /** Decoded ID token claims, for display only. */
-  user: Record<string, unknown> | undefined;
+  user: LogtoUserClaims | undefined;
   /**
    * Open Logto in the system browser and complete the deep-link return in
    * place. Concurrent calls share the one in-progress native browser flow.
