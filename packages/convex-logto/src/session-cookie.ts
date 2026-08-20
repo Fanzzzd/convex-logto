@@ -68,6 +68,20 @@ export type LogtoSessionCookieHandlerOptions = {
    * non-React configurations fail through the same assertion.
    */
   deviceBinding?: boolean;
+  /**
+   * Also write the ID token to {@link LOGTO_ID_TOKEN_COOKIE_NAME}, so a server
+   * that cannot rotate the session cookie during render can still read an
+   * identity. Off by default.
+   *
+   * The trade-off is custody, the same one
+   * `docs/adr/0002-token-custody.md` describes: the ID token is already a
+   * request credential the browser holds, and an `HttpOnly` cookie is a *safer*
+   * place for it than script-reachable memory — but a cookie is attached to
+   * every same-origin request, so it reaches access logs and proxies that the
+   * `Authorization` header does not. Turn it on when you server-render
+   * authenticated content; leave it off otherwise.
+   */
+  idTokenCookie?: boolean;
 };
 
 export type LogtoSessionCookieSeed = {
@@ -186,6 +200,84 @@ function cookieHeader(sessionToken: string): string {
   );
 }
 
+/**
+ * Companion cookie holding the ID token itself, for server-side rendering.
+ *
+ * `getInitialToken` is the full-fidelity SSR path, but it *rotates* the session
+ * token, and a framework that forbids writing cookies during render — Next.js
+ * App Router Server Components, notably — cannot persist that rotation. Dropping
+ * it would leave the browser holding a superseded token that later reads as
+ * reuse and kills the session, so the documented advice has been "do not seed
+ * SSR there at all", which means no server-side identity at all.
+ *
+ * This cookie is written only from places that *can* set cookies (the route
+ * handler), and read anywhere. It mints nothing and rotates nothing, so it costs
+ * the rotation-based theft detection nothing either.
+ */
+export const LOGTO_ID_TOKEN_COOKIE_NAME = "__Host-convex-logto-id-token";
+
+/**
+ * Cookies are capped near 4 KB per the RFC 6265 recommendation, and a browser
+ * that refuses an oversized one gives no signal. A token this large means a
+ * tenant is putting an unusual amount into the ID token; degrade to no SSR seed
+ * rather than emit a header that silently does nothing.
+ */
+const MAX_ID_TOKEN_COOKIE_BYTES = 3 * 1024;
+
+/** Remaining lifetime of an ID token, in whole seconds, or 0 when it is unusable. */
+function idTokenMaxAge(idToken: string): number {
+  const parts = idToken.split(".");
+  const payload = parts.length === 3 ? parts[1] : undefined;
+  if (payload === undefined) return 0;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(
+      new TextDecoder().decode(decodeBase64Url(payload)),
+    ) as unknown;
+  } catch {
+    return 0;
+  }
+  const exp = isRecord(decoded) ? decoded.exp : undefined;
+  if (typeof exp !== "number") return 0;
+  const remaining = Math.floor(exp - Date.now() / 1000);
+  return remaining > 0 ? remaining : 0;
+}
+
+function decodeBase64Url(segment: string): Uint8Array {
+  const padded = segment.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(padded.padEnd(Math.ceil(padded.length / 4) * 4, "="));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+/**
+ * `Set-Cookie` for the ID token, or `null` when it should not be written.
+ *
+ * The cookie expires with the token it holds, so a stale one is never read back:
+ * an expired ID token would render a server page as signed in for a user Convex
+ * would refuse.
+ */
+function idTokenCookieHeader(idToken: string): string | null {
+  const maxAge = idTokenMaxAge(idToken);
+  if (maxAge === 0) return null;
+  const value = encodeURIComponent(idToken);
+  if (value.length > MAX_ID_TOKEN_COOKIE_BYTES) return null;
+  return (
+    `${LOGTO_ID_TOKEN_COOKIE_NAME}=${value}; ` +
+    `Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`
+  );
+}
+
+function clearIdTokenCookieHeader(): string {
+  return (
+    `${LOGTO_ID_TOKEN_COOKIE_NAME}=; Path=/; HttpOnly; Secure; ` +
+    "SameSite=Lax; Max-Age=0"
+  );
+}
+
 function clearCookieHeader(): string {
   return (
     `${LOGTO_SESSION_COOKIE_NAME}=; Path=/; HttpOnly; Secure; ` +
@@ -193,14 +285,12 @@ function clearCookieHeader(): string {
   );
 }
 
-function readCookie(request: Request): string | null {
-  const header = request.headers.get("cookie");
+function readCookieHeader(header: string | null, name: string): string | null {
   if (!header) return null;
   for (const part of header.split(";")) {
     const index = part.indexOf("=");
     if (index < 0) continue;
-    const name = part.slice(0, index).trim();
-    if (name !== LOGTO_SESSION_COOKIE_NAME) continue;
+    if (part.slice(0, index).trim() !== name) continue;
     try {
       return decodeURIComponent(part.slice(index + 1).trim()) || null;
     } catch {
@@ -208,6 +298,60 @@ function readCookie(request: Request): string | null {
     }
   }
   return null;
+}
+
+function readCookie(request: Request): string | null {
+  return readCookieHeader(
+    request.headers.get("cookie"),
+    LOGTO_SESSION_COOKIE_NAME,
+  );
+}
+
+/**
+ * Anything a server framework hands you that can produce cookies: a `Request`,
+ * a raw `Cookie` header, or a store shaped like Next.js's `cookies()`.
+ *
+ * Taking all three keeps this package free of any framework dependency — there
+ * is no `convex-logto/nextjs` entry to keep in step with Next's release train,
+ * and the same call works in TanStack Start, Remix, or a bare handler.
+ */
+export type LogtoCookieSource =
+  | Request
+  | string
+  | { get(name: string): { value: string } | undefined };
+
+/**
+ * Read the ID token a route handler stored for server-side rendering.
+ *
+ * Requires `idTokenCookie: true` on {@link createLogtoSessionCookieHandler};
+ * returns `null` otherwise, and whenever the token has expired out of its own
+ * cookie. Pair it with Convex's `preloadQuery` / `fetchQuery`:
+ *
+ * @example
+ * // app/page.tsx — a Server Component, which cannot set cookies
+ * const token = readLogtoIdTokenCookie(await cookies());
+ * const preloaded = await preloadQuery(api.me.me, {}, token ? { token } : {});
+ *
+ * The token is a bearer Convex validates, not a claim to trust here: a `null`
+ * means render the signed-out view and let the client take over, and a non-null
+ * one still proves nothing until Convex accepts it. Revocation is enforced the
+ * same way it is everywhere else — by `assertSubjectHasActiveSession` inside the
+ * function you call, not by this read.
+ */
+export function readLogtoIdTokenCookie(
+  source: LogtoCookieSource,
+): string | null {
+  if (typeof source === "string") {
+    return readCookieHeader(source, LOGTO_ID_TOKEN_COOKIE_NAME);
+  }
+  if (source instanceof Request) {
+    return readCookieHeader(
+      source.headers.get("cookie"),
+      LOGTO_ID_TOKEN_COOKIE_NAME,
+    );
+  }
+  const entry = source.get(LOGTO_ID_TOKEN_COOKIE_NAME);
+  return entry === undefined || entry.value === "" ? null : entry.value;
 }
 
 function routeFor(request: Request, basePath: string): CookieRoute | null {
@@ -473,6 +617,29 @@ export function createLogtoSessionCookieHandler(
   );
   const allowedOrigins = normalizeAllowedOrigins(options.allowedOrigins);
 
+  /**
+   * Every `Set-Cookie` a successful exchange or refresh should emit.
+   *
+   * The session cookie always; the ID token only when asked for, and only when
+   * it fits and has time left — an ID token cookie that outlives its token would
+   * server-render a page as signed in for a bearer Convex refuses.
+   */
+  const sessionCookieHeaders = (result: {
+    sessionToken: string;
+    idToken: string;
+  }): Headers => {
+    const headers = new Headers();
+    headers.append("Set-Cookie", cookieHeader(result.sessionToken));
+    if (options.idTokenCookie === true) {
+      const header = idTokenCookieHeader(result.idToken);
+      // A token too large to store, or already expired, leaves the previous
+      // cookie in place rather than clearing it: the old one expires on its own,
+      // and clearing would turn a size problem into a sign-out.
+      if (header !== null) headers.append("Set-Cookie", header);
+    }
+    return headers;
+  };
+
   const refreshFromCookie = async (request: Request) => {
     const sessionToken = readCookie(request);
     if (sessionToken === null) {
@@ -552,7 +719,7 @@ export function createLogtoSessionCookieHandler(
               sessionId: result.sessionId,
               returnTo: result.returnTo,
             },
-            { headers: { "Set-Cookie": cookieHeader(result.sessionToken) } },
+            { headers: sessionCookieHeaders(result) },
             origin,
           );
         }
@@ -560,14 +727,17 @@ export function createLogtoSessionCookieHandler(
           const result = await refreshFromCookie(request);
           return jsonResponse(
             { idToken: result.idToken, sessionId: result.sessionId },
-            { headers: { "Set-Cookie": cookieHeader(result.sessionToken) } },
+            { headers: sessionCookieHeaders(result) },
             origin,
           );
         }
         case "sign-out": {
-          const headers = new Headers({
-            "Set-Cookie": clearCookieHeader(),
-          });
+          const headers = new Headers();
+          headers.append("Set-Cookie", clearCookieHeader());
+          // Always cleared, even when the companion cookie was never enabled:
+          // turning the option off must not leave a live ID token behind, and a
+          // clear for a cookie that does not exist is inert.
+          headers.append("Set-Cookie", clearIdTokenCookieHeader());
           const postLogoutRedirectUri = optionalString(
             body,
             "postLogoutRedirectUri",
@@ -818,7 +988,9 @@ export function createLogtoSessionCookieHandler(
       }
       try {
         const result = await refreshFromCookie(request);
-        headers.set("Set-Cookie", cookieHeader(result.sessionToken));
+        for (const value of sessionCookieHeaders(result).getSetCookie()) {
+          headers.append("Set-Cookie", value);
+        }
         return {
           initialToken: result.idToken,
           initialSessionId: result.sessionId,

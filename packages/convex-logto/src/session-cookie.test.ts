@@ -5,12 +5,14 @@ import { SESSION_GC_AFTER_MS } from "./component/core";
 import type { LogtoSessionApi } from "./session";
 import {
   COOKIE_SESSION_MARKER,
+  LOGTO_ID_TOKEN_COOKIE_NAME,
   LOGTO_SESSION_COOKIE_NAME,
   LOGTO_SESSION_CSRF_HEADER,
   LOGTO_SESSION_CSRF_VALUE,
   assertLogtoSessionCookieCompatibility,
   createLogtoSessionCookieHandler,
   createLogtoSessionCookieTransport,
+  readLogtoIdTokenCookie,
   type LogtoSessionAction,
 } from "./session-cookie";
 
@@ -30,19 +32,23 @@ type HandlerName =
   | "revokeSession";
 type Handlers = Record<HandlerName, ReturnType<typeof vi.fn>>;
 
-function makeHarness(options?: { deviceBinding?: boolean }) {
+function makeHarness(options?: {
+  deviceBinding?: boolean;
+  idTokenCookie?: boolean;
+  idToken?: string;
+}) {
   const handlers: Handlers = {
     signIn: vi.fn().mockResolvedValue({
       url: "https://auth.example.com/oidc/auth?state=state-1",
     }),
     callback: vi.fn().mockResolvedValue({
-      idToken: "id-token-1",
+      idToken: options?.idToken ?? "id-token-1",
       sessionToken: "session-token-1",
       sessionId: "session-id-1",
       returnTo: "/dashboard",
     }),
     refresh: vi.fn().mockResolvedValue({
-      idToken: "id-token-2",
+      idToken: options?.idToken ?? "id-token-2",
       sessionToken: "session-token-2",
       sessionId: "session-id-1",
     }),
@@ -84,6 +90,7 @@ function makeHarness(options?: { deviceBinding?: boolean }) {
     allowedOrigins: [APP_ORIGIN],
     basePath: BASE_PATH,
     deviceBinding: options?.deviceBinding,
+    idTokenCookie: options?.idTokenCookie,
   });
   return { handler, handlers, action };
 }
@@ -369,9 +376,12 @@ describe("cookie session flows", () => {
       sessionToken: "session-token-2",
       postLogoutRedirectUri: APP_ORIGIN,
     });
-    expect(response.headers.get("set-cookie")).toBe(
+    // Both cookies are expired, even though `idTokenCookie` is off here:
+    // turning the option off must not strand a live ID token in the browser.
+    expect(response.headers.getSetCookie()).toEqual([
       `${LOGTO_SESSION_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
-    );
+      `${LOGTO_ID_TOKEN_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+    ]);
     await expect(response.json()).resolves.toEqual({
       endSessionUrl: "https://auth.example.com/oidc/session/end",
     });
@@ -1372,5 +1382,146 @@ describe("browser transport session management", () => {
         targetSessionId: "session-id-2",
       }),
     ).rejects.toThrow(/convex-logto/);
+  });
+});
+
+// --- SSR ID token cookie -----------------------------------------------------
+//
+// `getInitialToken` rotates the session cookie, and a framework that forbids
+// writing cookies during render cannot persist that rotation — which is why the
+// documented advice for the Next.js App Router has been to skip SSR seeding
+// entirely. This companion cookie is written only where cookies *can* be set,
+// and read anywhere.
+
+/** An ID token that expires `seconds` from now. */
+function tokenExpiringIn(seconds: number, padding = 0): string {
+  const enc = (value: unknown) =>
+    btoa(JSON.stringify(value))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+  return [
+    enc({ alg: "RS256" }),
+    enc({
+      sub: "user-1",
+      exp: Math.floor(Date.now() / 1000) + seconds,
+      ...(padding > 0 ? { pad: "x".repeat(padding) } : {}),
+    }),
+    "sig",
+  ].join(".");
+}
+
+describe("SSR ID token cookie", () => {
+  it("is not written unless asked for", async () => {
+    const { handler } = makeHarness({ idToken: tokenExpiringIn(3600) });
+    const response = await handler(
+      request("token", { cookie: cookie("session-token-1") }),
+    );
+    const cookies = response.headers.getSetCookie();
+    expect(cookies).toHaveLength(1);
+    expect(cookies[0]).toContain(LOGTO_SESSION_COOKIE_NAME);
+  });
+
+  it("rides alongside the session cookie on callback and refresh", async () => {
+    const idToken = tokenExpiringIn(3600);
+    const { handler } = makeHarness({ idTokenCookie: true, idToken });
+
+    for (const route of ["callback", "token"] as const) {
+      const response = await handler(
+        request(route, {
+          cookie: cookie("session-token-1"),
+          body:
+            route === "callback"
+              ? {
+                  code: "code-1",
+                  state: "state-1",
+                  redirectUri: `${APP_ORIGIN}/callback`,
+                }
+              : {},
+        }),
+      );
+      const cookies = response.headers.getSetCookie();
+      expect(cookies).toHaveLength(2);
+      expect(cookies[1]).toContain(
+        `${LOGTO_ID_TOKEN_COOKIE_NAME}=${encodeURIComponent(idToken)}`,
+      );
+      // HttpOnly, so the credential is less reachable here than in the JSON body
+      // the same response already carries.
+      expect(cookies[1]).toContain("HttpOnly");
+      expect(cookies[1]).toContain("Secure");
+    }
+  });
+
+  it("expires with the token it holds", async () => {
+    const { handler } = makeHarness({
+      idTokenCookie: true,
+      idToken: tokenExpiringIn(120),
+    });
+    const response = await handler(
+      request("token", { cookie: cookie("session-token-1") }),
+    );
+    const idCookie = response.headers.getSetCookie()[1] ?? "";
+    const maxAge = Number(/Max-Age=(\d+)/.exec(idCookie)?.[1]);
+    // A cookie that outlived its token would server-render a page as signed in
+    // for a bearer Convex refuses.
+    expect(maxAge).toBeGreaterThan(100);
+    expect(maxAge).toBeLessThanOrEqual(120);
+  });
+
+  it("is skipped, not cleared, when the token cannot be stored", async () => {
+    // Too large for a cookie, already expired, or not a JWT at all: leave the
+    // previous cookie to expire on its own rather than turn a size problem into
+    // a sign-out.
+    for (const idToken of [
+      tokenExpiringIn(3600, 4096),
+      tokenExpiringIn(-60),
+      "not-a-jwt",
+    ]) {
+      const { handler } = makeHarness({ idTokenCookie: true, idToken });
+      const response = await handler(
+        request("token", { cookie: cookie("session-token-1") }),
+      );
+      const cookies = response.headers.getSetCookie();
+      expect(cookies).toHaveLength(1);
+      expect(cookies[0]).toContain(LOGTO_SESSION_COOKIE_NAME);
+    }
+  });
+
+  it("getInitialToken emits both cookies for the caller to forward", async () => {
+    const idToken = tokenExpiringIn(3600);
+    const { handler } = makeHarness({ idTokenCookie: true, idToken });
+    const seed = await handler.getInitialToken(
+      new Request(`${APP_ORIGIN}/`, {
+        headers: { cookie: cookie("session-token-1") },
+      }),
+    );
+    expect(seed.initialToken).toBe(idToken);
+    expect(seed.headers.getSetCookie()).toHaveLength(2);
+  });
+
+  it("reads back from a Request, a raw header, or a Next-style store", () => {
+    const idToken = tokenExpiringIn(3600);
+    const header = `${LOGTO_ID_TOKEN_COOKIE_NAME}=${encodeURIComponent(idToken)}`;
+    expect(readLogtoIdTokenCookie(header)).toBe(idToken);
+    expect(
+      readLogtoIdTokenCookie(
+        new Request(`${APP_ORIGIN}/`, { headers: { cookie: header } }),
+      ),
+    ).toBe(idToken);
+    expect(
+      readLogtoIdTokenCookie({
+        get: (name) =>
+          name === LOGTO_ID_TOKEN_COOKIE_NAME ? { value: idToken } : undefined,
+      }),
+    ).toBe(idToken);
+  });
+
+  it("reads null when the cookie is absent or empty", () => {
+    expect(readLogtoIdTokenCookie("")).toBeNull();
+    expect(
+      readLogtoIdTokenCookie(`${LOGTO_SESSION_COOKIE_NAME}=abc`),
+    ).toBeNull();
+    expect(readLogtoIdTokenCookie({ get: () => undefined })).toBeNull();
+    expect(readLogtoIdTokenCookie({ get: () => ({ value: "" }) })).toBeNull();
   });
 });

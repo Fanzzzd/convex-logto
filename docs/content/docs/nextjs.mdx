@@ -104,13 +104,87 @@ handler module and its `allowedOrigins` are in
 [the cookie transport section](/docs/session-mode#httponly-cookie-transport-optional).
 
 <Callout type="warn">
-Do **not** call `getInitialToken()` from a layout or page to seed SSR in the App
-Router. It rotates the session cookie, and a Server Component cannot set cookies —
-Next.js only allows that in Route Handlers, Server Actions, and middleware. The
-rotated cookie would be dropped, leaving the browser holding a superseded token
-that is eventually presented outside the reuse window and read as token reuse,
-which kills the session. Skip seeding here: the provider fetches a fresh ID token
-from `/api/logto/token` right after hydration.
+Do **not** call `getInitialToken()` from a layout or page. It rotates the session
+cookie, and a Server Component cannot set cookies — Next.js only allows that in
+Route Handlers, Server Actions, and middleware. The rotated cookie would be
+dropped, leaving the browser holding a superseded token that is eventually
+presented outside the reuse window and read as token reuse, which kills the
+session. Use `readLogtoIdTokenCookie` below instead; `getInitialToken()` is still
+the right call **inside** a Route Handler, Server Action, or middleware, where
+you can forward its headers.
 </Callout>
+
+### Server-side rendering
+
+To render authenticated content on the server you need an ID token, and the only
+credential a Server Component can reach is a cookie it does not have to rotate.
+Turn on the companion cookie:
+
+```ts title="server/logto-cookie.ts"
+export const logtoCookieHandler = createLogtoSessionCookieHandler({
+  sessionApi: api.auth,
+  action: (reference, args) => client.action(reference, args),
+  allowedOrigins: ["https://app.example.com"],
+  basePath: "/api/logto",
+  idTokenCookie: true, // [!code highlight]
+});
+```
+
+The route handler now writes the ID token to an `HttpOnly` cookie alongside the
+session cookie, with `Max-Age` set from the token's own `exp`. Nothing new is
+minted and nothing is rotated, so the reuse detection that protects the session
+token is untouched. Read it anywhere:
+
+```tsx title="app/page.tsx"
+import { readLogtoIdTokenCookie } from "convex-logto";
+import { preloadQuery } from "convex/nextjs";
+import { cookies } from "next/headers";
+import { api } from "@/convex/_generated/api";
+
+export default async function Page() {
+  const token = readLogtoIdTokenCookie(await cookies());
+  const preloaded = await preloadQuery(api.me.me, {}, token ? { token } : {});
+  return <Me preloaded={preloaded} />;
+}
+```
+
+`readLogtoIdTokenCookie` takes a `Request`, a raw `Cookie` header, or a store
+shaped like Next's `cookies()` — there is no `convex-logto/nextjs` entry to keep
+in step with Next's release train, and the same call works in TanStack Start or a
+bare handler.
+
+<Callout>
+A token read here proves nothing on its own — it is a bearer Convex validates,
+and `null` simply means "render the signed-out view and let the client take
+over". **Revocation is enforced where it always is**: by
+`assertSubjectHasActiveSession` inside the function you call, not by this read.
+A cookie whose token has expired is gone with it, so the worst case is an
+unauthenticated first paint.
+</Callout>
+
+Two consequences worth knowing before you turn it on:
+
+- A cookie is attached to **every** same-origin request, so the ID token reaches
+  access logs and proxies that an `Authorization` header does not. That is the
+  custody trade-off, and it is why this is opt-in — see
+  [ADR 0002](https://github.com/Fanzzzd/convex-logto/blob/main/docs/adr/0002-token-custody.md).
+- The cookie is only as fresh as the last client-side refresh. If you want every
+  server render to have a live token, refresh in **middleware**, which *can* set
+  cookies:
+
+```ts title="middleware.ts"
+import { logtoCookieHandler } from "@/server/logto-cookie";
+
+export async function middleware(request: Request) {
+  const seed = await logtoCookieHandler.getInitialToken(request);
+  const response = NextResponse.next();
+  for (const cookie of seed.headers.getSetCookie()) {
+    response.headers.append("Set-Cookie", cookie);
+  }
+  return response;
+}
+
+export const config = { matcher: ["/((?!_next|api).*)"] };
+```
 
 Full walkthrough: [Session mode](/docs/session-mode).
