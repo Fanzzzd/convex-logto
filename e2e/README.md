@@ -118,18 +118,22 @@ node probe-org-tokens.mjs
 `probe-org-tokens.mjs` settled [ADR
 0003](../docs/adr/0003-organization-token-exchange.md): whether organization
 roles reach the ID token, whether an organization-token grant returns an
-`id_token`, whether it rotates the refresh token, and whether a resource has to
-be declared at sign-in. It creates its own organization, role, API resource and
-scope, and turns refresh-token rotation on — all find-or-create, all named
+`id_token`, whether it rotates the refresh token, whether a *rejected* grant
+still spends it, and what makes a resource askable. It creates its own
+organization, role, API resource and scope — all find-or-create, all named
 `convex-logto-e2e-*`.
 
-Findings go to stdout; the decoded claims — which are credentials — go to
-`.probe-org-tokens.json` (mode `0600`, gitignored).
+Findings go to **stderr** (redirect with `2>`), like everything else here. The
+decoded claims are credentials and go to `.probe-org-tokens.json` (mode `0600`,
+gitignored), rewritten after every finding so a late failure does not discard
+evidence that cost real authorization grants.
 
-> A probe answers a question about *today's* deployment. When the answer decides
-> something hard to reverse, confirm it against Logto's source too: rotation
-> looks absent on any fresh refresh token, because Logto only rotates one past
-> 70% of its lifetime.
+> **Design the experiment so the answer is visible.** Rotation is invisible on
+> any *confidential* client's fresh refresh token — Logto only rotates one past
+> 70% of its lifetime — so asking that client answers "no rotation" no matter
+> what the rule is. The probe asks the **public** SPA client instead, where the
+> same rule rotates on every grant. Reaching for a second configuration beats
+> inferring from a null result.
 
 ## Cleanup
 
