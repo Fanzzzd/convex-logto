@@ -355,7 +355,7 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 | `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](#session-mode): builds the eleven public auth functions backed by the session component. |
 | `assertSubjectHasActiveSession(ctx, component)` | `convex-logto` | Session mode: throw unless the authenticated subject has at least one active component Session; this does not bind the current bearer to one Session. A bounded scan can transiently throw `session_liveness_scan_incomplete` while bulk cleanup progresses. |
 | `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Deprecated compatibility alias for `assertSubjectHasActiveSession`. |
-| `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Five-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
+| `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Six-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
 | `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Static `config` or backend `configQuery`. |
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
 | default | `convex-logto/convex.config` | The session component, for `app.use(logto)`. |

@@ -18,7 +18,7 @@ description: Every export from convex-logto and its web, native, and session-mod
 | `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](/docs/session-mode): builds the eleven public auth functions backed by the session component. |
 | `assertSubjectHasActiveSession(ctx, component)` | `convex-logto` | Session mode: require at least one active component Session for the authenticated subject; does not bind this bearer to one Session. |
 | `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Deprecated compatibility alias for `assertSubjectHasActiveSession`. |
-| `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Five-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
+| `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Six-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
 | `createLogtoSessionCookieTransport(api, opts?)` | `convex-logto` | Framework-free browser adapter used by the session provider's `cookieTransport` prop. |
 | `assertLogtoSessionCookieCompatibility(opts)` | `convex-logto` | Loud Safari/device-binding compatibility guard. |
 | `readLogtoIdTokenCookie(source)` | `convex-logto` | Reads the opt-in SSR ID token cookie from a `Request`, a `Cookie` header, or a Next-style store. |

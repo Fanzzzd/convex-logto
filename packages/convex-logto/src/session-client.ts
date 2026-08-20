@@ -1453,8 +1453,14 @@ export class SessionAuthEngine {
     const action = this.options.api.fetchUserInfo;
     if (action === undefined) throw sessionApiUpgradeError("fetchUserInfo");
     const credential = await this.sessionCallCredential("fetchUserInfo");
-    return await this.callSessionAction("fetchUserInfo", () =>
-      this.options.transport.action(action, credential),
+    // Also an exchange behind the scenes — it mints the opaque token Logto's
+    // userinfo endpoint wants — so it takes the same lock for the same reason.
+    return await this.withLock(() =>
+      this.retrying(() =>
+        this.callSessionAction("fetchUserInfo", () =>
+          this.options.transport.action(action, credential),
+        ),
+      ),
     );
   }
 
@@ -1471,6 +1477,34 @@ export class SessionAuthEngine {
     const action = this.options.api.exchangeToken;
     if (action === undefined) throw sessionApiUpgradeError("exchangeToken");
     const credential = await this.sessionCallCredential("exchangeToken");
+    // Under the same lock as `refreshIdToken`, and retried like it.
+    //
+    // The component runs this exchange inside the session's refresh claim, so
+    // it and a refresh cannot both be in flight — the loser gets a transient
+    // `refresh_in_flight`. Without the lock the loser is usually the *refresh*,
+    // and a refresh that exhausts its retries drops the whole app to
+    // unauthenticated until the recovery loop catches up. Serializing them in
+    // the browser removes the case that actually happens; `retrying` covers
+    // the rest (another tab, another device, a queued cron).
+    return await this.withLock(() =>
+      this.retrying(() => this.dispatchExchange(action, credential, args)),
+    );
+  }
+
+  private async dispatchExchange(
+    action: NonNullable<LogtoSessionApi["exchangeToken"]>,
+    credential: { sessionToken: string; deviceProof?: string },
+    args: {
+      organizationId?: string;
+      resource?: string;
+      scopes?: string[];
+      includeToken?: boolean;
+    },
+  ): Promise<{
+    claims: LogtoResourceTokenClaims;
+    accessToken?: string;
+    minted: boolean;
+  }> {
     return await this.callSessionAction("exchangeToken", () =>
       this.options.transport.action(action, {
         ...credential,

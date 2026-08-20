@@ -4,8 +4,10 @@ import {
   beginTokenExchange,
   cachedResourceToken,
   completeTokenExchange,
+  exchangeToken,
 } from "./lib";
 import {
+  MAX_CACHEABLE_ACCESS_TOKEN_LENGTH,
   RESOURCE_TOKEN_CACHE_LIMIT,
   RESOURCE_TOKEN_SKEW_MS,
   TOKEN_AUDIENCE_MAX_LENGTH,
@@ -13,6 +15,7 @@ import {
   decideExchange,
   tokenAudienceKey,
   tokenScopeKey,
+  TOKEN_SCOPE_MAX_COUNT,
 } from "./core";
 
 function handlerOf<Args, Result>(
@@ -147,6 +150,18 @@ describe("tokenScopeKey", () => {
     expect(tokenScopeKey([])).toBe("");
     expect(tokenScopeKey(["  "])).toBe("");
   });
+
+  it("bounds the ask, because the key is stored in a row deletion has to read", () => {
+    // Unbounded, a signed-in caller can park near-document-limit rows on its
+    // own session until a revocation batch can no longer read them — a session
+    // that can never be revoked.
+    expect(() =>
+      tokenScopeKey(
+        Array.from({ length: TOKEN_SCOPE_MAX_COUNT + 1 }, (_, i) => `s${i}`),
+      ),
+    ).toThrow(ConvexError);
+    expect(() => tokenScopeKey(["x".repeat(1024)])).toThrow(ConvexError);
+  });
 });
 
 describe("accessTokenExpiresAt", () => {
@@ -237,6 +252,14 @@ function sessionFixture(
  * A database double that filters on *every* `eq` in the index chain, which the
  * three-field `by_session_audience_scope` lookup needs.
  */
+type TokenGenerationRow = {
+  _id: string;
+  sessionId: string;
+  tokenHash: string;
+  rotatedAt: number;
+  expiresAt: number;
+};
+
 function exchangeHarness(
   initialSession: ExchangeSession | null,
   initialTokens: ResourceTokenRow[] = [],
@@ -244,6 +267,7 @@ function exchangeHarness(
     subject?: { subject: string; revokedAt: number };
     sids?: Array<{ sid: string; revokedAt: number }>;
   } = {},
+  initialGenerations: TokenGenerationRow[] = [],
 ) {
   let session = initialSession === null ? null : { ...initialSession };
   let tokens = initialTokens.map((row) => ({ ...row }));
@@ -259,9 +283,11 @@ function exchangeHarness(
   const inserted: Array<{ table: string; doc: Record<string, unknown> }> = [];
   let nextId = initialTokens.length + 1;
 
+  let generations = initialGenerations.map((row) => ({ ...row }));
   const rowsFor = (table: string): Array<Record<string, unknown>> => {
     if (table === "sessions") return session === null ? [] : [session];
     if (table === "resourceTokens") return tokens;
+    if (table === "sessionTokenGenerations") return generations;
     if (table === "subjectRevocations") return subjectRevocations;
     if (table === "sidRevocations") return sidRevocations;
     return [];
@@ -340,6 +366,7 @@ function exchangeHarness(
       deleted.push(id);
       if (session !== null && session._id === id) session = null;
       tokens = tokens.filter((row) => row._id !== id);
+      generations = generations.filter((row) => row._id !== id);
       return Promise.resolve();
     },
   };
@@ -369,7 +396,13 @@ const completeHandler = handlerOf<
 >(completeTokenExchange);
 
 const cachedHandler = handlerOf<
-  { presentedHash: string; audience: string; scopeKey: string; now: number },
+  {
+    presentedHash: string;
+    audience: string;
+    scopeKey: string;
+    now: number;
+    reuseWindowMs: number;
+  },
   { accessToken: string; expiresAt: number; grantedScope: string } | null
 >(cachedResourceToken);
 
@@ -608,6 +641,60 @@ describe("completeTokenExchange", () => {
     expect(harness.tokens()).toEqual([]);
   });
 
+  it("deletes rather than commits when the incoming sid is already revoked", async () => {
+    // Logto may report an OP session this row has not adopted yet. Checking
+    // only the row's current sid would mint and cache one Organization token
+    // *after* the back-channel logout that withdrew its authority.
+    const harness = exchangeHarness(claimed({ sid: "sid-old" }), [], {
+      sids: [{ sid: "sid-new", revokedAt: 600_000 }],
+    });
+    await expect(
+      completeHandler(
+        { db: harness.db },
+        {
+          ...baseArgs,
+          refreshedIdToken: {
+            idToken: "fresh",
+            exp: 5_000_000,
+            sid: "sid-new",
+          },
+        },
+      ),
+    ).resolves.toEqual({ outcome: "revoked" });
+    expect(harness.deleted).toEqual(["session-1"]);
+    expect(harness.tokens()).toEqual([]);
+  });
+
+  it("returns an oversized token without caching it, and drops any stale row", async () => {
+    // The per-session row bound has to be a byte bound too: session deletion
+    // reads these rows for eight sessions in one transaction.
+    const harness = exchangeHarness(claimed(), [
+      {
+        _id: "resourceTokens-0",
+        sessionId: "session-1",
+        audience: "organization:org-1",
+        scopeKey: "read",
+        accessToken: "older-token",
+        expiresAt: 2_000_000,
+        grantedScope: "read",
+        mintedAt: 900_000,
+      },
+    ]);
+    await expect(
+      completeHandler(
+        { db: harness.db },
+        {
+          ...baseArgs,
+          accessToken: "x".repeat(MAX_CACHEABLE_ACCESS_TOKEN_LENGTH + 1),
+        },
+      ),
+    ).resolves.toMatchObject({ outcome: "committed" });
+    // Not kept, and the older one for the same key is gone rather than left to
+    // be served for a target whose current token could not be stored.
+    expect(harness.tokens()).toEqual([]);
+    expect(harness.session()).toMatchObject({ refreshClaimId: undefined });
+  });
+
   it("reports a missing session rather than inventing one", async () => {
     const harness = exchangeHarness(null);
     await expect(
@@ -632,6 +719,7 @@ describe("cachedResourceToken", () => {
     audience: "organization:org-1",
     scopeKey: "read",
     now: 1_500_000,
+    reuseWindowMs: 10_000,
   };
 
   it("serves a fresh row without touching Logto", async () => {
@@ -673,5 +761,90 @@ describe("cachedResourceToken", () => {
   it("answers null for a token that resolves to no session at all", async () => {
     const harness = exchangeHarness(null, [row]);
     await expect(cachedHandler({ db: harness.db }, args)).resolves.toBeNull();
+  });
+
+  it("serves a superseded generation that is still inside its reuse window", async () => {
+    const harness = exchangeHarness(
+      sessionFixture({ rotatedAt: 1_499_000 }),
+      [row],
+      {},
+      [
+        {
+          _id: "generation-0",
+          sessionId: "session-1",
+          tokenHash: "previous",
+          rotatedAt: 1_499_000,
+          expiresAt: 1_509_000,
+        },
+      ],
+    );
+    await expect(
+      cachedHandler({ db: harness.db }, { ...args, presentedHash: "previous" }),
+    ).resolves.toMatchObject({ accessToken: "cached-token" });
+  });
+
+  it("refuses a rotated-away token instead of handing it a live token", async () => {
+    // The whole point of the reuse window is that a generation past it is
+    // treated as theft. A cache read is a query and cannot kill the session, so
+    // it answers null and lets `beginTokenExchange` — a mutation — do that.
+    // Serving it here would be the one read in the component that keeps a
+    // stolen session usable without ever tripping reuse detection.
+    const harness = exchangeHarness(
+      sessionFixture({ rotatedAt: 1_400_000 }),
+      [row],
+      {},
+      [
+        {
+          _id: "generation-0",
+          sessionId: "session-1",
+          tokenHash: "previous",
+          rotatedAt: 1_400_000,
+          expiresAt: 1_410_000,
+        },
+      ],
+    );
+    await expect(
+      cachedHandler({ db: harness.db }, { ...args, presentedHash: "previous" }),
+    ).resolves.toBeNull();
+  });
+
+  it("refuses a stale legacy previous-generation token too", async () => {
+    const harness = exchangeHarness(
+      sessionFixture({ prevTokenHash: "previous", rotatedAt: 1_400_000 }),
+      [row],
+    );
+    await expect(
+      cachedHandler({ db: harness.db }, { ...args, presentedHash: "previous" }),
+    ).resolves.toBeNull();
+    await expect(
+      cachedHandler(
+        { db: harness.db },
+        { ...args, presentedHash: "previous", now: 1_400_500 },
+      ),
+    ).resolves.toMatchObject({ accessToken: "cached-token" });
+  });
+});
+
+describe("exchangeToken", () => {
+  it("refuses a call that names no target rather than falling through to `default`", async () => {
+    // `default` is the opaque token Logto's userinfo endpoint accepts — the one
+    // credential here carrying the user's whole profile scope. `fetchUserInfo`
+    // reaches it internally and never returns it; letting an argument-free call
+    // reach it would put a target on the public surface that no client method
+    // can name and `exposeAccessTokens` was never written about.
+    const handler = handlerOf<Record<string, unknown>, unknown>(exchangeToken);
+    await expect(
+      handler(
+        {},
+        {
+          endpoint: "https://auth.example.com",
+          appId: "a",
+          clientSecret: "s",
+          sessionToken: "t",
+        },
+      ),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "missing_token_target" },
+    });
   });
 });

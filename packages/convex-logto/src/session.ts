@@ -783,6 +783,17 @@ export function logtoSessionApi(
         minted: v.boolean(),
       }),
       handler: async (ctx, args) => {
+        if (args.organizationId === undefined && args.resource === undefined) {
+          // The component refuses this too. Refusing here as well keeps the
+          // deployment-facing error close to the call and stops a target-free
+          // request ever becoming a component round trip.
+          throw new ConvexError({
+            kind: "terminal" as const,
+            code: "missing_token_target",
+            message:
+              "convex-logto: pass an organizationId or a resource to exchangeToken.",
+          });
+        }
         if (args.includeToken && !options.exposeAccessTokens) {
           // Refuse rather than silently downgrade to claims. A caller that
           // asked for the token string is about to call an API with it, and

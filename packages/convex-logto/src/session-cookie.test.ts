@@ -29,7 +29,9 @@ type HandlerName =
   | "signOutEverywhere"
   | "listSessions"
   | "renameSession"
-  | "revokeSession";
+  | "revokeSession"
+  | "exchangeToken"
+  | "fetchUserInfo";
 type Handlers = Record<HandlerName, ReturnType<typeof vi.fn>>;
 
 function makeHarness(options?: {
@@ -75,6 +77,16 @@ function makeHarness(options?: {
     }),
     renameSession: vi.fn().mockResolvedValue(true),
     revokeSession: vi.fn().mockResolvedValue(true),
+    exchangeToken: vi.fn().mockResolvedValue({
+      claims: {
+        audience: "organization:org-1",
+        scopes: ["manage"],
+        expiresAt: 5_000_000,
+        organizationId: "org-1",
+      },
+      minted: true,
+    }),
+    fetchUserInfo: vi.fn().mockResolvedValue({ sub: "user-1", name: "Ada" }),
   };
   const action = vi.fn((reference: unknown, args: unknown) => {
     const name = getFunctionName(
@@ -107,7 +119,7 @@ function persistentCookie(value: string): string {
 }
 
 function request(
-  route: "sign-in" | "callback" | "token" | "sign-out" | "sessions",
+  route: "sign-in" | "callback" | "token" | "sign-out" | "sessions" | "tokens",
   options?: {
     method?: string;
     origin?: string | null;
@@ -1523,5 +1535,143 @@ describe("SSR ID token cookie", () => {
     ).toBeNull();
     expect(readLogtoIdTokenCookie({ get: () => undefined })).toBeNull();
     expect(readLogtoIdTokenCookie({ get: () => ({ value: "" }) })).toBeNull();
+  });
+});
+
+describe("tokens route", () => {
+  it("authenticates the exchange with the cookie and forwards the target", async () => {
+    const { handler, handlers } = makeHarness();
+    const response = await handler(
+      request("tokens", {
+        cookie: cookie("session-token-1"),
+        body: {
+          op: "exchange",
+          organizationId: "org-1",
+          scopes: ["manage"],
+        },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      claims: { audience: "organization:org-1", scopes: ["manage"] },
+      minted: true,
+    });
+    expect(handlers.exchangeToken).toHaveBeenCalledWith({
+      sessionToken: "session-token-1",
+      organizationId: "org-1",
+      scopes: ["manage"],
+    });
+  });
+
+  it("proxies fetchUserInfo", async () => {
+    const { handler, handlers } = makeHarness();
+    const response = await handler(
+      request("tokens", {
+        cookie: cookie("session-token-1"),
+        body: { op: "userinfo" },
+      }),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      sub: "user-1",
+      name: "Ada",
+    });
+    expect(handlers.fetchUserInfo).toHaveBeenCalledWith({
+      sessionToken: "session-token-1",
+    });
+  });
+
+  it("refuses without the session cookie", async () => {
+    const { handler, handlers } = makeHarness();
+    const response = await handler(
+      request("tokens", { body: { op: "exchange", organizationId: "org-1" } }),
+    );
+    expect(response.status).toBe(401);
+    expect(handlers.exchangeToken).not.toHaveBeenCalled();
+  });
+
+  it("bounds the scope array rather than proxying whatever was posted", async () => {
+    const { handler, handlers } = makeHarness();
+    const response = await handler(
+      request("tokens", {
+        cookie: cookie("session-token-1"),
+        body: {
+          op: "exchange",
+          organizationId: "org-1",
+          scopes: Array.from({ length: 64 }, (_, index) => `s${index}`),
+        },
+      }),
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "invalid_request" },
+    });
+    expect(handlers.exchangeToken).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown op", async () => {
+    const { handler } = makeHarness();
+    const response = await handler(
+      request("tokens", {
+        cookie: cookie("session-token-1"),
+        body: { op: "mint-me-something" },
+      }),
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("names the missing re-export rather than answering a generic failure", async () => {
+    const withoutExchange = createLogtoSessionCookieHandler({
+      sessionApi: {
+        ...(api as unknown as Record<string, unknown>),
+        exchangeToken: undefined,
+      } as unknown as LogtoSessionApi,
+      action: (() => Promise.resolve(null)) as unknown as LogtoSessionAction,
+      allowedOrigins: [APP_ORIGIN],
+      basePath: BASE_PATH,
+    });
+    const response = await withoutExchange(
+      request("tokens", {
+        cookie: cookie("session-token-1"),
+        body: { op: "exchange", organizationId: "org-1" },
+      }),
+    );
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "session_management_unavailable" },
+    });
+  });
+});
+
+describe("browser transport token exchange", () => {
+  it("routes exchangeToken and fetchUserInfo through the cookie handler", async () => {
+    const { handler } = makeHarness();
+    // Piped through the real handler rather than a canned Response, because
+    // the route is the thing under test. The two headers a browser adds for
+    // free — the origin and the cookie — are added here for the same reason.
+    const transport = createLogtoSessionCookieTransport(api, {
+      endpoint: `${APP_ORIGIN}${BASE_PATH}`,
+      fetch: (input, init) => {
+        const forwarded = new Request(input as string, init);
+        forwarded.headers.set("Origin", APP_ORIGIN);
+        forwarded.headers.set("Cookie", cookie("session-token-1"));
+        return handler(forwarded);
+      },
+    });
+
+    await expect(
+      transport.action(api.exchangeToken!, {
+        sessionToken: "ignored",
+        organizationId: "org-1",
+        scopes: ["manage"],
+      }),
+    ).resolves.toMatchObject({
+      claims: { organizationId: "org-1", scopes: ["manage"] },
+      minted: true,
+    });
+    await expect(
+      transport.action(api.fetchUserInfo!, { sessionToken: "ignored" }),
+    ).resolves.toEqual({ sub: "user-1", name: "Ada" });
   });
 });

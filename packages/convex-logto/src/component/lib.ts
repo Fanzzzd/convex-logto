@@ -13,6 +13,7 @@ import { internal } from "./_generated/api.js";
 import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import {
   DEFAULT_REUSE_WINDOW_MS,
+  MAX_CACHEABLE_ACCESS_TOKEN_LENGTH,
   RESOURCE_TOKEN_CACHE_LIMIT,
   RESOURCE_TOKEN_SKEW_MS,
   REVOCATION_MARKER_GC_AFTER_MS,
@@ -1235,8 +1236,21 @@ export const exchangeToken = action({
     /** True when this call went to Logto rather than being served from cache. */
     minted: v.boolean(),
   }),
-  handler: async (ctx, args): Promise<ExchangeResult> =>
-    await runExchange(ctx, args),
+  handler: async (ctx, args): Promise<ExchangeResult> => {
+    // The `default` audience is the opaque token `/oidc/me` accepts — the one
+    // credential here that carries the user's whole profile scope. It is
+    // reachable from `fetchUserInfo`, which never returns it, and from nowhere
+    // else: `exposeAccessTokens` governs Organization and Resource tokens, and
+    // letting an argument-free call fall through to `default` would quietly put
+    // a target on the public surface that no typed client method can name.
+    if (args.organizationId === undefined && args.resource === undefined) {
+      throw terminal(
+        "missing_token_target",
+        "Ask for an organization token or a resource token.",
+      );
+    }
+    return await runExchange(ctx, args);
+  },
 });
 
 /**
@@ -1265,7 +1279,13 @@ async function runExchange(
 
   const cached: CachedResourceToken | null = await ctx.runQuery(
     internal.lib.cachedResourceToken,
-    { presentedHash, audience, scopeKey, now: Date.now() },
+    {
+      presentedHash,
+      audience,
+      scopeKey,
+      now: Date.now(),
+      reuseWindowMs: args.reuseWindowMs ?? DEFAULT_REUSE_WINDOW_MS,
+    },
   );
   if (cached) {
     return {
@@ -1426,6 +1446,7 @@ export const cachedResourceToken = internalQuery({
     audience: v.string(),
     scopeKey: v.string(),
     now: v.number(),
+    reuseWindowMs: v.number(),
   },
   returns: v.union(
     v.object({
@@ -1439,6 +1460,16 @@ export const cachedResourceToken = internalQuery({
   handler: async (ctx, args) => {
     const match = await resolveSessionToken(ctx.db, args.presentedHash);
     if (!match) return null;
+    // A superseded generation past its Reuse window resolves to a session but
+    // has no authority left. Answering `null` sends the caller to
+    // `beginTokenExchange`, which is a *mutation* and can do what a query
+    // cannot: treat the presentation as theft and kill the session. Serving the
+    // cache here would hand a live Organization token to a rotated-away token
+    // and leave reuse detection untriggered — the one read in this component
+    // that could be used to hold a stolen session open.
+    if (!tokenMatchIsWithinReuseWindow(match, args.now, args.reuseWindowMs)) {
+      return null;
+    }
     // A logically revoked session's cached tokens are invisible, exactly like
     // its other reads: the rows may still be waiting for a bounded cleanup
     // batch, and until then they must retain no authority.
@@ -1590,7 +1621,26 @@ export const completeTokenExchange = internalMutation({
       await deleteSessionWithGenerations(ctx.db, session._id);
       return { outcome: "revoked" as const };
     }
+    // The *incoming* sid too, exactly as `completeRefresh` does. Logto may
+    // report an OP session this row has not adopted yet, and a back-channel
+    // logout for that sid has already withdrawn the authority the token was
+    // minted under — patching it in first would issue one Organization token
+    // after the logout that was supposed to stop it.
+    const incomingSid = args.refreshedIdToken?.sid;
+    if (incomingSid !== undefined && incomingSid !== session.sid) {
+      const cutoff = await sidRevokedAt(ctx.db, incomingSid);
+      if (cutoff !== undefined && session.createdAt <= cutoff) {
+        await deleteSessionWithGenerations(ctx.db, session._id);
+        return { outcome: "revoked" as const };
+      }
+    }
 
+    // Cache only what keeps the per-session bound a *byte* bound. A token past
+    // this is still returned to the caller; it simply is not stored, so the
+    // batched session deletion cannot be pushed out of its read budget by a
+    // deployment whose tokens are unusually large.
+    const cacheable =
+      args.accessToken.length <= MAX_CACHEABLE_ACCESS_TOKEN_LENGTH;
     const existing = await ctx.db
       .query("resourceTokens")
       .withIndex("by_session_audience_scope", (q) =>
@@ -1600,7 +1650,12 @@ export const completeTokenExchange = internalMutation({
           .eq("scopeKey", args.scopeKey),
       )
       .unique();
-    if (existing) {
+    if (!cacheable) {
+      // Drop any older row for this key rather than leaving it: it would go on
+      // being served for a target whose current token this call could not
+      // store, which is a stale answer, not a conservative one.
+      if (existing) await ctx.db.delete(existing._id);
+    } else if (existing) {
       await ctx.db.patch(existing._id, {
         accessToken: args.accessToken,
         expiresAt: args.expiresAt,

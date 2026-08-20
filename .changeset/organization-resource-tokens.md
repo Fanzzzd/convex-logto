@@ -25,10 +25,17 @@ fine-grained organization permissions and registered API resources.
 resource exchange — and it has to be set before sign-in, because Logto refuses
 to issue a token for a resource the grant never named.
 
-The exchange runs inside the same claim as `refresh`, so it can answer the
-transient `refresh_in_flight` and must be retried like any other. That is not
-caution: Logto rotates the refresh token on a rule blind to what the grant was
-for, and only past 70% of its lifetime, so an exchange outside the claim would
-look correct until real tokens aged and then start tripping reuse detection on a
-grant sibling sessions share. Verified against a live deployment and against
-Logto's source; `docs/adr/0003-organization-token-exchange.md` records it.
+The exchange runs inside the same claim as `refresh`. The client serializes the
+two behind the same lock and retries, so an app does not have to — but a second
+tab or device can still see the transient `refresh_in_flight`.
+
+That sharing is not caution. Logto rotates the refresh token on a rule blind to
+what the grant was for, and for a confidential client only once the token is
+past 70% of its lifetime — so an exchange outside the claim would look correct
+until real tokens aged, then start tripping reuse detection on a grant sibling
+sessions share. Measured on a public client, where the same rule rotates every
+time: a plain refresh, an organization token and a resource token all rotate.
+`docs/adr/0003-organization-token-exchange.md` records it.
+
+The optional same-site cookie transport gains a sixth route (`tokens`) so both
+new methods work there too.

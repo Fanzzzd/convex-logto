@@ -256,7 +256,11 @@ describe("logtoSessionApi exchangeToken", () => {
     await expect(
       handlerFor()(
         { runAction },
-        { sessionToken: "session-token", includeToken: true },
+        {
+          sessionToken: "session-token",
+          organizationId: "org-1",
+          includeToken: true,
+        },
       ),
     ).rejects.toMatchObject({
       data: { kind: "terminal", code: "access_tokens_not_exposed" },
@@ -314,5 +318,34 @@ describe("logtoSessionApi exchangeToken", () => {
       },
       minted: false,
     });
+  });
+});
+
+describe("logtoSessionApi exchangeToken targets", () => {
+  it("refuses a target-free call before it becomes a component round trip", async () => {
+    const action = { fn: "exchangeToken" };
+    const component = {
+      lib: { exchangeToken: action },
+    } as unknown as LogtoSessionComponent;
+    const api = logtoSessionApi(component, {
+      endpoint: "https://auth.example.com",
+      appId: "app-1",
+      clientSecret: "secret",
+    });
+    const runAction = vi.fn();
+    type Handler = (
+      ctx: { runAction: typeof runAction },
+      args: { sessionToken: string },
+    ) => Promise<unknown>;
+    const handler = (api.exchangeToken as unknown as Record<string, Handler>)[
+      "_handler"
+    ]!;
+
+    await expect(
+      handler({ runAction }, { sessionToken: "session-token" }),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "missing_token_target" },
+    });
+    expect(runAction).not.toHaveBeenCalled();
   });
 });

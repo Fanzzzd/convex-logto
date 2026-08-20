@@ -626,6 +626,31 @@ export const RESOURCE_TOKEN_SKEW_MS = 60 * 1000;
 export const TOKEN_AUDIENCE_MAX_LENGTH = 256;
 
 /**
+ * Bounds on the requested scope set.
+ *
+ * The scope key is caller-supplied and lands verbatim in a `resourceTokens`
+ * row, and session deletion collects those rows for eight sessions in one
+ * transaction. Every other caller-supplied string in this component is
+ * bounded; unbounded, eight rows of near-document-limit scope text is enough
+ * to put a subject's sessions permanently beyond a revocation batch's read
+ * budget — a session that can never be revoked.
+ */
+export const TOKEN_SCOPE_MAX_COUNT = 32;
+export const TOKEN_SCOPE_KEY_MAX_LENGTH = 512;
+
+/**
+ * Largest minted access token this will cache.
+ *
+ * The token comes from Logto rather than the caller, so this is not a defence
+ * against an attacker — it is what keeps the per-session row bound a *byte*
+ * bound and not just a row count, so the batched session deletion above stays
+ * inside its transaction budget no matter what a deployment's tokens look
+ * like. A token past this is still returned; it is simply not stored, so the
+ * next call mints again.
+ */
+export const MAX_CACHEABLE_ACCESS_TOKEN_LENGTH = 8 * 1024;
+
+/**
  * The cache key's audience half.
  *
  * Prefixed rather than raw so an organization id can never collide with a
@@ -674,6 +699,12 @@ function assertAudienceLength(value: string, what: string): string {
  */
 export function tokenScopeKey(scopes?: string[]): string {
   if (!scopes || scopes.length === 0) return "";
+  if (scopes.length > TOKEN_SCOPE_MAX_COUNT) {
+    throw terminal(
+      "invalid_token_scopes",
+      `Ask for at most ${TOKEN_SCOPE_MAX_COUNT} scopes at once.`,
+    );
+  }
   const unique = [
     ...new Set(scopes.map((scope) => scope.trim()).filter(Boolean)),
   ];
@@ -681,7 +712,14 @@ export function tokenScopeKey(scopes?: string[]): string {
   // nobody else. `toSorted` would say it better but is ES2023, and the library
   // targets ES2022.
   unique.sort();
-  return unique.join(" ");
+  const key = unique.join(" ");
+  if (Array.from(key).length > TOKEN_SCOPE_KEY_MAX_LENGTH) {
+    throw terminal(
+      "invalid_token_scopes",
+      `That scope set is longer than ${TOKEN_SCOPE_KEY_MAX_LENGTH} characters.`,
+    );
+  }
+  return key;
 }
 
 /**
