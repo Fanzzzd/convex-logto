@@ -143,10 +143,11 @@ export const {
 Options: `scopes` (server-configured — the browser can't request its own),
 `reuseWindowMs` (default 10s), `endpoint` / `appId` / `clientSecret` env
 overrides, and the same narrowly scoped `allowInsecureHttp` compatibility escape
-hatch described above. `resources` is **deprecated** here: the component holds
-the refresh token and hands the browser only the ID token, so the access token a
-resource indicator buys is discarded. (In bridge mode it still works — the Logto
-SDK owns the tokens and exposes `getAccessToken()`.)
+hatch described above. `resources` **currently buys nothing** here: the component
+holds the refresh token and hands the browser only the ID token, so the access
+token a resource indicator requests is discarded — while a resource Logto does
+not have registered breaks sign-in outright. Leave it unset. (In bridge mode it
+works — the Logto SDK owns the tokens and exposes `getAccessToken()`.)
 
 `signOutEverywhere({ sessionToken, postLogoutRedirectUri? })` derives the subject
 inside the component and atomically records subject-wide logical revocation.

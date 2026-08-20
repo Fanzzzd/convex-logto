@@ -347,11 +347,12 @@ export type LogtoSessionApiOptions = LogtoEndpointPolicy & {
   /**
    * API resource indicators appended to the authorize request.
    *
-   * @deprecated Session mode has nothing to hand you in return: the component
-   * holds the refresh token and exposes only the ID token, so the resource-
-   * scoped access token this buys is discarded, and the refresh grant never
-   * asks for another. Setting a resource Logto does not have registered breaks
-   * sign-in outright. Kept for compatibility; it will go in the next major.
+   * Currently a no-op you can still be punished for. The component holds the
+   * refresh token and exposes only the ID token, so the resource-scoped access
+   * token this buys is discarded and the refresh grant never asks for another —
+   * while a resource indicator Logto does not have registered breaks sign-in
+   * outright. Leave it unset until session mode can hand the token (or its
+   * claims) back; see `docs/adr/0002-token-custody.md`.
    */
   resources?: string[];
   /**

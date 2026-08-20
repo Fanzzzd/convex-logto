@@ -53,5 +53,27 @@ The short-lived Logto ID token Convex accepts as an application request credenti
 **Subject-level active-session assertion**:
 A check that an authenticated bearer's subject has at least one active Session. It does not bind the bearer to a particular Session.
 
+### Organization concepts
+
+**Organization**:
+A Logto grouping that a Subject may belong to many of, each carrying its own roles and permissions. Orthogonal to Session: one Session can act in any Organization its Subject belongs to, and Organization membership neither creates nor ends a Session.
+_Avoid_: tenant, workspace, team (those are the *application's* words for whatever it maps an Organization onto)
+
+**Organization membership**:
+The list of Organizations a Subject belongs to. It travels in the Short bearer as an `organizations` claim, so it is readable wherever the Short bearer is.
+
+**Organization token**:
+A resource-scoped access token for one Organization, audienced to that Organization rather than to the application. Convex cannot accept it: it is not the Short bearer. Distinct from Organization membership, which needs no token at all.
+_Avoid_: org JWT, organization credential
+
+**Resource token**:
+Any access token Logto issues for a registered API resource, of which an Organization token is one shape. Never a request credential for Convex.
+_Avoid_: API token, service token
+
+**Token custody**:
+Which side of the deployment boundary a token is allowed to reach. Session mode's default custody is server-only for every token except the Short bearer; the Logto refresh token has no custody setting because it never leaves the component.
+
+### Sign-out
+
 **Federated sign-out**:
 Sign-out that also ends the current user agent's Logto SSO session. It does not end sessions on other devices or guarantee a credential prompt on the next sign-in.

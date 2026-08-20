@@ -661,9 +661,9 @@ rejects the response and leaves uncommitted remote credentials unreachable.
 | `onAuthError` | — | Sign-in initiation and callback failures, plus opted-in device-key storage failures. Initiation failures are reported before `signIn()` rejects, so `void signIn()` remains observable. |
 
 `logtoSessionApi(component, opts?)` accepts `scopes` (server-set — the browser
-can't request its own), `reuseWindowMs`, and env overrides. `resources` is
-deprecated in session mode: only the ID token reaches the browser, so the access
-token it buys is discarded.
+can't request its own), `reuseWindowMs`, and env overrides. `resources` currently
+buys nothing in session mode: only the ID token reaches the browser, so the
+access token it requests is discarded.
 
 ## Choosing a mode
 
