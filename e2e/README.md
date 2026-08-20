@@ -61,16 +61,33 @@ registers as redirect URIs — Logto rejects any other origin with a bare 400.
 
 ## 3. Run the flow
 
+All commands in this file run **from `e2e/`**.
+
 ```bash
 npm install                       # playwright-core only; no browser download
 set -a; . ./.env.e2e; set +a
 export E2E_APP_URL=http://localhost:5174
+export E2E_CONVEX_URL=http://127.0.0.1:3214     # the deployment the app talks to
 node session-flow.mjs
 ```
 
-Drives the real browser through cold sign-in → zero-RTT restore → forced refresh
-→ re-sign-in over a live session → sign-out. `E2E_HEADED=1` to watch it. A
-failure writes `e2e/failure.png`.
+Drives the real browser through cold sign-in → zero-RTT restore → two rounds of
+rotation → sign-out → re-sign-in. `E2E_HEADED=1` to watch it. A failure writes
+`failure.png` next to the script and exits non-zero.
+
+Every step is a required assertion, and each one asserts the thing rather than a
+proxy for it:
+
+- **zero-RTT** watches for a POST at the deployment and fails if one happens —
+  elapsed time proves nothing, because a fast round trip looks identical;
+- **rotation runs twice**, because a rotated token that was never persisted
+  passes the first refresh and fails the second;
+- **sign-out is re-checked after a reload**, because cleared UI with live
+  credentials still in storage is exactly the bug;
+- **re-sign-in** must mint a *different* session token, not resurrect the old one.
+
+It reads the library's own storage keys, so it tests the library rather than the
+example's UI.
 
 Chrome must be installed: `playwright-core` drives the system browser rather than
 downloading its own, which keeps this directory small enough to stay out of the

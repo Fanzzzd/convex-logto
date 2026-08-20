@@ -170,10 +170,26 @@ async function ensureUser(call) {
   });
 }
 
-/** The client secret lives only on the application detail response. */
-async function clientSecret(call, applicationId) {
+/**
+ * The client secret lives only on the application detail response.
+ *
+ * Fails rather than returning null: session mode's code exchange cannot run
+ * without it, so a "successful" run that emitted a placeholder would hand back
+ * an environment file that fails much later, at the point where the cause is
+ * least visible.
+ */
+async function clientSecret(call, applicationId, name) {
   const app = await call(`/applications/${applicationId}`);
-  return app.secret ?? app.customClientMetadata?.secret ?? null;
+  const secret = app.secret ?? app.customClientMetadata?.secret ?? null;
+  if (typeof secret !== "string" || secret === "") {
+    throw new Error(
+      `Could not read the client secret for ${name} (${applicationId}). ` +
+        "Session mode's authorization-code exchange needs it. Copy it from the " +
+        "Logto console (Applications → " +
+        `${name} → App secret) and set LOGTO_APP_SECRET by hand.`,
+    );
+  }
+  return secret;
 }
 
 const call = api(await accessToken());
@@ -190,7 +206,7 @@ const web = await ensureApplication(call, {
   origin: webOrigin,
 });
 await ensureUser(call);
-const secret = await clientSecret(call, web.id);
+const secret = await clientSecret(call, web.id, WEB_NAME);
 
 // Secrets go to a 0600 file, never to stdout: a terminal is a scrollback buffer,
 // and in CI it is a log. Only the values that are safe to read aloud are printed.
@@ -201,7 +217,7 @@ LOGTO_APP_ID=${spa.id}
 
 # Session mode — examples/vite-react-session
 LOGTO_SESSION_APP_ID=${web.id}
-LOGTO_APP_SECRET=${secret ?? ""}
+LOGTO_APP_SECRET=${secret}
 
 # Browser flow
 E2E_USER_EMAIL=${USER_EMAIL}
@@ -217,7 +233,7 @@ console.error(`done.
   SPA app          ${spa.id}
   web app          ${web.id}
   test user        ${USER_EMAIL}
-  client secret    ${secret === null ? "NOT READABLE — copy it from the Logto console" : "written to the file below"}
+  client secret    written to the file below
 
   ${outPath}   (mode 0600, gitignored)
 
