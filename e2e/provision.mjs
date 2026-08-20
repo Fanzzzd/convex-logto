@@ -179,6 +179,11 @@ async function ensureUser(call) {
  * least visible.
  */
 async function clientSecret(call, applicationId, name) {
+  // An override first, so the remediation the error below suggests actually
+  // works on a rerun. Some Logto versions do not return the secret on the
+  // application detail response at all.
+  const override = process.env.LOGTO_APP_SECRET;
+  if (typeof override === "string" && override !== "") return override;
   const app = await call(`/applications/${applicationId}`);
   const secret = app.secret ?? app.customClientMetadata?.secret ?? null;
   if (typeof secret !== "string" || secret === "") {
@@ -186,7 +191,8 @@ async function clientSecret(call, applicationId, name) {
       `Could not read the client secret for ${name} (${applicationId}). ` +
         "Session mode's authorization-code exchange needs it. Copy it from the " +
         "Logto console (Applications → " +
-        `${name} → App secret) and set LOGTO_APP_SECRET by hand.`,
+        `${name} → App secret), export it as LOGTO_APP_SECRET, and rerun — ` +
+        "this script prefers that value when it is set.",
     );
   }
   return secret;
