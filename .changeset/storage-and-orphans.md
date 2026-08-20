@@ -8,7 +8,10 @@ Signing in over a live session now revokes the one it replaces. Logto's SSO
 cookie makes that a silent redirect, so it is how a user retries anything that
 looks like a sign-out — and the replaced row kept a live Logto grant no client
 could reach, showing up in the user's own device list until GC took it 190 days
-later.
+later. Never in cookie transport mode: the stored value there is a marker rather
+than a credential, and the same-origin sign-out route reads the cookie the
+callback has already replaced, so revoking by marker would end the session that
+was just created.
 
 A rejected `localStorage` write no longer leaves the superseded value readable.
 Another tab would build its own storage area, read a session token this one had
