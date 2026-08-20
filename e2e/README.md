@@ -103,6 +103,34 @@ Chrome must be installed: `playwright-core` drives the system browser rather tha
 downloading its own, which keeps this directory small enough to stay out of the
 way.
 
+## Probes
+
+`session-flow.mjs` is a regression: it asserts known-good behaviour. A **probe**
+is the opposite — it asks the deployment a question whose answer is not known
+yet, and its output is a finding, not a pass or a fail.
+
+```bash
+set -a; . ./.env.e2e; set +a
+export LOGTO_M2M_APP_ID=... LOGTO_M2M_APP_SECRET=...   # same as provisioning
+node probe-org-tokens.mjs
+```
+
+`probe-org-tokens.mjs` settled [ADR
+0003](../docs/adr/0003-organization-token-exchange.md): whether organization
+roles reach the ID token, whether an organization-token grant returns an
+`id_token`, whether it rotates the refresh token, and whether a resource has to
+be declared at sign-in. It creates its own organization, role, API resource and
+scope, and turns refresh-token rotation on — all find-or-create, all named
+`convex-logto-e2e-*`.
+
+Findings go to stdout; the decoded claims — which are credentials — go to
+`.probe-org-tokens.json` (mode `0600`, gitignored).
+
+> A probe answers a question about *today's* deployment. When the answer decides
+> something hard to reverse, confirm it against Logto's source too: rotation
+> looks absent on any fresh refresh token, because Logto only rotates one past
+> 70% of its lifetime.
+
 ## Cleanup
 
 Everything is named `convex-logto-e2e-*` and described "safe to delete". Deleting
