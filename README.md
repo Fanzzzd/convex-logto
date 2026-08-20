@@ -64,6 +64,7 @@ Runnable apps, one per integration. Each is a full wiring you can copy.
 | [TanStack Router (SPA)](examples/tanstack-router-spa) | Route guards in `beforeLoad`, webhook-synced users + RBAC |
 | [TanStack Start (SSR)](examples/tanstack-start) | One SSR-safe provider, `beforeLoad` guards |
 | [Next.js App Router](examples/nextjs) | Client provider boundary + callback route |
+| [Next.js App Router, session mode](examples/nextjs-session) | HttpOnly cookie transport, SSR with a real identity, middleware refresh |
 | [Expo](examples/expo) | Native bridge auth, deep-link sign-in, no callback route |
 | [Expo, session mode](examples/expo-session) | SecureStore credentials, reclaimed-sign-in recovery |
 

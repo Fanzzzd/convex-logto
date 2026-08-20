@@ -187,4 +187,8 @@ export async function middleware(request: Request) {
 export const config = { matcher: ["/((?!_next|api).*)"] };
 ```
 
+Full app: [`examples/nextjs-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs-session)
+— the cookie transport mounted, the ID token cookie read in a layout,
+`preloadQuery` on the server, and the middleware refresh, all wired together.
+
 Full walkthrough: [Session mode](/docs/session-mode).

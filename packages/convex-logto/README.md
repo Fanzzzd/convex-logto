@@ -290,6 +290,12 @@ rotating session token and short-lived ID token in the OS keystore, and retains
 reactive revocation. Native intentionally has no cookie-transport or software
 `deviceBinding` option.
 
+Two runnable apps: [`examples/vite-react-session`][session-example] for the SPA
+shape, and
+[`examples/nextjs-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs-session)
+for the parts an SPA cannot exercise — the HttpOnly cookie transport, and
+server-side rendering with a real identity.
+
 Register `registerLogtoBackchannelLogout(http, { sessions: components.logto })`
 to verify Logto OIDC Logout Tokens and propagate IdP-side sign-out through the
 same reactive revocation path (every component Session mapped to the Logout

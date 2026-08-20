@@ -1,0 +1,25 @@
+{
+  "name": "convex-logto-example-nextjs-session",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "check-types": "tsc --noEmit && tsc --noEmit -p convex",
+    "typecheck": "pnpm check-types"
+  },
+  "dependencies": {
+    "convex": "^1.44.0",
+    "convex-logto": "workspace:*",
+    "next": "^16.3.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "typescript": "~5.9.3"
+  }
+}
