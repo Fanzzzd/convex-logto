@@ -8,6 +8,19 @@ export {
   type VerifyLogtoLogoutTokenOptions,
 } from "./backchannel-logout";
 export {
+  ORGANIZATIONS_SCOPE,
+  ORGANIZATION_ROLES_SCOPE,
+  parseOrganizationRole,
+  type LogtoUserClaims,
+} from "./claims";
+export {
+  assertOrganizationMember,
+  assertOrganizationRole,
+  logtoOrganizationRoles,
+  logtoOrganizations,
+  type LogtoIdentityCtx,
+} from "./organizations";
+export {
   logtoAuthConfig,
   logtoConfigQuery,
   type LogtoAuthConfigOptions,

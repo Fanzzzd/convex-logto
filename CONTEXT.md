@@ -60,7 +60,14 @@ A Logto grouping that a Subject may belong to many of, each carrying its own rol
 _Avoid_: tenant, workspace, team (those are the *application's* words for whatever it maps an Organization onto)
 
 **Organization membership**:
-The list of Organizations a Subject belongs to. It travels in the Short bearer as an `organizations` claim, so it is readable wherever the Short bearer is.
+The list of Organizations a Subject belongs to. It travels in the Short bearer as an `organizations` claim, so it is readable wherever the Short bearer is — including inside Convex functions, which pass unrecognised claims through.
+
+**Organization role**:
+A named role a Subject holds within one Organization. Like membership it travels in the Short bearer, as an `organization_roles` claim. Distinct from an Organization permission, which travels only in an Organization token.
+
+**Organization permission**:
+A fine-grained capability within one Organization. The only part of Logto's organization model that the Short bearer cannot carry.
+_Avoid_: organization scope (that is the OIDC-level word for how it is requested, not for the thing)
 
 **Organization token**:
 A resource-scoped access token for one Organization, audienced to that Organization rather than to the application. Convex cannot accept it: it is not the Short bearer. Distinct from Organization membership, which needs no token at all.

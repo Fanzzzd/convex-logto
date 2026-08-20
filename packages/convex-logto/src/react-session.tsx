@@ -25,6 +25,7 @@ import {
   type TokenStorageKind,
 } from "./session-client";
 import { defaultSessionTransport } from "./session-transport";
+import type { LogtoUserClaims } from "./claims";
 import type { LogtoAuthEventHandler } from "./auth-events";
 import { createSessionDeviceBinding } from "./session-device";
 import {
@@ -421,7 +422,7 @@ export type LogtoSessionAuth = {
   isAuthenticated: boolean;
   isLoading: boolean;
   /** Decoded ID token claims (sub, email, name, ...), once authenticated. Display only. */
-  user: Record<string, unknown> | undefined;
+  user: LogtoUserClaims | undefined;
   /**
    * Start sign-in: one round-trip to mint the sign-in URL, then a full-page
    * redirect to Logto and back to the provider's `callbackPath`. `returnTo`

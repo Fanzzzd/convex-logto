@@ -28,7 +28,7 @@ description: Every export from convex-logto and its web, native, and session-mod
 | `ConvexLogtoSessionProvider` | `convex-logto/react-session` | Session mode's provider — no Logto SDK; talks to your `logtoSessionApi` functions. |
 | `useLogtoAuth()` | `convex-logto/react-session` | Session auth plus `signOutEverywhere({ postLogoutRedirectUri? })` and `listSessions()` / `renameSession()` / `revokeSession()`. |
 | `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `config` / `configQuery` model; no callback route. |
-| `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signOut()` takes no argument. |
+| `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signIn({ redirectUri? })` / `signOut({ postLogoutRedirectUri? })`. |
 | `ConvexLogtoSessionProvider` | `convex-logto/native-session` | React Native / Expo session provider using SecureStore + the system browser. |
 | `useLogtoAuth()` | `convex-logto/native-session` | Native session `{ isAuthenticated, isLoading, user, signIn, completeSignIn, signOut, signOutEverywhere, listSessions, renameSession, revokeSession }`; no device-binding surface. |
 
@@ -288,8 +288,9 @@ const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
 `signIn({ returnTo })` starts sign-in and lands the user on `returnTo` after it
 completes — a same-origin path starting with `/` (anything else is rejected, to
 prevent open redirects). Without `returnTo`, the provider's `afterSignIn` is
-used. `signIn(redirectUri: string)` is **deprecated**: set `callbackPath` on the
-provider instead if your callback route isn't `/callback`. Failures reach
+used. (The 0.5.x `signIn(redirectUri: string)` overload is **gone** in 0.6: a
+redirect URI whose path was not `callbackPath` produced a sign-in nothing
+handled. Set `callbackPath` on the provider instead.) Failures reach
 `onAuthError` and the console either way — including the ones `@logto/react`
 catches into SDK state and never rejects with. The ones it does reject with are
 reported first and then rethrown, so a fire-and-forget call wants a handler:
@@ -504,9 +505,10 @@ and resolves when the deep link returns.
 
 ### `useLogtoAuth()` (native)
 
-Returns `{ isAuthenticated, isLoading, user, signIn, signOut }`. `signIn(redirectUri?)`
-defaults to the provider's `redirectUri`; **`signOut()` takes no argument** — on native
-it revokes the tokens and clears local storage (no browser / federated sign-out).
+Returns `{ isAuthenticated, isLoading, user, signIn, signOut }`.
+`signIn({ redirectUri? })` defaults to the provider's `redirectUri`;
+`signOut({ postLogoutRedirectUri? })` revokes the tokens and clears local storage
+(no browser / federated sign-out on native).
 Both report a failure to the provider's `onAuthError`, and to the console,
 **before** rejecting — so a failure in an `onPress` is observable rather than
 silent. The promise still rejects: `void signIn().catch(() => {})` if you do not
