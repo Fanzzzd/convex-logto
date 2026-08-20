@@ -9,9 +9,18 @@
 //
 // Zero dependencies: `node e2e/provision.mjs`.
 //
-//   LOGTO_ENDPOINT         https://auth.example.com
+//   LOGTO_ENDPOINT         https://auth.example.com — also serves /api
 //   LOGTO_M2M_APP_ID       a Machine-to-Machine app with the Management API role
 //   LOGTO_M2M_APP_SECRET
+//
+// Optional: LOGTO_ADMIN_ENDPOINT. A self-hosted Logto with the admin console
+// enabled runs *two* OIDC issuers: the tenant one at LOGTO_ENDPOINT, and the
+// admin console's own. The built-in `m-default` Management API client exists
+// only in the admin tenant, so its token has to be requested from the admin
+// issuer even though the Management API itself is served from LOGTO_ENDPOINT.
+// Asking the wrong issuer answers `invalid_client`, which reads like a wrong
+// secret and is not. Defaults to LOGTO_ENDPOINT, which is right for Logto Cloud
+// and for an M2M app you created yourself in the tenant.
 //
 // Optional: E2E_SPA_ORIGIN (default http://localhost:5173),
 //           E2E_WEB_ORIGIN (default http://localhost:5174).
@@ -19,6 +28,10 @@
 import { writeFileSync } from "node:fs";
 
 const endpoint = required("LOGTO_ENDPOINT").replace(/\/+$/, "");
+const adminEndpoint = (process.env.LOGTO_ADMIN_ENDPOINT ?? endpoint).replace(
+  /\/+$/,
+  "",
+);
 const m2mId = required("LOGTO_M2M_APP_ID");
 const m2mSecret = required("LOGTO_M2M_APP_SECRET");
 
@@ -57,7 +70,7 @@ function argValue(flag) {
 
 /** Management API access token, via client credentials. */
 async function accessToken() {
-  const res = await fetch(`${endpoint}/oidc/token`, {
+  const res = await fetch(`${adminEndpoint}/oidc/token`, {
     method: "POST",
     headers: {
       Authorization: `Basic ${btoa(`${m2mId}:${m2mSecret}`)}`,
@@ -70,8 +83,15 @@ async function accessToken() {
     }),
   });
   if (!res.ok) {
+    const body = await res.text();
     throw new Error(
-      `Management API token request failed (${res.status}): ${await res.text()}`,
+      `Management API token request failed (${res.status}) at ` +
+        `${adminEndpoint}/oidc/token: ${body}` +
+        (body.includes("invalid_client") && adminEndpoint === endpoint
+          ? "\nA self-hosted Logto issues Management API tokens from the admin " +
+            "console's OIDC endpoint, not the tenant one. If the secret is right, " +
+            "set LOGTO_ADMIN_ENDPOINT to the admin console origin and retry."
+          : ""),
     );
   }
   const body = await res.json();
@@ -202,7 +222,11 @@ async function clientSecret(call, applicationId, name) {
 }
 
 const call = api(await accessToken());
-console.error(`provisioning against ${endpoint} …`);
+console.error(
+  `provisioning against ${endpoint}` +
+    (adminEndpoint === endpoint ? "" : ` (tokens from ${adminEndpoint})`) +
+    " …",
+);
 
 const spa = await ensureApplication(call, {
   name: SPA_NAME,

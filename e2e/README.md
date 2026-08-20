@@ -30,6 +30,16 @@ export E2E_USER_PASSWORD=...      # you choose it; the script never invents one
 node provision.mjs
 ```
 
+If that fails with `invalid_client`, the secret is probably fine and the *issuer*
+is wrong. A self-hosted Logto with the admin console enabled runs two OIDC
+issuers, and the built-in `m-default` client exists only in the admin one — while
+the Management API it grants access to is served from `LOGTO_ENDPOINT`. Point the
+token request at the admin console and keep the API where it is:
+
+```bash
+export LOGTO_ADMIN_ENDPOINT=https://admin.example.com
+```
+
 Find-or-create, and it *repairs* — an app that exists but has lost a redirect URI
 is the failure that actually happens (a port changes, someone edits the console),
 and it presents as an opaque HTTP 400 from `/oidc/auth`. Running it twice is safe.
