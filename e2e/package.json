@@ -1,0 +1,14 @@
+{
+  "name": "convex-logto-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Live end-to-end checks against a real Logto. Not part of the workspace or CI.",
+  "scripts": {
+    "provision": "node provision.mjs",
+    "session-flow": "node session-flow.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.56.0"
+  }
+}
