@@ -481,7 +481,9 @@ export type LogtoSessionAuth = {
   revokeSession: (targetSessionId: string) => Promise<void>;
   /**
    * The current ID token — the Short bearer Convex validates. `null` when
-   * signed out or when the stored one has aged out.
+   * signed out, when the stored one has aged out, or while the engine is still
+   * restoring — so read it under `isAuthenticated`, which is false until the
+   * restore finishes.
    */
   getIdToken: () => string | null;
   /**

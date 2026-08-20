@@ -139,6 +139,8 @@ export const {
   listSessions,
   renameSession,
   revokeSession,
+  exchangeToken,
+  fetchUserInfo,
   sessionValid,
 } = logtoSessionApi(components.logto);
 ```
@@ -146,11 +148,15 @@ export const {
 Options: `scopes` (server-configured — the browser can't request its own),
 `reuseWindowMs` (default 10s), `endpoint` / `appId` / `clientSecret` env
 overrides, and the same narrowly scoped `allowInsecureHttp` compatibility escape
-hatch described above. `resources` **currently buys nothing** here: the component
-holds the refresh token and hands the browser only the ID token, so the access
-token a resource indicator requests is discarded — while a resource Logto does
-not have registered breaks sign-in outright. Leave it unset. (In bridge mode it
-works — the Logto SDK owns the tokens and exposes `getAccessToken()`.)
+hatch described above.
+
+`resources` is the input to
+[the token exchange](#organization-and-api-resource-tokens): Logto refuses to
+issue a token for a resource the grant never named, so the set is fixed before
+sign-in and every indicator must be registered — an unregistered one breaks
+sign-in outright. The scopes you want *from* those resources go in `scopes`;
+naming the resource alone yields a token with none. `exposeAccessTokens` lets
+the token string reach the browser at all, and is off by default.
 
 `signOutEverywhere({ sessionToken, postLogoutRedirectUri? })` derives the subject
 inside the component and atomically records subject-wide logical revocation.
@@ -203,13 +209,14 @@ as a standard `(Request) => Promise<Response>` handler. Options are:
   cookie during render can still read an identity. See
   [`readLogtoIdTokenCookie`](#readlogtoidtokencookiesource).
 
-The five final path segments are `sign-in`, `callback`, `token`, `sign-out`, and
-`sessions`.
+The six final path segments are `sign-in`, `callback`, `token`, `sign-out`,
+`sessions`, and `tokens`.
 Actual calls require POST, `x-convex-logto-csrf: 1`, and an allowed `Origin`;
 approved preflights receive credentialed CORS headers. Bodies are streamed
 through a 64 KiB limit; oversized requests return `413`. `signOutEverywhere` uses
 an internal selector on the existing `sign-out` route rather than a route of its
-own; `sessions` multiplexes `list` / `rename` / `revoke` on an `op` field the same
+own; `sessions` multiplexes `list` / `rename` / `revoke`, and `tokens`
+multiplexes `exchange` / `userinfo`, on an `op` field the same
 way. The `sessions` route never clears the cookie — revoking another device must
 not sign this one out. The cookie is fixed to
 `__Host-convex-logto-session=<encoded-token>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=16416000`

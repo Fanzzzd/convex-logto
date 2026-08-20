@@ -1382,7 +1382,13 @@ export class SessionAuthEngine {
    * Read from storage rather than the snapshot: the snapshot is what React
    * rendered, and a rotation that landed since the last render is already in
    * storage. Returns `null` when signed out, or when the stored token has aged
-   * out; call `refresh()`-driven flows (any Convex call) to mint a fresh one.
+   * out; any Convex call mints a fresh one.
+   *
+   * Synchronous, which is what makes it usable in a render — and the reason it
+   * has one caveat. On React Native the SecureStore-backed adapter reads as
+   * empty until it has hydrated, so a call made while the engine is still
+   * `restoring` answers `null` even though a live token exists. Gate on
+   * `isAuthenticated` (false during restore) and that window is unreachable.
    */
   getIdToken(): string | null {
     const cached = this.options.storage.readIdToken();
