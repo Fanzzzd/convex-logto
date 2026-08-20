@@ -95,12 +95,15 @@ export const {
   listSessions,
   renameSession,
   revokeSession,
+  exchangeToken,
+  fetchUserInfo,
   sessionValid,
 } = logtoSessionApi(components.logto);
 ```
 
-Re-export all nine with these exact names — the provider looks them up on the
-module you pass it.
+Re-export all eleven with these exact names — the provider looks them up on the
+module you pass it. A missing one disables that feature with a named error
+rather than failing the build, so a rolling upgrade is safe.
 
 ### 5. Mount the provider
 
@@ -187,7 +190,7 @@ configured Logto TTL.
 
 If an older `convex/auth.ts` has not re-exported `signOutEverywhere`, the
 provider rejects with an explicit upgrade message instead of exposing a
-cryptic missing-function response. Re-export the nine-function set shown above
+cryptic missing-function response. Re-export the eleven-function set shown above
 and deploy the Convex functions.
 
 ## Where am I signed in
@@ -661,9 +664,45 @@ rejects the response and leaves uncommitted remote credentials unreachable.
 | `onAuthError` | — | Sign-in initiation and callback failures, plus opted-in device-key storage failures. Initiation failures are reported before `signIn()` rejects, so `void signIn()` remains observable. |
 
 `logtoSessionApi(component, opts?)` accepts `scopes` (server-set — the browser
-can't request its own), `reuseWindowMs`, and env overrides. `resources` currently
-buys nothing in session mode: only the ID token reaches the browser, so the
-access token it requests is discarded.
+can't request its own), `reuseWindowMs`, env overrides, and two options that
+belong to the token exchange below: `resources` (API resource indicators, which
+Logto requires *before* sign-in) and `exposeAccessTokens`.
+
+## Organization and API-resource tokens
+
+Organization membership and roles need nothing here: Logto puts them in the ID
+token, so `user.organizations` and `user.organization_roles` are already in
+every authenticated request, and
+[`assertOrganizationRole`](/docs/api-reference#organization-authorization)
+reads them server-side for free.
+
+What does need a token is a fine-grained organization **permission**, or a
+non-Convex API you registered with Logto. The component mints those from the
+Session's Logto refresh token and returns **what they authorize**:
+
+```ts
+const { getOrganizationTokenClaims, fetchUserInfo } = useLogtoAuth();
+
+const { scopes } = await getOrganizationTokenClaims("org-id");
+```
+
+Set `exposeAccessTokens: true` on `logtoSessionApi()` if a caller genuinely
+needs the token *string* in the browser — `getOrganizationToken(id)` and
+`getAccessToken(resource)` then return it, and it becomes one more thing XSS can
+steal. The refresh token has no such option in either mode.
+
+Two constraints worth knowing before you design around it:
+
+- **A resource must be named before sign-in.** Logto answers `invalid_target` for
+  a resource the grant never mentioned, so `resources` is fixed at sign-in and
+  widening it means signing the user in again.
+- **The exchange shares the refresh claim**, because it spends the same Logto
+  refresh token — so it can answer the transient `refresh_in_flight` while a
+  refresh is in flight. Minted tokens are cached per session, audience and scope
+  set, so a permission check on render is not a grant per render.
+
+<Callout>Bridge mode already has all of this: `@logto/react`'s `useLogto()` is
+in your bundle, so call `getOrganizationToken` on it directly.</Callout>
 
 ## Choosing a mode
 

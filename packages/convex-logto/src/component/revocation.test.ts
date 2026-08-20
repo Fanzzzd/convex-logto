@@ -186,7 +186,10 @@ describe("bounded session revocation", () => {
                 },
               };
             }
-            if (table === "sessionTokenGenerations") {
+            if (
+              table === "sessionTokenGenerations" ||
+              table === "resourceTokens"
+            ) {
               return { collect: () => Promise.resolve([]) };
             }
             return {
@@ -243,8 +246,9 @@ describe("bounded session revocation", () => {
             };
           }
           if (
-            table === "sessionTokenGenerations" &&
-            index === "by_sessionId_rotatedAt"
+            (table === "sessionTokenGenerations" &&
+              index === "by_sessionId_rotatedAt") ||
+            (table === "resourceTokens" && index === "by_sessionId_mintedAt")
           ) {
             return { collect: () => Promise.resolve([]) };
           }

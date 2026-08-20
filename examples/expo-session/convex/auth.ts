@@ -1,4 +1,4 @@
-// The whole server side of session mode: nine public functions backed by the
+// The whole server side of session mode: eleven public functions backed by the
 // Logto session component. The native provider expects these exact names, and
 // they are the same functions the web session example re-exports — one server
 // surface for both platforms.
@@ -14,5 +14,7 @@ export const {
   listSessions,
   renameSession,
   revokeSession,
+  exchangeToken,
+  fetchUserInfo,
   sessionValid,
 } = logtoSessionApi(components.logto);

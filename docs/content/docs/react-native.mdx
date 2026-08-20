@@ -175,7 +175,7 @@ Everything else — `logtoAuthConfig`, `logtoConfigQuery`, the webhook
 ## Native session mode
 
 Use **`convex-logto/native-session`** when the Logto refresh token should remain
-inside the Convex session component. The server setup and nine public functions
+inside the Convex session component. The server setup and eleven public functions
 are the same as [web session mode](/docs/session-mode); only the storage and
 OAuth adapters differ on the device.
 
@@ -201,7 +201,7 @@ in both lists:
 Keep the `"scheme": "io.logto"` app configuration shown above. As with web
 session mode, set `LOGTO_ENDPOINT`, `LOGTO_APP_ID`, and
 `LOGTO_CLIENT_SECRET` on the Convex deployment, install the component, and
-export all nine functions:
+export all eleven functions:
 
 ```ts title="convex/convex.config.ts"
 import { defineApp } from "convex/server";
@@ -225,6 +225,8 @@ export const {
   listSessions,
   renameSession,
   revokeSession,
+  exchangeToken,
+  fetchUserInfo,
   sessionValid,
 } = logtoSessionApi(components.logto);
 ```
@@ -325,7 +327,7 @@ Logto browser session.
 | Software device binding | optional on web | intentionally absent; SecureStore uses the OS keystore |
 
 Full runnable app: [`examples/expo-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo-session)
-— the native counterpart of `vite-react-session`, with the same nine-function
+— the native counterpart of `vite-react-session`, with the same eleven-function
 `convex/auth.ts`, a device list, and a side-by-side comparison against the
 bridge-mode [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo).
 

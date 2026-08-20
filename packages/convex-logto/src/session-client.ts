@@ -27,6 +27,7 @@ import {
   type SessionDeviceBinding,
 } from "./session-device";
 import type {
+  LogtoResourceTokenClaims,
   LogtoSessionApi,
   LogtoSessionClientDescriptor,
   LogtoSessionSummary,
@@ -1373,6 +1374,132 @@ export class SessionAuthEngine {
     await this.callSessionAction("revokeSession", () =>
       this.options.transport.action(action, { ...credential, targetSessionId }),
     );
+  }
+
+  /**
+   * The current ID token — the Short bearer Convex validates.
+   *
+   * Read from storage rather than the snapshot: the snapshot is what React
+   * rendered, and a rotation that landed since the last render is already in
+   * storage. Returns `null` when signed out, or when the stored token has aged
+   * out; call `refresh()`-driven flows (any Convex call) to mint a fresh one.
+   */
+  getIdToken(): string | null {
+    const cached = this.options.storage.readIdToken();
+    return cached !== null && this.isFresh(cached) ? cached : null;
+  }
+
+  /**
+   * What an Organization token authorizes, without the token itself.
+   *
+   * Membership and organization *roles* do not need this — Logto puts them in
+   * the ID token, so `user.organizations` and `user.organization_roles` are
+   * already there and cost nothing. Reach for this only for fine-grained
+   * organization **permissions**, which Logto issues nowhere else.
+   */
+  async getOrganizationTokenClaims(
+    organizationId: string,
+    scopes?: string[],
+  ): Promise<LogtoResourceTokenClaims> {
+    return (await this.exchange({ organizationId, scopes })).claims;
+  }
+
+  /**
+   * What a Resource token authorizes, without the token itself.
+   *
+   * The resource must be in `resources` on `logtoSessionApi()`: Logto will not
+   * issue a token for a resource the grant never named.
+   */
+  async getAccessTokenClaims(
+    resource: string,
+    scopes?: string[],
+  ): Promise<LogtoResourceTokenClaims> {
+    return (await this.exchange({ resource, scopes })).claims;
+  }
+
+  /**
+   * The Organization token *string*.
+   *
+   * Available only where the deployment passed `exposeAccessTokens: true`;
+   * otherwise this rejects with a terminal error naming the option, rather than
+   * returning claims and letting the missing credential surface as an
+   * authorization failure somewhere else. Prefer
+   * {@link getOrganizationTokenClaims} — a token in `window` is one more thing
+   * XSS can steal.
+   */
+  async getOrganizationToken(
+    organizationId: string,
+    scopes?: string[],
+  ): Promise<string> {
+    return this.requireToken(
+      await this.exchange({ organizationId, scopes, includeToken: true }),
+    );
+  }
+
+  /** The Resource token *string*, under the same `exposeAccessTokens` gate. */
+  async getAccessToken(resource: string, scopes?: string[]): Promise<string> {
+    return this.requireToken(
+      await this.exchange({ resource, scopes, includeToken: true }),
+    );
+  }
+
+  /**
+   * Logto's `/oidc/me`, fetched by the component.
+   *
+   * A round trip, unlike `user`: this is the live profile from Logto rather
+   * than the copy the last ID token froze. Use it after a profile edit.
+   */
+  async fetchUserInfo(): Promise<unknown> {
+    const action = this.options.api.fetchUserInfo;
+    if (action === undefined) throw sessionApiUpgradeError("fetchUserInfo");
+    const credential = await this.sessionCallCredential("fetchUserInfo");
+    return await this.callSessionAction("fetchUserInfo", () =>
+      this.options.transport.action(action, credential),
+    );
+  }
+
+  private async exchange(args: {
+    organizationId?: string;
+    resource?: string;
+    scopes?: string[];
+    includeToken?: boolean;
+  }): Promise<{
+    claims: LogtoResourceTokenClaims;
+    accessToken?: string;
+    minted: boolean;
+  }> {
+    const action = this.options.api.exchangeToken;
+    if (action === undefined) throw sessionApiUpgradeError("exchangeToken");
+    const credential = await this.sessionCallCredential("exchangeToken");
+    return await this.callSessionAction("exchangeToken", () =>
+      this.options.transport.action(action, {
+        ...credential,
+        ...(args.organizationId === undefined
+          ? {}
+          : { organizationId: args.organizationId }),
+        ...(args.resource === undefined ? {} : { resource: args.resource }),
+        ...(args.scopes === undefined ? {} : { scopes: args.scopes }),
+        ...(args.includeToken === undefined
+          ? {}
+          : { includeToken: args.includeToken }),
+      }),
+    );
+  }
+
+  /**
+   * The server refuses `includeToken` when the deployment did not opt in, so
+   * this only fires for a component that answered without one anyway. Still an
+   * error rather than an empty string: every caller here is about to put the
+   * value in an `Authorization` header.
+   */
+  private requireToken(result: { accessToken?: string }): string {
+    if (result.accessToken === undefined) {
+      throw new Error(
+        "convex-logto: the deployment did not return an access token. Pass " +
+          "`exposeAccessTokens: true` to logtoSessionApi() to allow it.",
+      );
+    }
+    return result.accessToken;
   }
 
   /**
