@@ -179,3 +179,173 @@ describe("logtoSessionApi signOut", () => {
     });
   });
 });
+
+describe("logtoSessionApi exchangeToken", () => {
+  const action = { fn: "exchangeToken" };
+  const component = {
+    lib: { exchangeToken: action },
+  } as unknown as LogtoSessionComponent;
+
+  type Handler = (
+    ctx: { runAction: ReturnType<typeof vi.fn> },
+    args: {
+      sessionToken: string;
+      deviceProof?: string;
+      organizationId?: string;
+      resource?: string;
+      scopes?: string[];
+      includeToken?: boolean;
+    },
+  ) => Promise<{
+    claims: { audience: string; scopes: string[]; expiresAt: number };
+    accessToken?: string;
+    minted: boolean;
+  }>;
+
+  function handlerFor(options: Record<string, unknown> = {}) {
+    const api = logtoSessionApi(component, {
+      endpoint: "https://auth.example.com",
+      appId: "app-1",
+      clientSecret: "secret",
+      ...options,
+    });
+    return (api.exchangeToken as unknown as Record<string, Handler>)[
+      "_handler"
+    ]!;
+  }
+
+  it("forwards the target and the deployment's reuse policy", async () => {
+    const runAction = vi.fn().mockResolvedValue({
+      claims: {
+        audience: "organization:org-1",
+        scopes: ["manage"],
+        expiresAt: 5_000_000,
+      },
+      minted: true,
+    });
+
+    await handlerFor({ reuseWindowMs: 321 })(
+      { runAction },
+      {
+        sessionToken: "session-token",
+        deviceProof: "proof",
+        organizationId: "org-1",
+        scopes: ["manage"],
+      },
+    );
+
+    expect(runAction).toHaveBeenCalledWith(action, {
+      endpoint: "https://auth.example.com",
+      appId: "app-1",
+      clientSecret: "secret",
+      sessionToken: "session-token",
+      deviceProof: "proof",
+      organizationId: "org-1",
+      resource: undefined,
+      scopes: ["manage"],
+      includeToken: undefined,
+      reuseWindowMs: 321,
+    });
+  });
+
+  it("refuses to hand back a token string unless the deployment opted in", async () => {
+    // Refusing beats silently returning claims: the caller is about to put the
+    // value in an Authorization header, and `undefined` would surface as an
+    // authorization failure somewhere else entirely.
+    const runAction = vi.fn();
+    await expect(
+      handlerFor()(
+        { runAction },
+        {
+          sessionToken: "session-token",
+          organizationId: "org-1",
+          includeToken: true,
+        },
+      ),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "access_tokens_not_exposed" },
+    });
+    expect(runAction).not.toHaveBeenCalled();
+  });
+
+  it("allows the token string once exposeAccessTokens is set", async () => {
+    const runAction = vi.fn().mockResolvedValue({
+      claims: {
+        audience: "resource:https://api.example.com",
+        scopes: ["read"],
+        expiresAt: 5_000_000,
+      },
+      accessToken: "minted",
+      minted: true,
+    });
+
+    const result = await handlerFor({ exposeAccessTokens: true })(
+      { runAction },
+      {
+        sessionToken: "session-token",
+        resource: "https://api.example.com",
+        includeToken: true,
+      },
+    );
+
+    expect(result.accessToken).toBe("minted");
+    expect(runAction).toHaveBeenCalledWith(
+      action,
+      expect.objectContaining({ includeToken: true }),
+    );
+  });
+
+  it("serves claims without the opt-in, which is the default custody", async () => {
+    const runAction = vi.fn().mockResolvedValue({
+      claims: {
+        audience: "organization:org-1",
+        scopes: ["manage"],
+        expiresAt: 5_000_000,
+      },
+      minted: false,
+    });
+
+    const result = await handlerFor()(
+      { runAction },
+      { sessionToken: "session-token", organizationId: "org-1" },
+    );
+
+    expect(result).toEqual({
+      claims: {
+        audience: "organization:org-1",
+        scopes: ["manage"],
+        expiresAt: 5_000_000,
+      },
+      minted: false,
+    });
+  });
+});
+
+describe("logtoSessionApi exchangeToken targets", () => {
+  it("refuses a target-free call before it becomes a component round trip", async () => {
+    const action = { fn: "exchangeToken" };
+    const component = {
+      lib: { exchangeToken: action },
+    } as unknown as LogtoSessionComponent;
+    const api = logtoSessionApi(component, {
+      endpoint: "https://auth.example.com",
+      appId: "app-1",
+      clientSecret: "secret",
+    });
+    const runAction = vi.fn();
+    type Handler = (
+      ctx: { runAction: typeof runAction },
+      args: { sessionToken: string },
+    ) => Promise<unknown>;
+    const handler = (api.exchangeToken as unknown as Record<string, Handler>)[
+      "_handler"
+    ]!;
+
+    await expect(
+      handler({ runAction }, { sessionToken: "session-token" }),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "missing_token_target" },
+    });
+    expect(runAction).not.toHaveBeenCalled();
+  });
+});

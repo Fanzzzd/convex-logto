@@ -67,6 +67,48 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         Name
       >;
+      exchangeToken: FunctionReference<
+        "action",
+        "internal",
+        {
+          appId: string;
+          clientSecret: string;
+          deviceProof?: string;
+          endpoint: string;
+          includeToken?: boolean;
+          organizationId?: string;
+          resource?: string;
+          reuseWindowMs?: number;
+          scopes?: Array<string>;
+          sessionToken: string;
+        },
+        {
+          accessToken?: string;
+          claims: {
+            audience: string;
+            expiresAt: number;
+            organizationId?: string;
+            resource?: string;
+            scopes: Array<string>;
+          };
+          minted: boolean;
+        },
+        Name
+      >;
+      fetchUserInfo: FunctionReference<
+        "action",
+        "internal",
+        {
+          appId: string;
+          clientSecret: string;
+          deviceProof?: string;
+          endpoint: string;
+          reuseWindowMs?: number;
+          sessionToken: string;
+        },
+        any,
+        Name
+      >;
       forgetWebhookDelivery: FunctionReference<
         "mutation",
         "internal",

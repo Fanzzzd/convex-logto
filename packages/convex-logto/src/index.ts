@@ -38,6 +38,7 @@ export {
   assertSubjectHasActiveSession,
   assertUserHasActiveSession,
   logtoSessionApi,
+  type LogtoResourceTokenClaims,
   type LogtoSessionApi,
   type LogtoSessionApiOptions,
   type LogtoSessionClientDescriptor,

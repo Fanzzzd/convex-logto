@@ -8,6 +8,7 @@ import type { SessionTransport, StoredSession } from "./session-client";
 import type {
   LogtoSessionApi,
   LogtoSessionClientDescriptor,
+  LogtoResourceTokenClaims,
   LogtoSessionSummary,
 } from "./session";
 
@@ -120,10 +121,18 @@ type SessionError = {
   message: string;
 };
 
-type CookieRoute = "sign-in" | "callback" | "token" | "sign-out" | "sessions";
+type CookieRoute =
+  | "sign-in"
+  | "callback"
+  | "token"
+  | "sign-out"
+  | "sessions"
+  | "tokens";
 
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" } as const;
 const MAX_COOKIE_BODY_BYTES = 64 * 1024;
+/** Mirrors the component's `TOKEN_SCOPE_MAX_COUNT`. */
+const MAX_COOKIE_SCOPE_COUNT = 32;
 const MAX_COOKIE_RESPONSE_BYTES = 256 * 1024;
 const COOKIE_TRANSPORT_TIMEOUT_MS = 10 * 1000;
 
@@ -137,7 +146,8 @@ function isCookieRoute(value: string): value is CookieRoute {
     value === "callback" ||
     value === "token" ||
     value === "sign-out" ||
-    value === "sessions"
+    value === "sessions" ||
+    value === "tokens"
   );
 }
 
@@ -531,6 +541,30 @@ function optionalDisplayString(
   return trimmed === "" ? undefined : trimmed;
 }
 
+/**
+ * A list of short strings — OIDC scopes. Bounded here as well as in the
+ * component: this route is same-site and unauthenticated by anything but the
+ * cookie, so it should not be the one place a caller can post an unbounded
+ * array.
+ */
+function optionalStringArray(
+  body: Record<string, unknown>,
+  name: string,
+): string[] | undefined {
+  const value = body[name];
+  if (value === undefined) return undefined;
+  if (
+    !Array.isArray(value) ||
+    value.length > MAX_COOKIE_SCOPE_COUNT ||
+    value.some((entry) => typeof entry !== "string")
+  ) {
+    throw new RequestValidationError(
+      `${name} must be an array of at most ${MAX_COOKIE_SCOPE_COUNT} strings when provided`,
+    );
+  }
+  return value;
+}
+
 function optionalBoolean(
   body: Record<string, unknown>,
   name: string,
@@ -801,6 +835,61 @@ export function createLogtoSessionCookieHandler(
             }
             return actionErrorResponse(error, origin, headers);
           }
+        }
+        case "tokens": {
+          // The exchange authenticates with the same cookie every other route
+          // uses; the session token never leaves the server here either.
+          const sessionToken = readCookie(request);
+          if (sessionToken === null) {
+            throw new ConvexError({
+              kind: "terminal" as const,
+              code: "session_cookie_missing",
+              message: "No session cookie is present. Sign in again.",
+            });
+          }
+          const op = requiredString(body, "op");
+          if (op === "exchange") {
+            const exchangeToken = options.sessionApi.exchangeToken;
+            if (exchangeToken === undefined) {
+              return sessionManagementUnavailable("exchangeToken", origin);
+            }
+            const organizationId = optionalDisplayString(
+              body,
+              "organizationId",
+            );
+            const resource = optionalDisplayString(body, "resource");
+            const scopes = optionalStringArray(body, "scopes");
+            const includeToken = optionalBoolean(body, "includeToken");
+            return jsonResponse(
+              await options.action(exchangeToken, {
+                sessionToken,
+                ...(organizationId === undefined ? {} : { organizationId }),
+                ...(resource === undefined ? {} : { resource }),
+                ...(scopes === undefined ? {} : { scopes }),
+                // Forwarded as asked. Whether it is *allowed* is the app
+                // action's decision (`exposeAccessTokens` on
+                // `logtoSessionApi`), and duplicating that gate here would
+                // give the same policy two places to disagree.
+                ...(includeToken === undefined ? {} : { includeToken }),
+              }),
+              {},
+              origin,
+            );
+          }
+          if (op === "userinfo") {
+            const fetchUserInfo = options.sessionApi.fetchUserInfo;
+            if (fetchUserInfo === undefined) {
+              return sessionManagementUnavailable("fetchUserInfo", origin);
+            }
+            return jsonResponse(
+              await options.action(fetchUserInfo, { sessionToken }),
+              {},
+              origin,
+            );
+          }
+          throw new RequestValidationError(
+            "op must be one of exchange, userinfo",
+          );
         }
         case "sessions": {
           const sessionToken = readCookie(request);
@@ -1170,6 +1259,68 @@ function readOptionalLabel(args: unknown): string | undefined {
   return value.trim() === "" ? undefined : value;
 }
 
+function readExchangeArgs(args: Record<string, unknown>): {
+  organizationId?: string;
+  resource?: string;
+  scopes?: string[];
+  includeToken?: boolean;
+} {
+  const organizationId = args["organizationId"];
+  const resource = args["resource"];
+  const scopes = args["scopes"];
+  const includeToken = args["includeToken"];
+  return {
+    ...(typeof organizationId === "string" ? { organizationId } : {}),
+    ...(typeof resource === "string" ? { resource } : {}),
+    ...(Array.isArray(scopes) &&
+    scopes.every((entry) => typeof entry === "string")
+      ? { scopes }
+      : {}),
+    ...(typeof includeToken === "boolean" ? { includeToken } : {}),
+  };
+}
+
+function parseExchangeTokenResponse(value: unknown): {
+  claims: LogtoResourceTokenClaims;
+  accessToken?: string;
+  minted: boolean;
+} {
+  if (!isRecord(value) || typeof value.minted !== "boolean") {
+    throw invalidCookieResponse();
+  }
+  const claims: unknown = value.claims;
+  if (
+    !isRecord(claims) ||
+    typeof claims.audience !== "string" ||
+    typeof claims.expiresAt !== "number" ||
+    !Array.isArray(claims.scopes)
+  ) {
+    throw invalidCookieResponse();
+  }
+  const scopes: string[] = [];
+  for (const entry of claims.scopes) {
+    if (typeof entry !== "string") throw invalidCookieResponse();
+    scopes.push(entry);
+  }
+  return {
+    claims: {
+      audience: claims.audience,
+      expiresAt: claims.expiresAt,
+      scopes,
+      ...(typeof claims.organizationId === "string"
+        ? { organizationId: claims.organizationId }
+        : {}),
+      ...(typeof claims.resource === "string"
+        ? { resource: claims.resource }
+        : {}),
+    },
+    ...(typeof value.accessToken === "string"
+      ? { accessToken: value.accessToken }
+      : {}),
+    minted: value.minted,
+  };
+}
+
 function parseSessionListResponse(value: unknown): {
   sessions: LogtoSessionSummary[];
   truncated: boolean;
@@ -1277,6 +1428,14 @@ export function createLogtoSessionCookieTransport(
       sessionApi.revokeSession === undefined
         ? undefined
         : getFunctionName(sessionApi.revokeSession),
+    exchangeToken:
+      sessionApi.exchangeToken === undefined
+        ? undefined
+        : getFunctionName(sessionApi.exchangeToken),
+    fetchUserInfo:
+      sessionApi.fetchUserInfo === undefined
+        ? undefined
+        : getFunctionName(sessionApi.fetchUserInfo),
   };
 
   const post = async (route: CookieRoute, body: unknown): Promise<unknown> => {
@@ -1386,6 +1545,20 @@ export function createLogtoSessionCookieTransport(
           }),
           "revoked",
         );
+      }
+      if (
+        actionNames.exchangeToken !== undefined &&
+        actionName === actionNames.exchangeToken
+      ) {
+        return parseExchangeTokenResponse(
+          await post("tokens", { op: "exchange", ...readExchangeArgs(args) }),
+        );
+      }
+      if (
+        actionNames.fetchUserInfo !== undefined &&
+        actionName === actionNames.fetchUserInfo
+      ) {
+        return await post("tokens", { op: "userinfo" });
       }
       throw new Error(
         "convex-logto: the cookie transport received an unknown session action.",

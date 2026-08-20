@@ -34,6 +34,7 @@ import {
   type LogtoSessionCookieTransportOptions,
 } from "./session-cookie";
 import type {
+  LogtoResourceTokenClaims,
   LogtoSessionApi,
   LogtoSessionClientDescriptor,
   LogtoSessionSummary,
@@ -478,6 +479,50 @@ export type LogtoSessionAuth = {
    * Logto SSO cookie can start a new sign-in.
    */
   revokeSession: (targetSessionId: string) => Promise<void>;
+  /**
+   * The current ID token — the Short bearer Convex validates. `null` when
+   * signed out, when the stored one has aged out, or while the engine is still
+   * restoring — so read it under `isAuthenticated`, which is false until the
+   * restore finishes.
+   */
+  getIdToken: () => string | null;
+  /**
+   * What an Organization token authorizes, without the token itself.
+   *
+   * Membership and organization *roles* need none of this: Logto puts them in
+   * the ID token, so `user.organizations` and `user.organization_roles` are
+   * already here for free. This is for fine-grained organization
+   * **permissions**, which Logto issues nowhere but an Organization token.
+   */
+  getOrganizationTokenClaims: (
+    organizationId: string,
+    scopes?: string[],
+  ) => Promise<LogtoResourceTokenClaims>;
+  /**
+   * What a Resource token authorizes. The resource must be listed in
+   * `resources` on `logtoSessionApi()` — Logto will not issue a token for a
+   * resource the grant never named.
+   */
+  getAccessTokenClaims: (
+    resource: string,
+    scopes?: string[],
+  ) => Promise<LogtoResourceTokenClaims>;
+  /**
+   * The Organization token *string*, for a caller that must reach a non-Convex
+   * API from the browser. Rejects unless the deployment passed
+   * `exposeAccessTokens: true`.
+   */
+  getOrganizationToken: (
+    organizationId: string,
+    scopes?: string[],
+  ) => Promise<string>;
+  /** The Resource token *string*, under the same `exposeAccessTokens` gate. */
+  getAccessToken: (resource: string, scopes?: string[]) => Promise<string>;
+  /**
+   * Logto's live profile (`/oidc/me`), fetched by the component. A round trip,
+   * unlike `user`, which is the copy the last ID token froze.
+   */
+  fetchUserInfo: () => Promise<unknown>;
 };
 
 /**
@@ -520,6 +565,28 @@ export function useLogtoAuth(): LogtoSessionAuth {
     (targetSessionId: string) => engine.revokeSession(targetSessionId),
     [engine],
   );
+  const getIdToken = useCallback(() => engine.getIdToken(), [engine]);
+  const getOrganizationTokenClaims = useCallback(
+    (organizationId: string, scopes?: string[]) =>
+      engine.getOrganizationTokenClaims(organizationId, scopes),
+    [engine],
+  );
+  const getAccessTokenClaims = useCallback(
+    (resource: string, scopes?: string[]) =>
+      engine.getAccessTokenClaims(resource, scopes),
+    [engine],
+  );
+  const getOrganizationToken = useCallback(
+    (organizationId: string, scopes?: string[]) =>
+      engine.getOrganizationToken(organizationId, scopes),
+    [engine],
+  );
+  const getAccessToken = useCallback(
+    (resource: string, scopes?: string[]) =>
+      engine.getAccessToken(resource, scopes),
+    [engine],
+  );
+  const fetchUserInfo = useCallback(() => engine.fetchUserInfo(), [engine]);
   return useMemo(
     () => ({
       isAuthenticated,
@@ -531,6 +598,12 @@ export function useLogtoAuth(): LogtoSessionAuth {
       listSessions,
       renameSession,
       revokeSession,
+      getIdToken,
+      getOrganizationTokenClaims,
+      getAccessTokenClaims,
+      getOrganizationToken,
+      getAccessToken,
+      fetchUserInfo,
     }),
     [
       isAuthenticated,
@@ -542,6 +615,12 @@ export function useLogtoAuth(): LogtoSessionAuth {
       listSessions,
       renameSession,
       revokeSession,
+      getIdToken,
+      getOrganizationTokenClaims,
+      getAccessTokenClaims,
+      getOrganizationToken,
+      getAccessToken,
+      fetchUserInfo,
     ],
   );
 }
@@ -553,6 +632,7 @@ export type {
   LogtoAuthPhase,
 } from "./auth-events";
 export type {
+  LogtoResourceTokenClaims,
   LogtoSessionApi,
   LogtoSessionClientDescriptor,
   LogtoSessionSummary,

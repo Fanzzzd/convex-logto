@@ -13,6 +13,9 @@ import { internal } from "./_generated/api.js";
 import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import {
   DEFAULT_REUSE_WINDOW_MS,
+  MAX_CACHEABLE_ACCESS_TOKEN_LENGTH,
+  RESOURCE_TOKEN_CACHE_LIMIT,
+  RESOURCE_TOKEN_SKEW_MS,
   REVOCATION_MARKER_GC_AFTER_MS,
   SESSION_GC_AFTER_MS,
   SESSION_TOKEN_GENERATION_LIMIT,
@@ -25,6 +28,8 @@ import {
   buildAuthorizeUrl,
   buildEndSessionUrl,
   classifyTokenEndpointFailure,
+  accessTokenExpiresAt,
+  decideExchange,
   decideRefresh,
   decodeIdToken,
   generatePkce,
@@ -43,8 +48,11 @@ import {
   sessionReadCost,
   sessionReuseDetectedError,
   terminal,
+  tokenAudienceKey,
+  tokenScopeKey,
   transient,
   type DevicePublicKey,
+  type ResourceTokenClaims,
 } from "./core.js";
 import { buildLogtoEndpointUrl } from "./endpoint.js";
 import { readBoundedBody } from "./http_body.js";
@@ -239,6 +247,14 @@ async function deleteSessionWithGenerations(
     .withIndex("by_sessionId_rotatedAt", (q) => q.eq("sessionId", sessionId))
     .collect();
   for (const generation of generations) await db.delete(generation._id);
+  // Minted Organization / Resource tokens die with the session that authorized
+  // them. Bounded by RESOURCE_TOKEN_CACHE_LIMIT, so this stays a small, fixed
+  // amount of work inside a transaction that is already deleting rows.
+  const minted = await db
+    .query("resourceTokens")
+    .withIndex("by_sessionId_mintedAt", (q) => q.eq("sessionId", sessionId))
+    .collect();
+  for (const token of minted) await db.delete(token._id);
   await db.delete(sessionId);
 }
 
@@ -418,6 +434,8 @@ async function tokenEndpoint(
   id_token?: string;
   refresh_token?: string;
   access_token?: string;
+  expires_in?: number;
+  scope?: string;
 }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => {
@@ -476,13 +494,15 @@ async function tokenEndpoint(
       ...(typeof body.refresh_token === "string"
         ? { refresh_token: body.refresh_token }
         : {}),
-      // Read but never used: session mode exposes the ID token only, and the
-      // deprecated `resources` option is the one thing that would make this
-      // access token interesting. Kept so a future caller that needs it does
-      // not have to re-derive where it lives.
+      // The refresh path ignores these; the Organization / Resource token
+      // exchange is built on them.
       ...(typeof body.access_token === "string"
         ? { access_token: body.access_token }
         : {}),
+      ...(typeof body.expires_in === "number"
+        ? { expires_in: body.expires_in }
+        : {}),
+      ...(typeof body.scope === "string" ? { scope: body.scope } : {}),
     };
   } catch (error) {
     if (error instanceof ConvexError) throw error;
@@ -1136,6 +1156,617 @@ export const killSession = internalMutation({
     if (!session || session.refreshClaimId !== args.claimId) return false;
     await deleteSessionWithGenerations(ctx.db, session._id);
     return true;
+  },
+});
+
+// --- organization / resource tokens -----------------------------------------
+
+const resourceTokenClaimsValidator = v.object({
+  audience: v.string(),
+  scopes: v.array(v.string()),
+  expiresAt: v.number(),
+  organizationId: v.optional(v.string()),
+  resource: v.optional(v.string()),
+});
+
+function claimsFromRow(
+  row: { audience: string; grantedScope: string; expiresAt: number },
+  target: { organizationId?: string; resource?: string },
+): ResourceTokenClaims {
+  return {
+    audience: row.audience,
+    scopes: row.grantedScope === "" ? [] : row.grantedScope.split(" "),
+    expiresAt: row.expiresAt,
+    ...(target.organizationId === undefined
+      ? {}
+      : { organizationId: target.organizationId }),
+    ...(target.resource === undefined ? {} : { resource: target.resource }),
+  };
+}
+
+/**
+ * Mint (or serve from cache) an Organization token, a Resource token, or the
+ * opaque token `fetchUserInfo` needs.
+ *
+ * This spends the Session's Logto refresh token, so it runs inside the *same*
+ * claim as {@link refresh} and inherits its whole failure vocabulary. That is
+ * not defensive: Logto rotates on a rule blind to what the grant was for, and
+ * only past 70% of the refresh token's lifetime — so an exchange running
+ * outside the claim would look correct until real tokens aged, then start
+ * tripping reuse detection on a grant sibling sessions share. See
+ * `docs/adr/0003-organization-token-exchange.md`.
+ *
+ * Returns claims; the token string only when the caller asks and the deployment
+ * allowed it (`docs/adr/0002-token-custody.md`).
+ */
+type ExchangeArgs = {
+  endpoint: string;
+  appId: string;
+  clientSecret: string;
+  sessionToken: string;
+  deviceProof?: string;
+  organizationId?: string;
+  resource?: string;
+  scopes?: string[];
+  includeToken?: boolean;
+  reuseWindowMs?: number;
+};
+
+type ExchangeResult = {
+  claims: ResourceTokenClaims;
+  accessToken?: string;
+  minted: boolean;
+};
+
+export const exchangeToken = action({
+  args: {
+    ...oidcArgs,
+    sessionToken: v.string(),
+    deviceProof: v.optional(v.string()),
+    organizationId: v.optional(v.string()),
+    resource: v.optional(v.string()),
+    scopes: v.optional(v.array(v.string())),
+    /** Return the token string, not just its claims. Gated by the caller. */
+    includeToken: v.optional(v.boolean()),
+    reuseWindowMs: v.optional(v.number()),
+  },
+  returns: v.object({
+    claims: resourceTokenClaimsValidator,
+    accessToken: v.optional(v.string()),
+    /** True when this call went to Logto rather than being served from cache. */
+    minted: v.boolean(),
+  }),
+  handler: async (ctx, args): Promise<ExchangeResult> => {
+    // The `default` audience is the opaque token `/oidc/me` accepts — the one
+    // credential here that carries the user's whole profile scope. It is
+    // reachable from `fetchUserInfo`, which never returns it, and from nowhere
+    // else: `exposeAccessTokens` governs Organization and Resource tokens, and
+    // letting an argument-free call fall through to `default` would quietly put
+    // a target on the public surface that no typed client method can name.
+    if (args.organizationId === undefined && args.resource === undefined) {
+      throw terminal(
+        "missing_token_target",
+        "Ask for an organization token or a resource token.",
+      );
+    }
+    return await runExchange(ctx, args);
+  },
+});
+
+/**
+ * The exchange itself, as a plain function.
+ *
+ * `fetchUserInfo` needs the same work with a different audience, and an action
+ * calling an action would double the transaction boundaries around a claim that
+ * exists to keep exactly one caller inside it.
+ */
+async function runExchange(
+  ctx: GenericActionCtx<DataModel>,
+  args: ExchangeArgs,
+): Promise<ExchangeResult> {
+  const audience = tokenAudienceKey(args);
+  const scopeKey = tokenScopeKey(args.scopes);
+  const presentedHash = await hashToken(args.sessionToken);
+  const devicePublicKey: DevicePublicKey | null = await ctx.runQuery(
+    internal.lib.devicePublicKeyForToken,
+    { presentedHash },
+  );
+  await assertDeviceProof({
+    publicKey: devicePublicKey ?? undefined,
+    sessionToken: args.sessionToken,
+    proof: args.deviceProof,
+  });
+
+  const cached: CachedResourceToken | null = await ctx.runQuery(
+    internal.lib.cachedResourceToken,
+    {
+      presentedHash,
+      audience,
+      scopeKey,
+      now: Date.now(),
+      reuseWindowMs: args.reuseWindowMs ?? DEFAULT_REUSE_WINDOW_MS,
+    },
+  );
+  if (cached) {
+    return {
+      claims: claimsFromRow(cached, args),
+      ...(args.includeToken ? { accessToken: cached.accessToken } : {}),
+      minted: false,
+    };
+  }
+
+  const claimId = generateToken();
+  const begin: BeginExchangeResult = await ctx.runMutation(
+    internal.lib.beginTokenExchange,
+    {
+      presentedHash,
+      claimId,
+      now: Date.now(),
+      reuseWindowMs: args.reuseWindowMs ?? DEFAULT_REUSE_WINDOW_MS,
+    },
+  );
+  switch (begin.outcome) {
+    case "reuse":
+      throw sessionReuseDetectedError();
+    case "claim-expired":
+      throw terminal(
+        "refresh_claim_expired",
+        "A previous refresh did not finish safely. Sign in again.",
+      );
+    case "exchange":
+      break;
+  }
+
+  let tokens: Awaited<ReturnType<typeof tokenEndpoint>>;
+  try {
+    tokens = await tokenEndpoint(args, {
+      grant_type: "refresh_token",
+      refresh_token: begin.refreshToken,
+      ...(args.organizationId === undefined
+        ? {}
+        : { organization_id: args.organizationId }),
+      ...(args.resource === undefined ? {} : { resource: args.resource }),
+      ...(scopeKey === "" ? {} : { scope: scopeKey }),
+    });
+  } catch (error) {
+    // Identical reasoning to `refresh`: release only when the failure proves
+    // Logto never processed the grant. `killSession` is deliberately absent —
+    // a terminal token-endpoint failure here (a mistyped organization id
+    // reaching Logto as `invalid_grant`) must not delete a session the user
+    // is still signed in to.
+    if (!isOutcomeUnknownError(error)) {
+      await ctx.runMutation(internal.lib.releaseClaim, {
+        sessionId: begin.sessionId,
+        claimId,
+      });
+    }
+    throw error;
+  }
+  if (!tokens.tokenResponse) {
+    throw outcomeUnknown(
+      "Logto's token endpoint answered with something that is not a token response — " +
+        "the refresh outcome is unknown.",
+    );
+  }
+  if (tokens.access_token === undefined) {
+    // A well-formed token response with no access token: a deployment fault
+    // (an organization the user does not belong to, a resource that is not
+    // registered), not a dead session. Persist any rotation and keep the row.
+    await ctx.runMutation(internal.lib.abandonRefreshWithRotation, {
+      sessionId: begin.sessionId,
+      claimId,
+      ...(tokens.refresh_token === undefined
+        ? {}
+        : { refreshToken: tokens.refresh_token }),
+    });
+    throw asDeploymentFault(
+      terminal(
+        "no_access_token",
+        "Logto's token response carried no access_token for that target.",
+      ),
+    );
+  }
+  const accessToken = tokens.access_token;
+  const now = Date.now();
+  // Every `refresh_token` grant returns an id_token, including this one.
+  // Keeping it is not an optimisation: discarding it would leave the Session
+  // ageing on a Short bearer older than the one Logto just issued.
+  let refreshedIdToken:
+    | { idToken: string; exp: number; sid?: string }
+    | undefined;
+  if (tokens.id_token !== undefined) {
+    try {
+      const claims = decodeIdToken(tokens.id_token, args);
+      refreshedIdToken = {
+        idToken: tokens.id_token,
+        exp: claims.expiresAtMs,
+        ...(claims.sid === undefined ? {} : { sid: claims.sid }),
+      };
+    } catch {
+      // An ID token we cannot validate is dropped, not raised: the exchange
+      // asked for an access token and got one. `refresh` is where an
+      // unusable ID token is a reportable deployment fault.
+    }
+  }
+  const completed: CompleteExchangeResult = await ctx.runMutation(
+    internal.lib.completeTokenExchange,
+    {
+      sessionId: begin.sessionId,
+      claimId,
+      audience,
+      scopeKey,
+      accessToken,
+      expiresAt: accessTokenExpiresAt({
+        accessToken,
+        expiresIn: tokens.expires_in,
+        now,
+      }),
+      grantedScope: tokens.scope ?? scopeKey,
+      newRefreshToken: tokens.refresh_token,
+      refreshedIdToken,
+      now,
+    },
+  );
+  if (completed.outcome === "revoked") {
+    throw terminal(
+      "session_revoked",
+      "This session was revoked while the token exchange was in progress. Sign in again.",
+    );
+  }
+  if (completed.outcome !== "committed") {
+    throw terminal(
+      "refresh_claim_lost",
+      "This token exchange no longer owns the session. Sign in again.",
+    );
+  }
+  return {
+    claims: claimsFromRow(
+      {
+        audience,
+        grantedScope: completed.grantedScope,
+        expiresAt: completed.expiresAt,
+      },
+      args,
+    ),
+    ...(args.includeToken ? { accessToken } : {}),
+    minted: true,
+  };
+}
+
+type CachedResourceToken = {
+  audience: string;
+  grantedScope: string;
+  expiresAt: number;
+  accessToken: string;
+};
+
+export const cachedResourceToken = internalQuery({
+  args: {
+    presentedHash: v.string(),
+    audience: v.string(),
+    scopeKey: v.string(),
+    now: v.number(),
+    reuseWindowMs: v.number(),
+  },
+  returns: v.union(
+    v.object({
+      audience: v.string(),
+      grantedScope: v.string(),
+      expiresAt: v.number(),
+      accessToken: v.string(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const match = await resolveSessionToken(ctx.db, args.presentedHash);
+    if (!match) return null;
+    // A superseded generation past its Reuse window resolves to a session but
+    // has no authority left. Answering `null` sends the caller to
+    // `beginTokenExchange`, which is a *mutation* and can do what a query
+    // cannot: treat the presentation as theft and kill the session. Serving the
+    // cache here would hand a live Organization token to a rotated-away token
+    // and leave reuse detection untriggered — the one read in this component
+    // that could be used to hold a stolen session open.
+    if (!tokenMatchIsWithinReuseWindow(match, args.now, args.reuseWindowMs)) {
+      return null;
+    }
+    // A logically revoked session's cached tokens are invisible, exactly like
+    // its other reads: the rows may still be waiting for a bounded cleanup
+    // batch, and until then they must retain no authority.
+    if (await sessionIsLogicallyRevoked(ctx.db, match.session)) return null;
+    const row = await ctx.db
+      .query("resourceTokens")
+      .withIndex("by_session_audience_scope", (q) =>
+        q
+          .eq("sessionId", match.session._id)
+          .eq("audience", args.audience)
+          .eq("scopeKey", args.scopeKey),
+      )
+      .unique();
+    if (!row) return null;
+    if (row.expiresAt - RESOURCE_TOKEN_SKEW_MS <= args.now) return null;
+    return {
+      audience: row.audience,
+      grantedScope: row.grantedScope,
+      expiresAt: row.expiresAt,
+      accessToken: row.accessToken,
+    };
+  },
+});
+
+type BeginExchangeResult =
+  | { outcome: "exchange"; sessionId: string; refreshToken: string }
+  | { outcome: "reuse" }
+  | { outcome: "claim-expired" };
+
+export const beginTokenExchange = internalMutation({
+  args: {
+    presentedHash: v.string(),
+    claimId: v.string(),
+    now: v.number(),
+    reuseWindowMs: v.number(),
+  },
+  returns: v.union(
+    v.object({
+      outcome: v.literal("exchange"),
+      sessionId: v.string(),
+      refreshToken: v.string(),
+    }),
+    v.object({ outcome: v.literal("reuse") }),
+    v.object({ outcome: v.literal("claim-expired") }),
+  ),
+  handler: async (ctx, args) => {
+    const match = await resolveSessionToken(ctx.db, args.presentedHash);
+    if (!match) {
+      throw terminal(
+        "session_not_found",
+        "No session for this token — it was signed out or revoked. Sign in again.",
+      );
+    }
+    const { session } = match;
+    if (await sessionIsLogicallyRevoked(ctx.db, session)) {
+      throw terminal(
+        "session_revoked",
+        "This session has been revoked. Sign in again.",
+      );
+    }
+    const decision = decideExchange({
+      presentedHash: args.presentedHash,
+      session,
+      now: args.now,
+      reuseWindowMs: args.reuseWindowMs,
+      presentedTokenExpiresAt:
+        match.source === "generation" ? match.expiresAt : undefined,
+    });
+    switch (decision.outcome) {
+      case "in-flight":
+        // A refresh (or another exchange) holds the claim. Transient by
+        // design: an Organization token is not worth destroying a grant for,
+        // and the caller retries once the refresh lands.
+        throw transient(
+          "refresh_in_flight",
+          "A refresh for this session is mid-flight — retry shortly.",
+        );
+      case "reuse":
+        await deleteSessionWithGenerations(ctx.db, session._id);
+        return { outcome: "reuse" as const };
+      case "claim-expired":
+        await deleteSessionWithGenerations(ctx.db, session._id);
+        return { outcome: "claim-expired" as const };
+      case "exchange":
+        await ctx.db.patch(session._id, {
+          refreshingSince: args.now,
+          refreshClaimId: args.claimId,
+        });
+        return {
+          outcome: "exchange" as const,
+          sessionId: session._id,
+          refreshToken: session.logtoRefreshToken,
+        };
+    }
+    throw new Error("Unreachable exchange decision.");
+  },
+});
+
+type CompleteExchangeResult =
+  | { outcome: "committed"; expiresAt: number; grantedScope: string }
+  | { outcome: "missing" }
+  | { outcome: "stale-owner" }
+  | { outcome: "revoked" };
+
+/**
+ * Persist the minted token, any refresh-token rotation and any fresher ID
+ * token, and release the claim — in one transaction, for the same reason
+ * {@link abandonRefreshWithRotation} is one transaction.
+ */
+export const completeTokenExchange = internalMutation({
+  args: {
+    sessionId: v.string(),
+    claimId: v.string(),
+    audience: v.string(),
+    scopeKey: v.string(),
+    accessToken: v.string(),
+    expiresAt: v.number(),
+    grantedScope: v.string(),
+    newRefreshToken: v.optional(v.string()),
+    refreshedIdToken: v.optional(
+      v.object({
+        idToken: v.string(),
+        exp: v.number(),
+        sid: v.optional(v.string()),
+      }),
+    ),
+    now: v.number(),
+  },
+  returns: v.union(
+    v.object({
+      outcome: v.literal("committed"),
+      expiresAt: v.number(),
+      grantedScope: v.string(),
+    }),
+    v.object({ outcome: v.literal("missing") }),
+    v.object({ outcome: v.literal("stale-owner") }),
+    v.object({ outcome: v.literal("revoked") }),
+  ),
+  handler: async (ctx, args) => {
+    const id = ctx.db.normalizeId("sessions", args.sessionId);
+    const session = id && (await ctx.db.get(id));
+    if (!session) return { outcome: "missing" as const };
+    if (session.refreshClaimId !== args.claimId) {
+      return { outcome: "stale-owner" as const };
+    }
+    if (await sessionIsLogicallyRevoked(ctx.db, session)) {
+      // Revoked mid-flight. Delete rather than cache: a token minted under
+      // authority that has since been withdrawn must not survive in a row.
+      await deleteSessionWithGenerations(ctx.db, session._id);
+      return { outcome: "revoked" as const };
+    }
+    // The *incoming* sid too, exactly as `completeRefresh` does. Logto may
+    // report an OP session this row has not adopted yet, and a back-channel
+    // logout for that sid has already withdrawn the authority the token was
+    // minted under — patching it in first would issue one Organization token
+    // after the logout that was supposed to stop it.
+    const incomingSid = args.refreshedIdToken?.sid;
+    if (incomingSid !== undefined && incomingSid !== session.sid) {
+      const cutoff = await sidRevokedAt(ctx.db, incomingSid);
+      if (cutoff !== undefined && session.createdAt <= cutoff) {
+        await deleteSessionWithGenerations(ctx.db, session._id);
+        return { outcome: "revoked" as const };
+      }
+    }
+
+    // Cache only what keeps the per-session bound a *byte* bound. A token past
+    // this is still returned to the caller; it simply is not stored, so the
+    // batched session deletion cannot be pushed out of its read budget by a
+    // deployment whose tokens are unusually large.
+    const cacheable =
+      args.accessToken.length <= MAX_CACHEABLE_ACCESS_TOKEN_LENGTH;
+    const existing = await ctx.db
+      .query("resourceTokens")
+      .withIndex("by_session_audience_scope", (q) =>
+        q
+          .eq("sessionId", session._id)
+          .eq("audience", args.audience)
+          .eq("scopeKey", args.scopeKey),
+      )
+      .unique();
+    if (!cacheable) {
+      // Drop any older row for this key rather than leaving it: it would go on
+      // being served for a target whose current token this call could not
+      // store, which is a stale answer, not a conservative one.
+      if (existing) await ctx.db.delete(existing._id);
+    } else if (existing) {
+      await ctx.db.patch(existing._id, {
+        accessToken: args.accessToken,
+        expiresAt: args.expiresAt,
+        grantedScope: args.grantedScope,
+        mintedAt: args.now,
+      });
+    } else {
+      // Evict before inserting, so the table can never exceed the documented
+      // per-session limit — the same ordering `rememberSupersededToken` uses,
+      // and what keeps session deletion a bounded amount of work.
+      const rows = await ctx.db
+        .query("resourceTokens")
+        .withIndex("by_sessionId_mintedAt", (q) =>
+          q.eq("sessionId", session._id),
+        )
+        .order("asc")
+        .collect();
+      for (const row of rows.slice(
+        0,
+        Math.max(0, rows.length - (RESOURCE_TOKEN_CACHE_LIMIT - 1)),
+      )) {
+        await ctx.db.delete(row._id);
+      }
+      await ctx.db.insert("resourceTokens", {
+        sessionId: session._id,
+        audience: args.audience,
+        scopeKey: args.scopeKey,
+        accessToken: args.accessToken,
+        expiresAt: args.expiresAt,
+        grantedScope: args.grantedScope,
+        mintedAt: args.now,
+      });
+    }
+
+    await ctx.db.patch(session._id, {
+      refreshingSince: undefined,
+      refreshClaimId: undefined,
+      lastRefreshedAt: args.now,
+      ...(args.newRefreshToken
+        ? { logtoRefreshToken: args.newRefreshToken }
+        : {}),
+      ...(args.refreshedIdToken
+        ? {
+            lastIdToken: args.refreshedIdToken.idToken,
+            lastIdTokenExp: args.refreshedIdToken.exp,
+            ...(args.refreshedIdToken.sid === undefined
+              ? {}
+              : { sid: args.refreshedIdToken.sid }),
+          }
+        : {}),
+    });
+    return {
+      outcome: "committed" as const,
+      expiresAt: args.expiresAt,
+      grantedScope: args.grantedScope,
+    };
+  },
+});
+
+/**
+ * Logto's `/oidc/me`, through the same exchange.
+ *
+ * The userinfo endpoint wants the *default* (opaque) access token, which is
+ * what the `default` audience caches — so a profile fetch costs a grant only
+ * when the cached token has aged out, not on every call.
+ */
+export const fetchUserInfo = action({
+  args: {
+    ...oidcArgs,
+    sessionToken: v.string(),
+    deviceProof: v.optional(v.string()),
+    reuseWindowMs: v.optional(v.number()),
+  },
+  returns: v.any(),
+  handler: async (ctx, args): Promise<unknown> => {
+    // The `default` audience: no organization, no resource — the opaque token
+    // Logto's userinfo endpoint accepts. `exposeAccessTokens` does not gate it,
+    // because it never leaves this function.
+    const exchanged = await runExchange(ctx, { ...args, includeToken: true });
+    if (exchanged.accessToken === undefined) {
+      throw transient(
+        "no_userinfo_token",
+        "Could not obtain an access token for Logto's userinfo endpoint.",
+      );
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, TOKEN_ENDPOINT_TIMEOUT_MS);
+    try {
+      const res = await fetch(buildLogtoEndpointUrl(args.endpoint, "me"), {
+        headers: { Authorization: `Bearer ${exchanged.accessToken}` },
+        signal: controller.signal,
+      });
+      const body = await readBoundedBody(res, MAX_TOKEN_RESPONSE_BYTES);
+      if (!res.ok || !body.ok) {
+        throw transient(
+          "userinfo_failed",
+          `Logto's userinfo endpoint answered ${res.status}.`,
+        );
+      }
+      return JSON.parse(tokenResponseDecoder.decode(body.bytes)) as unknown;
+    } catch (error) {
+      if (error instanceof ConvexError) throw error;
+      throw transient(
+        "logto_unreachable",
+        "Could not reach Logto's userinfo endpoint.",
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
   },
 });
 
@@ -1935,6 +2566,15 @@ export const gc = internalMutation({
     for (const generation of expiredGenerations) {
       await ctx.db.delete(generation._id);
     }
+    // Minted Organization / Resource tokens normally die with their session.
+    // This collects the ones whose session outlives them — an expired row keeps
+    // no authority (`cachedResourceToken` re-checks expiry) but it is dead
+    // weight inside the per-session cache bound until something removes it.
+    const expiredResourceTokens = await ctx.db
+      .query("resourceTokens")
+      .withIndex("by_expiresAt", (q) => q.lt("expiresAt", now))
+      .take(GC_SMALL_DOCUMENT_BATCH_SIZE);
+    for (const token of expiredResourceTokens) await ctx.db.delete(token._id);
     const staleDeliveries = await ctx.db
       .query("webhookDeliveries")
       .withIndex("by_seenAt", (q) =>
@@ -1948,6 +2588,7 @@ export const gc = internalMutation({
       expiredTransactions.length === GC_TRANSACTION_BATCH_SIZE ||
       deadSessions.length === REVOCATION_BATCH_SIZE ||
       expiredGenerations.length === GC_SMALL_DOCUMENT_BATCH_SIZE ||
+      expiredResourceTokens.length === GC_SMALL_DOCUMENT_BATCH_SIZE ||
       staleDeliveries.length === GC_SMALL_DOCUMENT_BATCH_SIZE
     ) {
       await ctx.scheduler.runAfter(0, internal.lib.gc, {});

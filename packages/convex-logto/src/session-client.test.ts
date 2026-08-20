@@ -80,6 +80,8 @@ const api = {
   listSessions: { fn: "listSessions" },
   renameSession: { fn: "renameSession" },
   revokeSession: { fn: "revokeSession" },
+  exchangeToken: { fn: "exchangeToken" },
+  fetchUserInfo: { fn: "fetchUserInfo" },
   sessionValid: { fn: "sessionValid" },
 } as unknown as LogtoSessionApi;
 
@@ -92,6 +94,8 @@ type Handlers = {
   listSessions: ReturnType<typeof vi.fn>;
   renameSession: ReturnType<typeof vi.fn>;
   revokeSession: ReturnType<typeof vi.fn>;
+  exchangeToken: ReturnType<typeof vi.fn>;
+  fetchUserInfo: ReturnType<typeof vi.fn>;
 };
 
 function makeHarness(options?: {
@@ -123,6 +127,8 @@ function makeHarness(options?: {
     listSessions: vi.fn(),
     renameSession: vi.fn(),
     revokeSession: vi.fn(),
+    exchangeToken: vi.fn(),
+    fetchUserInfo: vi.fn(),
   };
   const transport = {
     action: (ref: unknown, args: unknown) =>
@@ -2407,5 +2413,163 @@ describe("auth phase events", () => {
     expect(phasesOf(events)).not.toContain("convex_authenticated");
     engine.reportConvexAuthenticated();
     expect(phasesOf(events).at(-1)).toBe("convex_authenticated");
+  });
+});
+
+describe("token exchange", () => {
+  const claims = {
+    audience: "organization:org-1",
+    scopes: ["manage"],
+    expiresAt: 5_000_000,
+    organizationId: "org-1",
+  };
+
+  it("authenticates the exchange with the current session token and proof", async () => {
+    const deviceBinding = {
+      sign: vi.fn().mockResolvedValue("device-proof"),
+    } as unknown as SessionDeviceBinding;
+    const harness = makeHarness({
+      storedSession: { token: "session-token", sessionId: "session-1" },
+      storedIdToken: freshToken(),
+      deviceBinding,
+    });
+    harness.engine.start();
+    await settled(harness.engine);
+    harness.handlers.exchangeToken.mockResolvedValue({
+      claims,
+      minted: true,
+    });
+
+    await expect(
+      harness.engine.getOrganizationTokenClaims("org-1", ["manage"]),
+    ).resolves.toEqual(claims);
+    expect(harness.handlers.exchangeToken).toHaveBeenCalledWith({
+      sessionToken: "session-token",
+      deviceProof: "device-proof",
+      organizationId: "org-1",
+      scopes: ["manage"],
+    });
+  });
+
+  it("asks for a resource by indicator, never as an organization", async () => {
+    const harness = makeHarness({
+      storedSession: { token: "session-token", sessionId: "session-1" },
+      storedIdToken: freshToken(),
+    });
+    harness.engine.start();
+    await settled(harness.engine);
+    harness.handlers.exchangeToken.mockResolvedValue({
+      claims: {
+        audience: "resource:https://api.example.com",
+        scopes: ["read"],
+        expiresAt: 5_000_000,
+      },
+      minted: true,
+    });
+
+    await harness.engine.getAccessTokenClaims("https://api.example.com");
+    expect(harness.handlers.exchangeToken).toHaveBeenCalledWith({
+      sessionToken: "session-token",
+      resource: "https://api.example.com",
+    });
+  });
+
+  it("asks for the token string only when a token-returning method was called", async () => {
+    const harness = makeHarness({
+      storedSession: { token: "session-token", sessionId: "session-1" },
+      storedIdToken: freshToken(),
+    });
+    harness.engine.start();
+    await settled(harness.engine);
+    harness.handlers.exchangeToken.mockResolvedValue({
+      claims,
+      accessToken: "org-token",
+      minted: true,
+    });
+
+    await expect(harness.engine.getOrganizationToken("org-1")).resolves.toBe(
+      "org-token",
+    );
+    expect(harness.handlers.exchangeToken).toHaveBeenCalledWith({
+      sessionToken: "session-token",
+      organizationId: "org-1",
+      includeToken: true,
+    });
+  });
+
+  it("errors rather than returning an empty credential when none came back", async () => {
+    const harness = makeHarness({
+      storedSession: { token: "session-token", sessionId: "session-1" },
+      storedIdToken: freshToken(),
+    });
+    harness.engine.start();
+    await settled(harness.engine);
+    harness.handlers.exchangeToken.mockResolvedValue({ claims, minted: true });
+
+    await expect(harness.engine.getAccessToken("https://api")).rejects.toThrow(
+      /exposeAccessTokens/,
+    );
+  });
+
+  it("names the missing export when the app module predates the action", async () => {
+    const harness = makeHarness({
+      storedSession: { token: "session-token", sessionId: "session-1" },
+      storedIdToken: freshToken(),
+      sessionApi: {
+        ...(api as unknown as Record<string, unknown>),
+        exchangeToken: undefined,
+        fetchUserInfo: undefined,
+      } as unknown as LogtoSessionApi,
+    });
+    harness.engine.start();
+    await settled(harness.engine);
+
+    await expect(
+      harness.engine.getOrganizationTokenClaims("org-1"),
+    ).rejects.toThrow(/exchangeToken/);
+    await expect(harness.engine.fetchUserInfo()).rejects.toThrow(
+      /fetchUserInfo/,
+    );
+  });
+
+  it("requires an active session before asking for anything", async () => {
+    const harness = makeHarness();
+    harness.engine.start();
+    await settled(harness.engine);
+    await expect(
+      harness.engine.getOrganizationTokenClaims("org-1"),
+    ).rejects.toThrow(/requires an active session/);
+    expect(harness.handlers.exchangeToken).not.toHaveBeenCalled();
+  });
+});
+
+describe("getIdToken", () => {
+  it("returns the stored Short bearer while it is still fresh", async () => {
+    const token = freshToken();
+    const harness = makeHarness({
+      storedSession: { token: "session-token", sessionId: "session-1" },
+      storedIdToken: token,
+    });
+    harness.engine.start();
+    await settled(harness.engine);
+    expect(harness.engine.getIdToken()).toBe(token);
+  });
+
+  it("withholds one that has aged into the skew rather than handing back a dud", async () => {
+    const harness = makeHarness({
+      storedSession: { token: "session-token", sessionId: "session-1" },
+      storedIdToken: staleToken(),
+    });
+    harness.handlers.refresh.mockRejectedValue(transientError());
+    harness.engine.start();
+    await settled(harness.engine);
+    expect(harness.engine.getIdToken()).toBeNull();
+  });
+
+  it("is null when signed out", async () => {
+    const harness = makeHarness();
+    harness.engine.start();
+    await settled(harness.engine);
+    expect(harness.engine.getIdToken()).toBeNull();
   });
 });

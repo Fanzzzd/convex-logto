@@ -547,6 +547,217 @@ export function decideRefresh(options: {
   return { outcome: "refresh-superseded" };
 }
 
+/**
+ * Decide whether a token exchange (Organization / Resource / userinfo) may run.
+ *
+ * Deliberately *not* {@link decideRefresh}. An exchange spends the same Logto
+ * refresh token — so it takes the same claim, and inherits `in-flight`,
+ * `claim-expired` and `reuse` unchanged — but it does not rotate the Session
+ * token, so there is no `cached`/`refresh-superseded` split and no candidate to
+ * adopt. A superseded generation still inside its Reuse window may exchange:
+ * nothing rotates, so nothing can be orphaned by it.
+ */
+export function decideExchange(options: {
+  presentedHash: string;
+  session: {
+    tokenHash: string;
+    prevTokenHash?: string;
+    rotatedAt?: number;
+    refreshingSince?: number;
+  };
+  now: number;
+  reuseWindowMs: number;
+  presentedTokenExpiresAt?: number;
+  claimTimeoutMs?: number;
+}):
+  | { outcome: "exchange" }
+  | { outcome: "in-flight" }
+  | { outcome: "claim-expired" }
+  | { outcome: "reuse" } {
+  const {
+    presentedHash,
+    session,
+    now,
+    reuseWindowMs,
+    presentedTokenExpiresAt,
+    claimTimeoutMs = 15 * 1000,
+  } = options;
+
+  const claimAge =
+    session.refreshingSince === undefined
+      ? undefined
+      : now - session.refreshingSince;
+  if (claimAge !== undefined && claimAge >= claimTimeoutMs) {
+    return { outcome: "claim-expired" };
+  }
+  const claimed = claimAge !== undefined;
+
+  if (presentedHash !== session.tokenHash) {
+    const inWindow =
+      presentedTokenExpiresAt === undefined
+        ? isPreviousTokenWithinReuseWindow({
+            rotatedAt: session.rotatedAt,
+            now,
+            reuseWindowMs,
+          })
+        : now < presentedTokenExpiresAt;
+    if (!inWindow) return { outcome: "reuse" };
+  }
+  if (claimed) return { outcome: "in-flight" };
+  return { outcome: "exchange" };
+}
+
+/**
+ * How many minted Resource/Organization tokens one Session caches.
+ *
+ * Bounded because a session's rows are deleted in the transaction that deletes
+ * the session — an unbounded cache would make that deletion unbounded too, and
+ * "a revoked session's rows are gone" is the invariant that stops a minted
+ * token from outliving the authority it was minted under. Eight covers a few
+ * organizations plus a couple of API resources; beyond that the
+ * least-recently-minted row is evicted.
+ */
+export const RESOURCE_TOKEN_CACHE_LIMIT = 8;
+
+/** Don't serve a cached access token with less than this much life left. */
+export const RESOURCE_TOKEN_SKEW_MS = 60 * 1000;
+
+/** Longest accepted organization id / resource indicator, in code points. */
+export const TOKEN_AUDIENCE_MAX_LENGTH = 256;
+
+/**
+ * Bounds on the requested scope set.
+ *
+ * The scope key is caller-supplied and lands verbatim in a `resourceTokens`
+ * row, and session deletion collects those rows for eight sessions in one
+ * transaction. Every other caller-supplied string in this component is
+ * bounded; unbounded, eight rows of near-document-limit scope text is enough
+ * to put a subject's sessions permanently beyond a revocation batch's read
+ * budget — a session that can never be revoked.
+ */
+export const TOKEN_SCOPE_MAX_COUNT = 32;
+export const TOKEN_SCOPE_KEY_MAX_LENGTH = 512;
+
+/**
+ * Largest minted access token this will cache.
+ *
+ * The token comes from Logto rather than the caller, so this is not a defence
+ * against an attacker — it is what keeps the per-session row bound a *byte*
+ * bound and not just a row count, so the batched session deletion above stays
+ * inside its transaction budget no matter what a deployment's tokens look
+ * like. A token past this is still returned; it is simply not stored, so the
+ * next call mints again.
+ */
+export const MAX_CACHEABLE_ACCESS_TOKEN_LENGTH = 8 * 1024;
+
+/**
+ * The cache key's audience half.
+ *
+ * Prefixed rather than raw so an organization id can never collide with a
+ * resource indicator, and `default` — the opaque token `fetchUserInfo` needs —
+ * is a third namespace rather than the absence of one.
+ */
+export function tokenAudienceKey(target: {
+  organizationId?: string;
+  resource?: string;
+}): string {
+  if (target.organizationId !== undefined && target.resource !== undefined) {
+    throw terminal(
+      "ambiguous_token_target",
+      "Ask for an organization token or a resource token, not both.",
+    );
+  }
+  if (target.organizationId !== undefined) {
+    return `organization:${assertAudienceLength(target.organizationId, "organization id")}`;
+  }
+  if (target.resource !== undefined) {
+    return `resource:${assertAudienceLength(target.resource, "resource indicator")}`;
+  }
+  return "default";
+}
+
+function assertAudienceLength(value: string, what: string): string {
+  if (
+    value.length === 0 ||
+    Array.from(value).length > TOKEN_AUDIENCE_MAX_LENGTH
+  ) {
+    throw terminal(
+      "invalid_token_target",
+      `That ${what} is empty or longer than ${TOKEN_AUDIENCE_MAX_LENGTH} characters.`,
+    );
+  }
+  return value;
+}
+
+/**
+ * The cache key's scope half.
+ *
+ * Sorted and de-duplicated so the same ask in a different order is the same
+ * cache entry, and a *narrower* ask never gets served a token minted for a
+ * wider one — Logto issues exactly what was requested, so reusing across scope
+ * sets would silently hand back a token missing a scope the caller asked for.
+ */
+export function tokenScopeKey(scopes?: string[]): string {
+  if (!scopes || scopes.length === 0) return "";
+  if (scopes.length > TOKEN_SCOPE_MAX_COUNT) {
+    throw terminal(
+      "invalid_token_scopes",
+      `Ask for at most ${TOKEN_SCOPE_MAX_COUNT} scopes at once.`,
+    );
+  }
+  const unique = [
+    ...new Set(scopes.map((scope) => scope.trim()).filter(Boolean)),
+  ];
+  // Sorted in place: the array was built on the line above and is owned by
+  // nobody else. `toSorted` would say it better but is ES2023, and the library
+  // targets ES2022.
+  unique.sort();
+  const key = unique.join(" ");
+  if (Array.from(key).length > TOKEN_SCOPE_KEY_MAX_LENGTH) {
+    throw terminal(
+      "invalid_token_scopes",
+      `That scope set is longer than ${TOKEN_SCOPE_KEY_MAX_LENGTH} characters.`,
+    );
+  }
+  return key;
+}
+
+/**
+ * When a minted access token actually expires.
+ *
+ * The token's own `exp` wins where there is one: `expires_in` is relative to a
+ * clock we did not read it on, and an Organization token whose `exp` disagrees
+ * with `expires_in` is the one that would be cached past its life. An opaque
+ * token (the `default` audience) has no `exp`, so `expires_in` is all there is.
+ */
+export function accessTokenExpiresAt(options: {
+  accessToken: string;
+  expiresIn?: number;
+  now: number;
+}): number {
+  const claims = decodeJwtSegment(options.accessToken.split(".")[1] ?? "");
+  if (isRecord(claims) && typeof claims.exp === "number") {
+    return claims.exp * 1000;
+  }
+  const seconds =
+    typeof options.expiresIn === "number" && options.expiresIn > 0
+      ? options.expiresIn
+      : 60;
+  return options.now + seconds * 1000;
+}
+
+/**
+ * The claims an app can authorize on without the token string ever leaving the
+ * component — the default custody in `docs/adr/0002-token-custody.md`.
+ */
+export type ResourceTokenClaims = {
+  audience: string;
+  scopes: string[];
+  expiresAt: number;
+  organizationId?: string;
+  resource?: string;
+};
+
 /** Apply the exclusive grace window for a legacy previous-generation field. */
 export function isPreviousTokenWithinReuseWindow(options: {
   rotatedAt?: number;

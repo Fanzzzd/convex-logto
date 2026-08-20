@@ -15,10 +15,10 @@ description: Every export from convex-logto and its web, native, and session-mod
 | `registerLogtoBackchannelLogout(http, opts)` | `convex-logto` | Registers the verified OIDC back-channel logout route for session mode. |
 | `createLogtoBackchannelLogoutHandler(opts)` | `convex-logto` | Builds the same Convex HTTP action without registering a path. |
 | `verifyLogtoLogoutToken(token, opts?)` | `convex-logto` | Low-level Web Crypto/JWKS validation for an OIDC Logout Token. |
-| `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](/docs/session-mode): builds the nine public auth functions backed by the session component. |
+| `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](/docs/session-mode): builds the eleven public auth functions backed by the session component. |
 | `assertSubjectHasActiveSession(ctx, component)` | `convex-logto` | Session mode: require at least one active component Session for the authenticated subject; does not bind this bearer to one Session. |
 | `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Deprecated compatibility alias for `assertSubjectHasActiveSession`. |
-| `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Five-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
+| `createLogtoSessionCookieHandler(opts)` | `convex-logto` | Six-route standard-fetch handler for the optional same-site HttpOnly cookie transport. |
 | `createLogtoSessionCookieTransport(api, opts?)` | `convex-logto` | Framework-free browser adapter used by the session provider's `cookieTransport` prop. |
 | `assertLogtoSessionCookieCompatibility(opts)` | `convex-logto` | Loud Safari/device-binding compatibility guard. |
 | `readLogtoIdTokenCookie(source)` | `convex-logto` | Reads the opt-in SSR ID token cookie from a `Request`, a `Cookie` header, or a Next-style store. |
@@ -29,11 +29,11 @@ description: Every export from convex-logto and its web, native, and session-mod
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
 | default | `convex-logto/convex.config` | The session component, for `app.use(logto)` in `convex/convex.config.ts`. |
 | `ConvexLogtoSessionProvider` | `convex-logto/react-session` | Session mode's provider — no Logto SDK; talks to your `logtoSessionApi` functions. |
-| `useLogtoAuth()` | `convex-logto/react-session` | Session auth plus `signOutEverywhere({ postLogoutRedirectUri? })` and `listSessions()` / `renameSession()` / `revokeSession()`. |
+| `useLogtoAuth()` | `convex-logto/react-session` | Session auth plus `signOutEverywhere({ postLogoutRedirectUri? })`, `listSessions()` / `renameSession()` / `revokeSession()`, and `getIdToken()` / `getOrganizationTokenClaims()` / `getAccessTokenClaims()` / `fetchUserInfo()`. |
 | `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `config` / `configQuery` model; no callback route. |
 | `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signIn({ redirectUri? })` / `signOut({ postLogoutRedirectUri? })`. |
 | `ConvexLogtoSessionProvider` | `convex-logto/native-session` | React Native / Expo session provider using SecureStore + the system browser. |
-| `useLogtoAuth()` | `convex-logto/native-session` | Native session `{ isAuthenticated, isLoading, user, signIn, completeSignIn, signOut, signOutEverywhere, listSessions, renameSession, revokeSession }`; no device-binding surface. |
+| `useLogtoAuth()` | `convex-logto/native-session` | Native session `{ isAuthenticated, isLoading, user, signIn, completeSignIn, signOut, signOutEverywhere, listSessions, renameSession, revokeSession }` plus the same token-exchange methods; no device-binding surface. |
 
 ## Backend
 
@@ -123,7 +123,7 @@ tokens. It does not mutate or deduplicate sessions.
 ### `logtoSessionApi(component, opts?)`
 
 [Session mode](/docs/session-mode)'s server surface: pass `components.logto`
-(after `app.use(logto)`), re-export the nine functions it returns. Reads
+(after `app.use(logto)`), re-export the eleven functions it returns. Reads
 `LOGTO_ENDPOINT`, `LOGTO_APP_ID`, and `LOGTO_CLIENT_SECRET`.
 
 ```ts title="convex/auth.ts"
@@ -139,6 +139,8 @@ export const {
   listSessions,
   renameSession,
   revokeSession,
+  exchangeToken,
+  fetchUserInfo,
   sessionValid,
 } = logtoSessionApi(components.logto);
 ```
@@ -146,11 +148,15 @@ export const {
 Options: `scopes` (server-configured — the browser can't request its own),
 `reuseWindowMs` (default 10s), `endpoint` / `appId` / `clientSecret` env
 overrides, and the same narrowly scoped `allowInsecureHttp` compatibility escape
-hatch described above. `resources` **currently buys nothing** here: the component
-holds the refresh token and hands the browser only the ID token, so the access
-token a resource indicator requests is discarded — while a resource Logto does
-not have registered breaks sign-in outright. Leave it unset. (In bridge mode it
-works — the Logto SDK owns the tokens and exposes `getAccessToken()`.)
+hatch described above.
+
+`resources` is the input to
+[the token exchange](#organization-and-api-resource-tokens): Logto refuses to
+issue a token for a resource the grant never named, so the set is fixed before
+sign-in and every indicator must be registered — an unregistered one breaks
+sign-in outright. The scopes you want *from* those resources go in `scopes`;
+naming the resource alone yields a token with none. `exposeAccessTokens` lets
+the token string reach the browser at all, and is off by default.
 
 `signOutEverywhere({ sessionToken, postLogoutRedirectUri? })` derives the subject
 inside the component and atomically records subject-wide logical revocation.
@@ -203,13 +209,14 @@ as a standard `(Request) => Promise<Response>` handler. Options are:
   cookie during render can still read an identity. See
   [`readLogtoIdTokenCookie`](#readlogtoidtokencookiesource).
 
-The five final path segments are `sign-in`, `callback`, `token`, `sign-out`, and
-`sessions`.
+The six final path segments are `sign-in`, `callback`, `token`, `sign-out`,
+`sessions`, and `tokens`.
 Actual calls require POST, `x-convex-logto-csrf: 1`, and an allowed `Origin`;
 approved preflights receive credentialed CORS headers. Bodies are streamed
 through a 64 KiB limit; oversized requests return `413`. `signOutEverywhere` uses
 an internal selector on the existing `sign-out` route rather than a route of its
-own; `sessions` multiplexes `list` / `rename` / `revoke` on an `op` field the same
+own; `sessions` multiplexes `list` / `rename` / `revoke`, and `tokens`
+multiplexes `exchange` / `userinfo`, on an `op` field the same
 way. The `sessions` route never clears the cookie — revoking another device must
 not sign this one out. The cookie is fixed to
 `__Host-convex-logto-session=<encoded-token>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=16416000`
@@ -301,10 +308,68 @@ indistinguishable from a user who belongs to nothing, and only one reading is
 safe. The failure names the scope so a configuration gap does not read as a
 denial.
 
-Organization **permissions** are out of scope: Logto issues those only in an
+Organization **permissions** are the one part Logto puts nowhere but an
 organization token, audienced `urn:logto:organization:{id}` and typed `at+jwt`,
-which Convex rejects as a request credential. See
-[ADR 0002](https://github.com/Fanzzzd/convex-logto/blob/main/docs/adr/0002-token-custody.md).
+which Convex rejects as a request credential. Session mode can mint one for you
+— see [Organization and API-resource tokens](#organization-and-api-resource-tokens).
+
+### Organization and API-resource tokens
+
+<Callout type="info">Session mode only. In bridge mode the Logto SDK is already
+in the bundle: use `useLogto().getOrganizationToken(...)` directly.</Callout>
+
+Reach for this **only** for fine-grained organization permissions, or for a
+non-Convex API you registered with Logto. Membership and organization roles are
+already in the ID token (above) and cost nothing.
+
+```ts
+const {
+  getOrganizationTokenClaims,
+  getAccessTokenClaims,
+  fetchUserInfo,
+  getIdToken,
+} = useLogtoAuth();
+
+const { scopes } = await getOrganizationTokenClaims("org-id");
+if (scopes.includes("invoice:delete")) {
+  /* ... */
+}
+```
+
+The component mints the token from the Session's Logto refresh token and hands
+back **what it authorizes**, not the token itself — nothing long-lived enters
+`window`. For a caller that must reach a non-Convex API from the browser, pass
+`exposeAccessTokens: true` to `logtoSessionApi()` and use
+`getOrganizationToken(organizationId)` / `getAccessToken(resource)`, which
+return the string. Without the opt-in those reject by name rather than quietly
+returning nothing.
+
+Both need the app to re-export the new actions:
+
+```ts title="convex/auth.ts"
+export const { /* ... */ exchangeToken, fetchUserInfo } = logtoSessionApi(
+  components.logto,
+  { resources: ["https://api.example.com"] },
+);
+```
+
+- **A resource must be declared before sign-in.** Logto refuses to issue a token
+  for a resource the grant never named (`invalid_target`), so `resources` on
+  `logtoSessionApi()` is the input, and widening it means signing the user in
+  again. Organizations need nothing there.
+- **Minted tokens are cached** per session, audience and requested scope set, so
+  a permission check on render does not cost a grant. A revoked session's cache
+  is invisible immediately and deleted with it.
+- **The exchange queues behind a refresh.** It spends the same Logto refresh
+  token, so it takes the same claim and can answer the transient
+  `refresh_in_flight` — retry it.
+- `fetchUserInfo()` is Logto's live `/oidc/me`, unlike `user`, which is the copy
+  the last ID token froze. `getIdToken()` returns that Short bearer itself.
+
+See [ADR 0002](https://github.com/Fanzzzd/convex-logto/blob/main/docs/adr/0002-token-custody.md)
+for the custody decision and
+[ADR 0003](https://github.com/Fanzzzd/convex-logto/blob/main/docs/adr/0003-organization-token-exchange.md)
+for why the exchange shares the refresh claim.
 
 ### `assertSubjectHasActiveSession(ctx, component)`
 
@@ -523,7 +588,7 @@ device-binding option.
 | Prop | Required | Purpose |
 | --- | --- | --- |
 | `client` | yes | Your `ConvexReactClient`. |
-| `sessionApi` | yes | The module re-exporting all nine `logtoSessionApi(...)` functions. |
+| `sessionApi` | yes | The module re-exporting all eleven `logtoSessionApi(...)` functions. |
 | `redirectUri` | yes | Custom-scheme or universal-link callback registered as both a Redirect URI and Post sign-out redirect URI in Logto. |
 | `reactiveRevocation` | — | Subscribe to `sessionValid` and clear SecureStore immediately when revoked. Default `true`. |
 | `onAuthError` | — | Receives sign-in initiation failures plus recoverable OAuth, SecureStore, and system-browser failures; initiation failures are reported before `signIn()` rejects and all errors are logged. |

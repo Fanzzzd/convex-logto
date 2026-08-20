@@ -124,6 +124,31 @@ export default defineSchema({
     .index("by_sid", ["sid"])
     .index("by_revokedAt", ["revokedAt"]),
 
+  // Organization / API-resource access tokens minted from a Session's Logto
+  // refresh token, cached so that an authorization check does not cost a grant
+  // per render. Server-held like the refresh token: the token string leaves the
+  // component only when the deployment set `exposeAccessTokens`.
+  //
+  // Rows are bounded per session (`RESOURCE_TOKEN_CACHE_LIMIT`) so the
+  // transaction that deletes a session can delete them with it. A minted token
+  // that outlived its session would keep authority the session no longer has.
+  resourceTokens: defineTable({
+    sessionId: v.id("sessions"),
+    /** `organization:<id>`, `resource:<indicator>`, or `default`. */
+    audience: v.string(),
+    /** Sorted, space-joined requested scopes — a narrower ask is a different key. */
+    scopeKey: v.string(),
+    accessToken: v.string(),
+    /** From the token's own `exp` where it has one, else `expires_in`. */
+    expiresAt: v.number(),
+    /** What Logto actually granted, which may be less than what was asked. */
+    grantedScope: v.string(),
+    mintedAt: v.number(),
+  })
+    .index("by_session_audience_scope", ["sessionId", "audience", "scopeKey"])
+    .index("by_sessionId_mintedAt", ["sessionId", "mintedAt"])
+    .index("by_expiresAt", ["expiresAt"]),
+
   // Bounded, indexed grace history for responses that arrive out of order.
   // `prevTokenHash` remains on sessions as a legacy adapter for rows created
   // before this table existed.

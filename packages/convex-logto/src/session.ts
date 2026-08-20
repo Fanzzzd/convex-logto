@@ -113,6 +113,40 @@ export type LogtoSessionComponent = {
       },
       { idToken: string; sessionToken: string; sessionId: string }
     >;
+    exchangeToken: FunctionReference<
+      "action",
+      "internal",
+      {
+        endpoint: string;
+        appId: string;
+        clientSecret: string;
+        sessionToken: string;
+        deviceProof?: string;
+        organizationId?: string;
+        resource?: string;
+        scopes?: string[];
+        includeToken?: boolean;
+        reuseWindowMs?: number;
+      },
+      {
+        claims: LogtoResourceTokenClaims;
+        accessToken?: string;
+        minted: boolean;
+      }
+    >;
+    fetchUserInfo: FunctionReference<
+      "action",
+      "internal",
+      {
+        endpoint: string;
+        appId: string;
+        clientSecret: string;
+        sessionToken: string;
+        deviceProof?: string;
+        reuseWindowMs?: number;
+      },
+      unknown
+    >;
     signOut: FunctionReference<
       "action",
       "internal",
@@ -230,6 +264,23 @@ export type LogtoSessionClientDescriptor = {
   browser?: string;
 };
 
+/**
+ * What an Organization or Resource token authorizes, without the token itself.
+ *
+ * The default custody in session mode: an app checks `scopes` server-side and
+ * the credential never enters `window`. `docs/adr/0002-token-custody.md`.
+ */
+export type LogtoResourceTokenClaims = {
+  /** `organization:<id>`, `resource:<indicator>`, or `default`. */
+  audience: string;
+  /** What Logto granted — which may be narrower than what was asked for. */
+  scopes: string[];
+  /** Absolute expiry in ms. */
+  expiresAt: number;
+  organizationId?: string;
+  resource?: string;
+};
+
 /** One of the caller's sessions, as returned by `listSessions`. */
 export type LogtoSessionSummary = {
   sessionId: string;
@@ -330,6 +381,34 @@ export type LogtoSessionApi = {
     { sessionToken: string; deviceProof?: string; targetSessionId: string },
     boolean
   >;
+  /**
+   * Optional for the same rolling-upgrade reason as `listSessions`. Absent
+   * means the app has not re-exported it; the client surfaces that as a clear
+   * error rather than a mystery.
+   */
+  exchangeToken?: FunctionReference<
+    "action",
+    "public",
+    {
+      sessionToken: string;
+      deviceProof?: string;
+      organizationId?: string;
+      resource?: string;
+      scopes?: string[];
+      includeToken?: boolean;
+    },
+    {
+      claims: LogtoResourceTokenClaims;
+      accessToken?: string;
+      minted: boolean;
+    }
+  >;
+  fetchUserInfo?: FunctionReference<
+    "action",
+    "public",
+    { sessionToken: string; deviceProof?: string },
+    unknown
+  >;
   sessionValid: FunctionReference<
     "query",
     "public",
@@ -347,14 +426,26 @@ export type LogtoSessionApiOptions = LogtoEndpointPolicy & {
   /**
    * API resource indicators appended to the authorize request.
    *
-   * Currently a no-op you can still be punished for. The component holds the
-   * refresh token and exposes only the ID token, so the resource-scoped access
-   * token this buys is discarded and the refresh grant never asks for another —
-   * while a resource indicator Logto does not have registered breaks sign-in
-   * outright. Leave it unset until session mode can hand the token (or its
-   * claims) back; see `docs/adr/0002-token-custody.md`.
+   * Required for `getAccessTokenClaims`: Logto will not issue a Resource token
+   * from a grant that never named the resource — it answers `invalid_target` —
+   * so the set has to be fixed before the user signs in and cannot be widened
+   * in place. Every indicator must be registered in Logto; one that is not
+   * breaks sign-in outright.
+   *
+   * Organization tokens need nothing here.
    */
   resources?: string[];
+  /**
+   * Let `getOrganizationToken` / `getAccessToken` return the token *string*,
+   * not just its claims.
+   *
+   * Off by default, which is the whole point of session mode: the component
+   * mints the token and hands back what it authorizes, so nothing long-lived
+   * enters `window`. Turn this on only for a caller that must reach a
+   * non-Convex API from the browser, accepting that the token becomes one more
+   * thing XSS can steal. `docs/adr/0002-token-custody.md`.
+   */
+  exposeAccessTokens?: boolean;
   /**
    * How long (ms) recently superseded Session-token generations stay accepted,
    * absorbing multi-tab races and network retries. Default 10s.
@@ -391,7 +482,7 @@ function readSessionConfig(options: LogtoSessionApiOptions): {
  * Build the public auth functions for session mode, backed by the Logto session
  * component. Reads `LOGTO_ENDPOINT`, `LOGTO_APP_ID` and `LOGTO_CLIENT_SECRET`
  * from the deployment's env (the secret never leaves the server). Re-export all
- * nine — the frontend provider looks them up by these exact names, and a
+ * eleven — the frontend provider looks them up by these exact names, and a
  * missing one disables that feature rather than failing the build:
  *
  * @example
@@ -408,6 +499,8 @@ function readSessionConfig(options: LogtoSessionApiOptions): {
  *   listSessions,
  *   renameSession,
  *   revokeSession,
+ *   exchangeToken,
+ *   fetchUserInfo,
  *   sessionValid,
  * } = logtoSessionApi(components.logto);
  */
@@ -478,6 +571,27 @@ export function logtoSessionApi(
     "public",
     { sessionToken: string; deviceProof?: string; targetSessionId: string },
     Promise<boolean>
+  >;
+  exchangeToken: RegisteredAction<
+    "public",
+    {
+      sessionToken: string;
+      deviceProof?: string;
+      organizationId?: string;
+      resource?: string;
+      scopes?: string[];
+      includeToken?: boolean;
+    },
+    Promise<{
+      claims: LogtoResourceTokenClaims;
+      accessToken?: string;
+      minted: boolean;
+    }>
+  >;
+  fetchUserInfo: RegisteredAction<
+    "public",
+    { sessionToken: string; deviceProof?: string },
+    Promise<unknown>
   >;
   sessionValid: RegisteredQuery<
     "public",
@@ -645,6 +759,79 @@ export function logtoSessionApi(
           targetSessionId: args.targetSessionId,
           now: Date.now(),
           reuseWindowMs: options.reuseWindowMs ?? DEFAULT_REUSE_WINDOW_MS,
+        });
+      },
+    }),
+    exchangeToken: actionGeneric({
+      args: {
+        sessionToken: v.string(),
+        deviceProof: v.optional(v.string()),
+        organizationId: v.optional(v.string()),
+        resource: v.optional(v.string()),
+        scopes: v.optional(v.array(v.string())),
+        includeToken: v.optional(v.boolean()),
+      },
+      returns: v.object({
+        claims: v.object({
+          audience: v.string(),
+          scopes: v.array(v.string()),
+          expiresAt: v.number(),
+          organizationId: v.optional(v.string()),
+          resource: v.optional(v.string()),
+        }),
+        accessToken: v.optional(v.string()),
+        minted: v.boolean(),
+      }),
+      handler: async (ctx, args) => {
+        if (args.organizationId === undefined && args.resource === undefined) {
+          // The component refuses this too. Refusing here as well keeps the
+          // deployment-facing error close to the call and stops a target-free
+          // request ever becoming a component round trip.
+          throw new ConvexError({
+            kind: "terminal" as const,
+            code: "missing_token_target",
+            message:
+              "convex-logto: pass an organizationId or a resource to exchangeToken.",
+          });
+        }
+        if (args.includeToken && !options.exposeAccessTokens) {
+          // Refuse rather than silently downgrade to claims. A caller that
+          // asked for the token string is about to call an API with it, and
+          // `undefined` would surface as an authorization failure somewhere
+          // else entirely.
+          throw new ConvexError({
+            kind: "terminal" as const,
+            code: "access_tokens_not_exposed",
+            message:
+              "convex-logto: this deployment does not expose access tokens. " +
+              "Pass `exposeAccessTokens: true` to logtoSessionApi() to allow " +
+              "the token string to reach the browser, or use the claims instead.",
+          });
+        }
+        return await ctx.runAction(component.lib.exchangeToken, {
+          ...readSessionConfig(options),
+          sessionToken: args.sessionToken,
+          deviceProof: args.deviceProof,
+          organizationId: args.organizationId,
+          resource: args.resource,
+          scopes: args.scopes,
+          includeToken: args.includeToken,
+          reuseWindowMs: options.reuseWindowMs,
+        });
+      },
+    }),
+    fetchUserInfo: actionGeneric({
+      args: {
+        sessionToken: v.string(),
+        deviceProof: v.optional(v.string()),
+      },
+      returns: v.any(),
+      handler: async (ctx, args) => {
+        return await ctx.runAction(component.lib.fetchUserInfo, {
+          ...readSessionConfig(options),
+          sessionToken: args.sessionToken,
+          deviceProof: args.deviceProof,
+          reuseWindowMs: options.reuseWindowMs,
         });
       },
     }),
