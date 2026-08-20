@@ -3,6 +3,7 @@
   "pages": [
     "---Get started---",
     "index",
+    "why",
     "quick-start",
     "---Integrations---",
     "vite",
