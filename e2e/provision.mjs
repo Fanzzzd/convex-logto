@@ -182,11 +182,14 @@ async function clientSecret(call, applicationId, name) {
   // An override first, so the remediation the error below suggests actually
   // works on a rerun. Some Logto versions do not return the secret on the
   // application detail response at all.
+  // Validated on the trimmed value, returned untrimmed: a whitespace-only
+  // secret is not a secret, and would otherwise both bypass the API fallback and
+  // land in the environment file as something unusable.
   const override = process.env.LOGTO_APP_SECRET;
-  if (typeof override === "string" && override !== "") return override;
+  if (typeof override === "string" && override.trim() !== "") return override;
   const app = await call(`/applications/${applicationId}`);
   const secret = app.secret ?? app.customClientMetadata?.secret ?? null;
-  if (typeof secret !== "string" || secret === "") {
+  if (typeof secret !== "string" || secret.trim() === "") {
     throw new Error(
       `Could not read the client secret for ${name} (${applicationId}). ` +
         "Session mode's authorization-code exchange needs it. Copy it from the " +
