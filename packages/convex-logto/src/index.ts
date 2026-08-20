@@ -46,6 +46,7 @@ export {
   type LogtoSessionSummary,
 } from "./session";
 export {
+  LOGTO_ID_TOKEN_COOKIE_NAME,
   LOGTO_SESSION_COOKIE_BASE_PATH,
   LOGTO_SESSION_COOKIE_NAME,
   LOGTO_SESSION_CSRF_HEADER,
@@ -53,6 +54,8 @@ export {
   assertLogtoSessionCookieCompatibility,
   createLogtoSessionCookieHandler,
   createLogtoSessionCookieTransport,
+  readLogtoIdTokenCookie,
+  type LogtoCookieSource,
   type LogtoSessionAction,
   type LogtoSessionCookieHandler,
   type LogtoSessionCookieHandlerOptions,
