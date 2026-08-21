@@ -165,6 +165,14 @@ test account accumulates sessions — every run leaves some behind — so "the o
 device" is not something the list can be asked for, and aiming a revoke at it
 would eventually aim at whatever an earlier run abandoned.
 
+One flake seen so far, and only after several runs back to back: the re-sign-in
+step reported that the click reached *neither* Logto's prompt nor a signed-in
+app, with a blank document. It did not reproduce on the next run. The assertion
+now prints the URL and whatever text is on screen, so the next occurrence says
+whether Logto refused the authorize request, a redirect was still in flight, or
+the app never navigated. Treat one "neither" as evidence to collect rather than a
+regression to bisect; treat two as a bug.
+
 > The zero-RTT step needs `initialAuthTokenReuse: true` on the app's
 > `ConvexReactClient`, which every example here sets. Without it Convex confirms
 > the cached token and immediately refetches, spending a Logto refresh grant on

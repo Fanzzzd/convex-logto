@@ -224,6 +224,22 @@ async function signInOutcome(page) {
   ]);
 }
 
+/**
+ * Where the browser actually ended up, for the third outcome.
+ *
+ * "Neither" is the one answer that names no cause, and it has happened: a blank
+ * document with nothing to read. Whether that is Logto refusing the authorize
+ * request, a redirect still in flight, or an app that never navigated is the
+ * whole question, and the URL plus whatever text is on screen separates them.
+ * Reported rather than asserted on, because this is a diagnosis, not a rule.
+ */
+async function describePage(page) {
+  const text = await page
+    .evaluate(() => document.body.innerText.replace(/\s+/g, " ").trim())
+    .catch(() => "(unreadable)");
+  return `at ${page.url()} showing ${text ? JSON.stringify(text.slice(0, 160)) : "an empty document"}`;
+}
+
 /** The cached ID token, read from the library's own key. */
 function readStoredIdToken(page) {
   return page.evaluate(() => {
@@ -518,7 +534,8 @@ try {
     outcome === "silent"
       ? "sign-out did not end Logto's session: the next sign-in completed " +
           "silently over a surviving SSO cookie"
-      : "the sign-in click reached neither Logto's prompt nor a signed-in app",
+      : "the sign-in click reached neither Logto's prompt nor a signed-in app, " +
+          `${await describePage(page)}`,
   );
   await signInAtLogto(page);
   await waitForSignedIn(page);
