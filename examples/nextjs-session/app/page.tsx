@@ -16,9 +16,9 @@ import { Dashboard } from "./dashboard";
  * and this browser's next `/token` call, this render can still paint the
  * signed-in shell. `me` returns identity the token already carries, so that
  * costs nothing beyond a shell the client corrects on hydration. A query that
- * returns *data* must not rely on the token alone: enforce revocation inside the
- * function, the way `convex/me.ts`'s `sensitive` does with
- * `assertSubjectHasActiveSession`.
+ * returns anything the bearer does not already hold must not rely on the token
+ * alone: enforce revocation inside the function, the way `convex/me.ts`'s
+ * `sensitive` does with `assertSubjectHasActiveSession`.
  */
 export default async function Home() {
   const token = readLogtoIdTokenCookie(await cookies());
