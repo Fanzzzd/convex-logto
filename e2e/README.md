@@ -111,6 +111,14 @@ cache → userinfo → sign-out → re-sign-in → revoking a second device → 
 everywhere. `E2E_HEADED=1` to watch it. A failure writes `failure.png` next to
 the script and exits non-zero.
 
+Progress and failures go to **stderr**, like everything else here — the exit code
+is the machine-readable result, so stdout stays free for a caller to redirect
+without swallowing the log. Keep a run with `2>`:
+
+```bash
+node session-flow.mjs 2> .probe-session-flow.log   # gitignored
+```
+
 The last two steps open **separate browser contexts**, which is what makes them
 worth running: a second context is a second cookie jar and a second storage
 origin, so it is a second *device* to both Logto and the component — and

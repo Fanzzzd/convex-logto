@@ -249,10 +249,15 @@ async function ensureOrganization(call, userId) {
       }),
     }));
 
-  const members = await call(
-    `/organizations/${org.id}/users?page=1&page_size=100`,
+  // Paged, for the reason `findPaged`'s own comment gives: a single page of 100
+  // silently misses a member in a larger organization, and "not a member" here
+  // means a POST that adds someone who is already there.
+  const member = await findPaged(
+    call,
+    `/organizations/${org.id}/users`,
+    (candidate) => candidate.id === userId,
   );
-  if (!members.some((member) => member.id === userId)) {
+  if (member === undefined) {
     await call(`/organizations/${org.id}/users`, {
       method: "POST",
       body: JSON.stringify({ userIds: [userId] }),
