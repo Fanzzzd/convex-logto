@@ -310,7 +310,26 @@ A **missing scope authorizes nothing**, not everything: absent and empty are the
 same answer, because a deployment that never requested the scope is
 indistinguishable from a user who belongs to nothing, and only one reading is
 safe. The failure names the scope so a configuration gap does not read as a
-denial.
+denial. The two scopes are independent — Logto advertises them separately and a
+grant carries exactly what was requested — so request **both** if you read both
+claims. A deployment that requests only `urn:logto:scope:organization_roles` has
+no `organizations` claim, and every `assertOrganizationMember` call then denies.
+
+<Callout type="warn">
+**These claims are a snapshot, not a lookup.** They were true when the ID token
+was issued and stay frozen until the next one is — at most the token's own
+lifetime, which Logto defaults to an hour. Removing someone from an organization,
+or taking a role away, does not take effect at once. Nothing re-reads Logto here,
+by design: not re-reading it is what makes the check free.
+
+Deleting or suspending the *user* is different — the
+[webhook](/docs/webhook-sync) revokes their sessions, and that is immediate.
+
+When a membership change has to bite immediately, do not use these helpers for
+it: keep membership in your own table and check that, so the authorization reads
+current state rather than past state. Shortening the ID token's lifetime in Logto
+narrows the window; it never closes it.
+</Callout>
 
 Organization **permissions** are the one part Logto puts nowhere but an
 organization token, audienced `urn:logto:organization:{id}` and typed `at+jwt`,
@@ -353,10 +372,11 @@ and asking for one explicitly is refused (`invalid_scope`, "a refresh grant can
 only request scopes it already holds").
 
 So do not authorize on `getOrganizationTokenClaims(...).scopes` — it would deny
-everyone. Use `organization_roles` from the ID token, which is free and
-authoritative: `assertOrganizationRole(ctx, orgId, ["admin"])` above. The
-organization token is still the right thing to *send* to a service that
-validates the `urn:logto:organization:<id>` audience itself.
+everyone. Use `organization_roles` from the ID token, which is free and actually
+populated: `assertOrganizationRole(ctx, orgId, ["admin"])` above — as of the
+token's issuance, per the note there. The organization token is still the right
+thing to *send* to a service that validates the `urn:logto:organization:<id>`
+audience itself.
 </Callout>
 
 The component mints the token from the Session's Logto refresh token and hands
