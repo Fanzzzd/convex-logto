@@ -151,7 +151,10 @@ provider logs the failure and delivers it to `onAuthError`, even though
 `signOut()` ends the Logto session and returns the user to your app's origin (the
 **Post sign-out redirect URI** from step 1). Pass
 `signOut({ postLogoutRedirectUri: "https://app.com/bye" })` to land somewhere
-else — just register that URI too.
+else — just register that URI too. Don't follow it with a **hard** navigation of
+your own (`location.href = ...`): it resolves once the browser has been told to
+leave for Logto, not once it has arrived, and a second full-page navigation
+supersedes the request that ends the Logto session.
 
 In any Convex function, the Logto identity is already there:
 

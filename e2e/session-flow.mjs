@@ -26,7 +26,7 @@ const headless = process.env.E2E_HEADED !== "1";
 const screenshotPath = fileURLToPath(new URL("./failure.png", import.meta.url));
 // Labels outlive a run: a revoke aimed at "the other device" would eventually
 // aim at a session some earlier run abandoned. Every run names its own.
-const runId = Date.now().toString(36);
+const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 function trimSlash(value) {
   return value.replace(/\/+$/, "");
@@ -86,6 +86,65 @@ async function waitForSignedOut(page) {
     undefined,
     { timeout: 30_000 },
   );
+}
+
+/**
+ * Wait until the browser is back on the app's own origin.
+ *
+ * `localStorage` is per origin, and a federated sign-out leaves the page on
+ * Logto's while it ends the OP session. Reading storage there answers a
+ * question about *Logto's* storage — and answers "no session token" no matter
+ * what the app kept, which is a passing assertion that checked nothing. Every
+ * storage assertion waits for this first.
+ */
+async function waitForAppOrigin(target) {
+  await target.waitForURL((url) => url.href.startsWith(appUrl), {
+    timeout: 45_000,
+  });
+  await target.waitForLoadState("domcontentloaded");
+}
+
+/**
+ * Sign out, and wait for the logout to actually reach Logto and come back.
+ *
+ * The app clears its own credentials *before* the network call, and the browser
+ * is still on the app's origin while it does — so "signed out, and on the app"
+ * is already true a millisecond after the click, before the end-session
+ * redirect has even started. Anything that navigates into that window cancels
+ * the request to Logto, and the OP session survives a sign-out that every
+ * local assertion says succeeded. Waiting for the end-session request itself is
+ * the only thing that closes it.
+ */
+async function signOutAndWaitForLogto(target, buttonName) {
+  const reachedLogto = target.waitForRequest(
+    (request) => request.url().includes("/oidc/session/end"),
+    { timeout: 45_000 },
+  );
+  await target.getByRole("button", { name: buttonName }).click();
+  await reachedLogto;
+  await waitForAppOrigin(target);
+  await waitForSignedOut(target);
+}
+
+/**
+ * Load the app again, tolerating a redirect still in flight.
+ *
+ * A federated sign-out is a chain — app → Logto's end-session → back — and the
+ * last hop can still be committing when the signed-out UI is already on screen.
+ * A navigation issued into that window aborts. Retrying is not papering over a
+ * product bug: the chain really is asynchronous, and the assertion that follows
+ * is about storage, not about how many redirects it took to get here.
+ */
+async function reopenApp(target) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await target.goto(appUrl, { waitUntil: "domcontentloaded" });
+      return;
+    } catch (error) {
+      if (attempt >= 3) throw error;
+      await target.waitForTimeout(500);
+    }
+  }
 }
 
 /** The rotating session token the library persisted, read from its own key. */
@@ -270,9 +329,8 @@ try {
   // Not `/^sign out/`: the app also offers "Sign out everywhere", and matching
   // both makes Playwright refuse rather than pick — which is the right call, and
   // the reason this names the one it means.
-  await page.getByRole("button", { name: /^sign out(?! everywhere)/i }).click();
-  await waitForSignedOut(page);
-  await page.reload({ waitUntil: "domcontentloaded" });
+  await signOutAndWaitForLogto(page, /^sign out(?! everywhere)/i);
+  await reopenApp(page);
   await waitForSignedOut(page);
   const afterSignOut = await readStoredSessionToken(page);
   assert(
@@ -358,11 +416,20 @@ try {
   const third = await newDevice();
   try {
     await signInOnFreshDevice(third.page);
-    await page
-      .getByRole("button", { name: /^sign out everywhere$/i })
-      .click();
+    await signOutAndWaitForLogto(page, /^sign out everywhere$/i);
+    // Same settling as step 4, for the same reason: the sign-out chain's last
+    // hop can still be committing, and a storage read into that window is
+    // evaluated in a document that is being replaced.
+    await reopenApp(page);
     await waitForSignedOut(page);
     await waitForSignedOut(third.page);
+    // Both devices, not just the far one: sign-out-everywhere is a different
+    // code path from sign-out, and "cleared UI, live credentials in storage" is
+    // as much a bug on the device that clicked as on the one that did not.
+    assert(
+      (await readStoredSessionToken(page)) === null,
+      "the device that signed out everywhere kept its own session token",
+    );
     assert(
       (await readStoredSessionToken(third.page)) === null,
       "a device kept its session token through sign-out-everywhere",

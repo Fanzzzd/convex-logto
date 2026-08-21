@@ -505,6 +505,20 @@ signOutEverywhere, listSessions, renameSession, revokeSession }`.
   from its session token, records logical revocation before bounded row cleanup,
   and always completes federated sign-out for this device. Older app modules that
   have not re-exported the action fail with an explicit deployment fix.
+
+<Callout type="warn">
+A federated sign-out resolves once the browser has been **told** to leave for
+Logto, not once it has arrived. The local credentials are already gone at that
+point, so the UI reads "signed out" while the request that ends the *Logto*
+session is still in flight. Issuing a **hard** navigation of your own after
+`await signOut()` — `window.location.assign(...)`, `location.href = ...`, a full
+page load — supersedes it, and the SSO session survives a sign-out that looked
+like it worked. The next visitor to that browser is signed straight back in.
+
+A router `push`/`replace` is a soft, same-document navigation and is safe. If
+you need a hard one, pass the destination as `postLogoutRedirectUri` and let the
+sign-out land there itself.
+</Callout>
 - `listSessions()` — a snapshot (not a subscription: the credential it
   authenticates with rotates) of the caller's own sessions, `{ sessions,
   truncated }`, newest first. Call it again after a rename or revoke.
