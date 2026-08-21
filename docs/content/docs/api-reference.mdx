@@ -30,6 +30,8 @@ description: Every export from convex-logto and its web, native, and session-mod
 | default | `convex-logto/convex.config` | The session component, for `app.use(logto)` in `convex/convex.config.ts`. |
 | `ConvexLogtoSessionProvider` | `convex-logto/react-session` | Session mode's provider — no Logto SDK; talks to your `logtoSessionApi` functions. |
 | `useLogtoAuth()` | `convex-logto/react-session` | Session auth plus `signOutEverywhere({ postLogoutRedirectUri? })`, `listSessions()` / `renameSession()` / `revokeSession()`, and `getIdToken()` / `getOrganizationTokenClaims()` / `getAccessTokenClaims()` / `fetchUserInfo()`. |
+| `SessionSignOutError` | `convex-logto/react-session`, `convex-logto/native-session` | The error `signOut()` rejects with when local credential cleanup fails twice; `serverSessionStatus` says whether the server session survived. |
+| `LogtoUserClaims` | `convex-logto` | The type of `user` in all four entries — standard claims named, everything else through an index signature. Import it to type a helper that takes one. |
 | `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `config` / `configQuery` model; no callback route. |
 | `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signIn({ redirectUri? })` / `signOut({ postLogoutRedirectUri? })`. |
 | `ConvexLogtoSessionProvider` | `convex-logto/native-session` | React Native / Expo session provider using SecureStore + the system browser. |
@@ -582,6 +584,36 @@ A router `push`/`replace` is a soft, same-document navigation and is safe. If
 you need a hard one, pass the destination as `postLogoutRedirectUri` and let the
 sign-out land there itself.
 </Callout>
+
+`signOut()` rejects with **`SessionSignOutError`** when local credential cleanup
+fails twice — exported from `convex-logto/react-session` and
+`convex-logto/native-session`, so it is `instanceof`-checkable rather than
+matched on a message. Two fields say what state the user is actually in:
+
+```ts
+import { SessionSignOutError } from "convex-logto/react-session";
+
+try {
+  await signOut();
+} catch (error) {
+  if (error instanceof SessionSignOutError) {
+    // "revoked": the server session is gone; only this browser's copy lingers.
+    // "revocation_failed": the server session is still live. This one matters.
+    // "not_present": there was nothing to revoke.
+    reportToUser(error.serverSessionStatus);
+  }
+}
+```
+
+`code` collapses the same thing to two values: `local_cleanup_failed`, or
+`local_cleanup_and_server_revocation_failed`.
+
+**Take the rejection seriously.** The engine clears its in-memory auth state
+first, so the tab reads "signed out" either way — but this error is thrown
+precisely because the *durable* wipe failed twice, so credentials may still be in
+browser storage. With `revocation_failed` the server session is live as well, and
+a reload can sign the user straight back in. On a shared device that is worth
+saying out loud rather than swallowing.
 - `listSessions()` — a snapshot (not a subscription: the credential it
   authenticates with rotates) of the caller's own sessions, `{ sessions,
   truncated }`, newest first. Call it again after a rename or revoke.

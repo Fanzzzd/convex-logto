@@ -439,6 +439,10 @@ export type LogtoSessionAuth = {
    * unless `federated: false` — ends Logto's SSO session and returns to
    * `postLogoutRedirectUri` (default `window.location.origin`, which you must
    * register as a **Post sign-out redirect URI**).
+   *
+   * Rejects with {@link SessionSignOutError} when durable cleanup fails twice;
+   * its `serverSessionStatus` distinguishes a successful revocation from a dual
+   * failure.
    */
   signOut: (options?: {
     postLogoutRedirectUri?: string;
@@ -662,6 +666,14 @@ export type {
 } from "./session";
 export type {
   LogtoTokenExchangeOptions,
+  SessionSignOutServerStatus,
   TokenStorageKind,
 } from "./session-client";
+// A value, not a type: `instanceof` is how an app tells a sign-out that could
+// not durably wipe its credentials apart from one that simply failed. The
+// browser engine throws the same class the native one does, and
+// `convex-logto/native-session` has always exported it — a web app reduced to
+// matching on `error.name` for the identical failure is exactly the entry-point
+// drift this package keeps having to undo.
+export { SessionSignOutError } from "./session-client";
 export type { LogtoSessionCookieTransportOptions } from "./session-cookie";
