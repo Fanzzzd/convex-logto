@@ -551,6 +551,9 @@ it.each([
   [400, "unsupported_grant_type", "transient"],
   [401, "invalid_client", "transient"],
   [401, "unauthorized_client", "transient"],
+  // 403 is not in RFC 6749 §5.2, but Logto answers it — and it is a decision,
+  // not an unknown outcome. The dedicated test below is the one that proves it.
+  [403, "invalid_grant", "terminal"],
   [429, undefined, "transient"],
   [500, undefined, "transient"],
   [502, undefined, "transient"],
@@ -561,7 +564,7 @@ it.each([
   ).toBe(kind);
 });
 
-it.each([400, 401])(
+it.each([400, 401, 403])(
   "classifyTokenEndpointFailure(%i) without an error code keeps the session",
   (status) => {
     // Deleting every session of a deployment is irreversible; an answer we
@@ -571,6 +574,39 @@ it.each([400, 401])(
     );
   },
 );
+
+it("does not read a 403 as an unknown outcome, which would delete the session", () => {
+  // The whole chain this prevents, measured live before it was fixed: an
+  // Organization token requested without `urn:logto:scope:organizations`
+  // answers `403 insufficient_scope`; read as "outcome unknown" the component
+  // keeps the refresh claim, every later refresh answers `refresh_in_flight`,
+  // and when the claim ages out the session is *deleted*. One missing scope in
+  // a deployment's config, every user signed out.
+  const error = classifyTokenEndpointFailure(403, {
+    error: "insufficient_scope",
+    scope: "urn:logto:scope:organizations",
+  });
+  expect(error.data.kind).toBe("transient");
+  expect(error.data.code).toBe("insufficient_scope");
+  expect(error.data.code).not.toBe("logto_outcome_unknown");
+  // And it names the scope Logto asked for, because "insufficient_scope"
+  // alone does not tell a reader which option to add.
+  expect(error.data.message).toContain("urn:logto:scope:organizations");
+  expect(error.data.message).toContain("scopes");
+});
+
+it("does not blame the client credentials for a scope Logto refused", () => {
+  // `invalid_scope` shares the configuration-fault branch with
+  // `invalid_client`, whose message names LOGTO_APP_ID / LOGTO_CLIENT_SECRET /
+  // LOGTO_ENDPOINT. For a scope that is the wrong three things to check.
+  const error = classifyTokenEndpointFailure(400, {
+    error: "invalid_scope",
+    scope: "e2e:manage",
+  });
+  expect(error.data.kind).toBe("transient");
+  expect(error.data.message).toContain("e2e:manage");
+  expect(error.data.message).not.toContain("LOGTO_CLIENT_SECRET");
+});
 
 it("classifyTokenEndpointFailure surfaces Logto's error code", () => {
   expect(

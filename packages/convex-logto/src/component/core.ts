@@ -966,6 +966,13 @@ const CONFIGURATION_FAULT_ERRORS = new Set([
   "unauthorized_client",
   "unsupported_grant_type",
   "invalid_scope",
+  // Measured, not assumed: asking Logto for an Organization token on a grant
+  // that never requested `urn:logto:scope:organizations` answers
+  // `403 insufficient_scope`. Scopes are fixed at authorization time, so this
+  // is a deployment that has not put them in `logtoSessionApi({ scopes })` —
+  // and it is answered identically for every session, which is exactly why it
+  // must never be terminal.
+  "insufficient_scope",
 ]);
 
 /**
@@ -992,14 +999,45 @@ export function isOutcomeUnknownError(error: unknown): boolean {
 
 export function classifyTokenEndpointFailure(
   status: number,
-  body: { error?: string },
+  body: { error?: string; scope?: string },
 ): ConvexError<SessionErrorData> {
-  if (status === 400 || status === 401) {
+  // 403 belongs here with 400 and 401. RFC 6749 §5.2 does not use it, but Logto
+  // does — an Organization token asked for on a grant without
+  // `urn:logto:scope:organizations` comes back `403 insufficient_scope`, with a
+  // machine-readable body. Reading that as "outcome unknown" was a real bug:
+  // the claim was kept, every later refresh answered `refresh_in_flight`, and
+  // when the claim aged out the session was *deleted* — one missing scope in a
+  // deployment's config signing every user out.
+  if (status === 400 || status === 401 || status === 403) {
     // Logto answered with a decision, so it did not rotate anything.
     if (
       body.error !== undefined &&
       CONFIGURATION_FAULT_ERRORS.has(body.error)
     ) {
+      if (body.error === "insufficient_scope") {
+        return transient(
+          body.error,
+          `Logto refused this grant: it never requested ${body.scope ?? "the scope this call needs"}. ` +
+            "Scopes are fixed at authorization time — add it to " +
+            "`logtoSessionApi({ scopes })` and sign in again. Sessions are kept.",
+        );
+      }
+      if (body.error === "invalid_scope") {
+        // Not a credentials problem, so the generic message below would send
+        // the reader to the wrong three environment variables. Logto names the
+        // offending scope, and the rule is a subset rule: a refresh grant may
+        // only ask for scopes it already holds. Organization *permissions*
+        // never do — they are not OIDC scopes at all (they are absent from
+        // `scopes_supported`), so asking for one here can only fail.
+        return transient(
+          body.error,
+          `Logto rejected the scopes this call asked for${body.scope === undefined ? "" : ` (${body.scope})`}: ` +
+            "a refresh grant can only request scopes it already holds. Add " +
+            "them to `logtoSessionApi({ scopes })` and sign in again — and note " +
+            "that organization permissions are not OIDC scopes, so they cannot " +
+            "be asked for this way. Sessions are kept.",
+        );
+      }
       return transient(
         body.error,
         `Logto rejected this deployment's own request (${body.error}) — check ` +

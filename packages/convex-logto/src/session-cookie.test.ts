@@ -1582,6 +1582,36 @@ describe("tokens route", () => {
     });
   });
 
+  it("forwards forceRefresh on both ops", async () => {
+    // The cookie transport is the one path where the browser cannot pass an
+    // argument straight through: every field has to be named on both sides. A
+    // dropped `forceRefresh` would silently serve the cached token the caller
+    // just told the library not to trust.
+    const { handler, handlers } = makeHarness();
+    await handler(
+      request("tokens", {
+        cookie: cookie("session-token-1"),
+        body: { op: "exchange", organizationId: "org-1", forceRefresh: true },
+      }),
+    );
+    expect(handlers.exchangeToken).toHaveBeenCalledWith({
+      sessionToken: "session-token-1",
+      organizationId: "org-1",
+      forceRefresh: true,
+    });
+
+    await handler(
+      request("tokens", {
+        cookie: cookie("session-token-1"),
+        body: { op: "userinfo", forceRefresh: true },
+      }),
+    );
+    expect(handlers.fetchUserInfo).toHaveBeenCalledWith({
+      sessionToken: "session-token-1",
+      forceRefresh: true,
+    });
+  });
+
   it("refuses without the session cookie", async () => {
     const { handler, handlers } = makeHarness();
     const response = await handler(
@@ -1673,5 +1703,41 @@ describe("browser transport token exchange", () => {
     await expect(
       transport.action(api.fetchUserInfo!, { sessionToken: "ignored" }),
     ).resolves.toEqual({ sub: "user-1", name: "Ada" });
+  });
+
+  it("carries forceRefresh across the transport, for both calls", async () => {
+    // End to end through the real route: the browser half has to *name* the
+    // field to send it, and the server half has to name it again to forward
+    // it. Two places to drop it, so this asserts what the app action received.
+    const { handler, handlers } = makeHarness();
+    const transport = createLogtoSessionCookieTransport(api, {
+      endpoint: `${APP_ORIGIN}${BASE_PATH}`,
+      fetch: (input, init) => {
+        const forwarded = new Request(input as string, init);
+        forwarded.headers.set("Origin", APP_ORIGIN);
+        forwarded.headers.set("Cookie", cookie("session-token-1"));
+        return handler(forwarded);
+      },
+    });
+
+    await transport.action(api.exchangeToken!, {
+      sessionToken: "ignored",
+      organizationId: "org-1",
+      forceRefresh: true,
+    });
+    expect(handlers.exchangeToken).toHaveBeenLastCalledWith({
+      sessionToken: "session-token-1",
+      organizationId: "org-1",
+      forceRefresh: true,
+    });
+
+    await transport.action(api.fetchUserInfo!, {
+      sessionToken: "ignored",
+      forceRefresh: true,
+    });
+    expect(handlers.fetchUserInfo).toHaveBeenLastCalledWith({
+      sessionToken: "session-token-1",
+      forceRefresh: true,
+    });
   });
 });

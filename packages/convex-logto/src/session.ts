@@ -13,6 +13,7 @@ import {
   sessionReuseDetectedError,
 } from "./component/core.js";
 import type { LogtoEndpointPolicy } from "./component/endpoint.js";
+import { ORGANIZATIONS_SCOPE } from "./claims";
 import { readEndpointAndAppId } from "./config";
 
 const sessionSummaryValidator = v.object({
@@ -126,6 +127,7 @@ export type LogtoSessionComponent = {
         resource?: string;
         scopes?: string[];
         includeToken?: boolean;
+        forceRefresh?: boolean;
         reuseWindowMs?: number;
       },
       {
@@ -143,6 +145,7 @@ export type LogtoSessionComponent = {
         clientSecret: string;
         sessionToken: string;
         deviceProof?: string;
+        forceRefresh?: boolean;
         reuseWindowMs?: number;
       },
       unknown
@@ -396,6 +399,7 @@ export type LogtoSessionApi = {
       resource?: string;
       scopes?: string[];
       includeToken?: boolean;
+      forceRefresh?: boolean;
     },
     {
       claims: LogtoResourceTokenClaims;
@@ -406,7 +410,7 @@ export type LogtoSessionApi = {
   fetchUserInfo?: FunctionReference<
     "action",
     "public",
-    { sessionToken: string; deviceProof?: string },
+    { sessionToken: string; deviceProof?: string; forceRefresh?: boolean },
     unknown
   >;
   sessionValid: FunctionReference<
@@ -770,6 +774,7 @@ export function logtoSessionApi(
         resource: v.optional(v.string()),
         scopes: v.optional(v.array(v.string())),
         includeToken: v.optional(v.boolean()),
+        forceRefresh: v.optional(v.boolean()),
       },
       returns: v.object({
         claims: v.object({
@@ -794,6 +799,26 @@ export function logtoSessionApi(
               "convex-logto: pass an organizationId or a resource to exchangeToken.",
           });
         }
+        if (
+          args.organizationId !== undefined &&
+          !(options.scopes ?? []).includes(ORGANIZATIONS_SCOPE)
+        ) {
+          // Logto answers `403 insufficient_scope` for this, and scopes are
+          // fixed at authorization time — so no retry, no `forceRefresh` and no
+          // amount of waiting can make it succeed for a session that already
+          // exists. Refusing here costs the caller nothing; letting it through
+          // spends a refresh claim on a request that cannot work.
+          throw new ConvexError({
+            kind: "terminal" as const,
+            code: "organizations_scope_missing",
+            message:
+              "convex-logto: an organization token needs the " +
+              `${ORGANIZATIONS_SCOPE} scope in the grant. Add it to ` +
+              "`logtoSessionApi({ scopes })` and sign in again — a grant " +
+              "cannot be widened in place. Membership and roles need no token " +
+              "at all; they are already in the ID token.",
+          });
+        }
         if (args.includeToken && !options.exposeAccessTokens) {
           // Refuse rather than silently downgrade to claims. A caller that
           // asked for the token string is about to call an API with it, and
@@ -816,6 +841,7 @@ export function logtoSessionApi(
           resource: args.resource,
           scopes: args.scopes,
           includeToken: args.includeToken,
+          forceRefresh: args.forceRefresh,
           reuseWindowMs: options.reuseWindowMs,
         });
       },
@@ -824,6 +850,7 @@ export function logtoSessionApi(
       args: {
         sessionToken: v.string(),
         deviceProof: v.optional(v.string()),
+        forceRefresh: v.optional(v.boolean()),
       },
       returns: v.any(),
       handler: async (ctx, args) => {
@@ -831,6 +858,7 @@ export function logtoSessionApi(
           ...readSessionConfig(options),
           sessionToken: args.sessionToken,
           deviceProof: args.deviceProof,
+          forceRefresh: args.forceRefresh,
           reuseWindowMs: options.reuseWindowMs,
         });
       },

@@ -318,9 +318,10 @@ which Convex rejects as a request credential. Session mode can mint one for you
 <Callout type="info">Session mode only. In bridge mode the Logto SDK is already
 in the bundle: use `useLogto().getOrganizationToken(...)` directly.</Callout>
 
-Reach for this **only** for fine-grained organization permissions, or for a
-non-Convex API you registered with Logto. Membership and organization roles are
-already in the ID token (above) and cost nothing.
+Reach for this for a non-Convex API you registered with Logto, or to hand an
+organization-audienced token to something that checks permissions itself.
+Membership and organization roles are already in the ID token (above) and cost
+nothing.
 
 ```ts
 const {
@@ -330,11 +331,29 @@ const {
   getIdToken,
 } = useLogtoAuth();
 
-const { scopes } = await getOrganizationTokenClaims("org-id");
+// A Resource token's scopes are the ones this grant was signed for.
+const { scopes } = await getAccessTokenClaims("https://api.example.com");
 if (scopes.includes("invoice:delete")) {
   /* ... */
 }
 ```
+
+<Callout type="warn">
+**An organization token's `scopes` is empty.** Measured against a real Logto,
+three ways: Logto issues `availableScopes ∩ requestedScopes`, where
+`availableScopes` is the user's organization permissions and `requestedScopes`
+defaults to the grant's own scopes. Organization permissions are not OIDC scopes
+— they are absent from `scopes_supported`, so the authorize request drops them
+and they can never be in a grant. The intersection is therefore always empty,
+and asking for one explicitly is refused (`invalid_scope`, "a refresh grant can
+only request scopes it already holds").
+
+So do not authorize on `getOrganizationTokenClaims(...).scopes` — it would deny
+everyone. Use `organization_roles` from the ID token, which is free and
+authoritative: `assertOrganizationRole(ctx, orgId, ["admin"])` above. The
+organization token is still the right thing to *send* to a service that
+validates the `urn:logto:organization:<id>` audience itself.
+</Callout>
 
 The component mints the token from the Session's Logto refresh token and hands
 back **what it authorizes**, not the token itself — nothing long-lived enters
@@ -360,11 +379,31 @@ export const { /* ... */ exchangeToken, fetchUserInfo } = logtoSessionApi(
 - **Minted tokens are cached** per session, audience and requested scope set, so
   a permission check on render does not cost a grant. A revoked session's cache
   is invisible immediately and deleted with it.
+- **When the API you called rejects the token, ask for a new one.** Every method
+  takes a final `{ forceRefresh: true }`, which skips the cache and replaces
+  what was there. Without it a token the resource server has stopped accepting
+  would go on being served for the rest of its lifetime, with no way to say
+  "not that one". It costs a grant, so it belongs on the failure path:
+
+  ```ts
+  let token = await getAccessToken("https://api.example.com");
+  let res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (res.status === 401) {
+    token = await getAccessToken("https://api.example.com", undefined, {
+      forceRefresh: true,
+    });
+    res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  }
+  ```
 - **The exchange queues behind a refresh.** It spends the same Logto refresh
   token, so it takes the same claim and can answer the transient
   `refresh_in_flight` — retry it.
 - `fetchUserInfo()` is Logto's live `/oidc/me`, unlike `user`, which is the copy
   the last ID token froze. `getIdToken()` returns that Short bearer itself.
+  `fetchUserInfo` does the retry above for you — it is the one caller inside the
+  library that consumes a minted token, so when Logto answers `401`/`403` for a
+  *cached* one it mints once and tries again. A rejection of a token it just
+  minted is a deployment fault, and it does not spend a second grant on that.
 
 See [ADR 0002](https://github.com/Fanzzzd/convex-logto/blob/main/docs/adr/0002-token-custody.md)
 for the custody decision and

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ORGANIZATIONS_SCOPE } from "./claims";
 import {
   assertSubjectHasActiveSession,
   assertUserHasActiveSession,
@@ -202,11 +203,18 @@ describe("logtoSessionApi exchangeToken", () => {
     minted: boolean;
   }>;
 
+  /**
+   * `scopes` carries the organization scope by default because an organization
+   * exchange is refused without it — Logto answers `403 insufficient_scope`,
+   * and no retry can fix a grant that is already signed. Tests about *that*
+   * rule pass their own `scopes`.
+   */
   function handlerFor(options: Record<string, unknown> = {}) {
     const api = logtoSessionApi(component, {
       endpoint: "https://auth.example.com",
       appId: "app-1",
       clientSecret: "secret",
+      scopes: [ORGANIZATIONS_SCOPE],
       ...options,
     });
     return (api.exchangeToken as unknown as Record<string, Handler>)[
@@ -246,6 +254,41 @@ describe("logtoSessionApi exchangeToken", () => {
       includeToken: undefined,
       reuseWindowMs: 321,
     });
+  });
+
+  it("refuses an organization token the grant can never satisfy", async () => {
+    // Measured against a real Logto: without `urn:logto:scope:organizations`
+    // the token endpoint answers `403 insufficient_scope`. Scopes are fixed at
+    // authorization time, so no retry and no `forceRefresh` can rescue an
+    // existing session — and letting it through spends a refresh claim on a
+    // request that cannot work.
+    const runAction = vi.fn();
+    await expect(
+      handlerFor({ scopes: [] })(
+        { runAction },
+        { sessionToken: "session-token", organizationId: "org-1" },
+      ),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "organizations_scope_missing" },
+    });
+    expect(runAction).not.toHaveBeenCalled();
+  });
+
+  it("does not require that scope for a resource token", async () => {
+    // Resources are named by `resources`, not by the organization scope.
+    const runAction = vi.fn().mockResolvedValue({
+      claims: {
+        audience: "resource:https://api.example.com",
+        scopes: [],
+        expiresAt: 5_000_000,
+      },
+      minted: true,
+    });
+    await handlerFor({ scopes: [] })(
+      { runAction },
+      { sessionToken: "session-token", resource: "https://api.example.com" },
+    );
+    expect(runAction).toHaveBeenCalled();
   });
 
   it("refuses to hand back a token string unless the deployment opted in", async () => {
