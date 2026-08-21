@@ -295,6 +295,28 @@ function clearCookieHeader(): string {
   );
 }
 
+/**
+ * Expire *both* cookies — the only correct way to end a session over this
+ * transport.
+ *
+ * Clearing the session cookie alone leaves the ID token behind, and neither
+ * cookie can be reached from JavaScript, so nothing on the client can finish the
+ * job: the browser goes on presenting a signed-in identity to every server
+ * render until the token's own `Max-Age` runs out, which is up to its full
+ * lifetime. On a shared computer that is the *previous* user's identity, served
+ * into the next visitor's HTML.
+ *
+ * Both are cleared even when `idTokenCookie` was never enabled: expiring a
+ * cookie that does not exist is inert, and turning the option off must not
+ * strand a live token written while it was on.
+ */
+function clearCookieHeaders(): Headers {
+  const headers = new Headers();
+  headers.append("Set-Cookie", clearCookieHeader());
+  headers.append("Set-Cookie", clearIdTokenCookieHeader());
+  return headers;
+}
+
 function readCookieHeader(header: string | null, name: string): string | null {
   if (!header) return null;
   for (const part of header.split(";")) {
@@ -334,8 +356,8 @@ export type LogtoCookieSource =
  * Read the ID token a route handler stored for server-side rendering.
  *
  * Requires `idTokenCookie: true` on {@link createLogtoSessionCookieHandler};
- * returns `null` otherwise, and whenever the token has expired out of its own
- * cookie. Pair it with Convex's `preloadQuery` / `fetchQuery`:
+ * returns `null` otherwise, and whenever the token has expired. Pair it with
+ * Convex's `preloadQuery` / `fetchQuery`:
  *
  * @example
  * // app/page.tsx — a Server Component, which cannot set cookies
@@ -351,6 +373,10 @@ export type LogtoCookieSource =
 export function readLogtoIdTokenCookie(
   source: LogtoCookieSource,
 ): string | null {
+  return unexpired(rawIdTokenCookie(source));
+}
+
+function rawIdTokenCookie(source: LogtoCookieSource): string | null {
   if (typeof source === "string") {
     return readCookieHeader(source, LOGTO_ID_TOKEN_COOKIE_NAME);
   }
@@ -362,6 +388,20 @@ export function readLogtoIdTokenCookie(
   }
   const entry = source.get(LOGTO_ID_TOKEN_COOKIE_NAME);
   return entry === undefined || entry.value === "" ? null : entry.value;
+}
+
+/**
+ * The cookie's `Max-Age` already comes from the token's own `exp`, so a browser
+ * stops sending an expired one on its own — but that is the *browser's*
+ * guarantee, and this read does not always sit behind one. A `Cookie` header
+ * replayed from a cache, a proxy, or a fixture arrives with whatever lifetime it
+ * was captured with, and an expired token server-renders the page as signed in
+ * for a bearer Convex will refuse. Checking here makes the promise this function
+ * documents its own, instead of one it delegates.
+ */
+function unexpired(idToken: string | null): string | null {
+  if (idToken === null) return null;
+  return idTokenMaxAge(idToken) > 0 ? idToken : null;
 }
 
 function routeFor(request: Request, basePath: string): CookieRoute | null {
@@ -691,12 +731,12 @@ export function createLogtoSessionCookieHandler(
     request: Request,
     origin: string,
   ): Promise<Response> => {
-    // Sign-out must expire the cookie on *every* exit. It is the only credential
-    // in this mode and JavaScript cannot delete it, so a response without this
-    // header leaves the caller signed in while reporting a failure it cannot act
-    // on. Rejecting the request is not a reason to keep the session alive.
-    const clearing =
-      route === "sign-out" ? { "Set-Cookie": clearCookieHeader() } : undefined;
+    // Sign-out must expire the cookies on *every* exit. They are the only
+    // credentials in this mode and JavaScript cannot delete either, so a
+    // response without these headers leaves the caller signed in while reporting
+    // a failure it cannot act on. Rejecting the request is not a reason to keep
+    // the session alive.
+    const clearing = route === "sign-out" ? clearCookieHeaders() : undefined;
 
     const bodyResult = await readJsonObject(request);
     if (!bodyResult.ok) {
@@ -766,12 +806,7 @@ export function createLogtoSessionCookieHandler(
           );
         }
         case "sign-out": {
-          const headers = new Headers();
-          headers.append("Set-Cookie", clearCookieHeader());
-          // Always cleared, even when the companion cookie was never enabled:
-          // turning the option off must not leave a live ID token behind, and a
-          // clear for a cookie that does not exist is inert.
-          headers.append("Set-Cookie", clearIdTokenCookieHeader());
+          const headers = clearCookieHeaders();
           const postLogoutRedirectUri = optionalString(
             body,
             "postLogoutRedirectUri",
@@ -982,7 +1017,7 @@ export function createLogtoSessionCookieHandler(
       const headers =
         clearing ??
         (route === "token" && data?.kind === "terminal"
-          ? { "Set-Cookie": clearCookieHeader() }
+          ? clearCookieHeaders()
           : undefined);
       return actionErrorResponse(error, origin, headers);
     }

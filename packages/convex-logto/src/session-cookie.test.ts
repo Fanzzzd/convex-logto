@@ -1528,6 +1528,18 @@ describe("SSR ID token cookie", () => {
     ).toBe(idToken);
   });
 
+  it("reads null for a token that outlived its cookie", () => {
+    // The cookie's own Max-Age normally handles this, but that is the browser's
+    // guarantee and this read is not always behind one — a replayed or cached
+    // Cookie header would otherwise render the page signed in for a bearer
+    // Convex refuses.
+    for (const value of [tokenExpiringIn(-1), tokenExpiringIn(-3600), "nope"]) {
+      const header = `${LOGTO_ID_TOKEN_COOKIE_NAME}=${encodeURIComponent(value)}`;
+      expect(readLogtoIdTokenCookie(header)).toBeNull();
+      expect(readLogtoIdTokenCookie({ get: () => ({ value }) })).toBeNull();
+    }
+  });
+
   it("reads null when the cookie is absent or empty", () => {
     expect(readLogtoIdTokenCookie("")).toBeNull();
     expect(
@@ -1535,6 +1547,69 @@ describe("SSR ID token cookie", () => {
     ).toBeNull();
     expect(readLogtoIdTokenCookie({ get: () => undefined })).toBeNull();
     expect(readLogtoIdTokenCookie({ get: () => ({ value: "" }) })).toBeNull();
+  });
+
+  // Every exit that expires the session cookie has to expire this one with it.
+  // Neither is reachable from JavaScript, so a half-cleared pair cannot be
+  // finished by anything on the client: the browser keeps handing a signed-in
+  // identity to every server render until the token's own `Max-Age` runs out —
+  // on a shared computer, into the next visitor's HTML.
+  it("is expired by every exit that expires the session cookie", async () => {
+    const idToken = tokenExpiringIn(3600);
+    const expired = [
+      `${LOGTO_SESSION_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+      `${LOGTO_ID_TOKEN_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+    ];
+
+    // 1. A terminal refresh. The session is gone for good, which is exactly when
+    //    a surviving ID token has the longest run — up to its full lifetime.
+    const terminal = makeHarness({ idTokenCookie: true, idToken });
+    terminal.handlers.refresh.mockRejectedValueOnce(
+      new ConvexError({
+        kind: "terminal",
+        code: "session_not_found",
+        message: "gone",
+      }),
+    );
+    const afterTerminal = await terminal.handler(
+      request("token", { cookie: cookie("spent") }),
+    );
+    expect(afterTerminal.status).toBe(401);
+    expect(afterTerminal.headers.getSetCookie()).toEqual(expired);
+
+    // 2. A sign-out the deployment could not complete. The route clears on every
+    //    exit precisely because rejecting the request is not a reason to keep the
+    //    session alive — and the ID token is part of that session.
+    const failing = makeHarness({ idTokenCookie: true, idToken });
+    failing.handlers.signOut.mockRejectedValueOnce(
+      new ConvexError({
+        kind: "transient",
+        code: "logto_unreachable",
+        message: "down",
+      }),
+    );
+    const afterFailedSignOut = await failing.handler(
+      request("sign-out", { cookie: cookie("session-token-2") }),
+    );
+    expect(afterFailedSignOut.status).toBe(503);
+    expect(afterFailedSignOut.headers.getSetCookie()).toEqual(expired);
+
+    // 3. A sign-out whose body never parsed. Same rule, earlier exit.
+    const malformed = makeHarness({ idTokenCookie: true, idToken });
+    const afterMalformed = await malformed.handler(
+      new Request(`${APP_ORIGIN}${BASE_PATH}/sign-out`, {
+        method: "POST",
+        headers: {
+          Origin: APP_ORIGIN,
+          "Content-Type": "application/json",
+          Cookie: cookie("session-token-2"),
+          [LOGTO_SESSION_CSRF_HEADER]: LOGTO_SESSION_CSRF_VALUE,
+        },
+        body: "{not json",
+      }),
+    );
+    expect(afterMalformed.status).toBe(400);
+    expect(afterMalformed.headers.getSetCookie()).toEqual(expired);
   });
 });
 
