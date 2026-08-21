@@ -12,6 +12,7 @@ import type * as auth from "../auth.js";
 import type * as http from "../http.js";
 import type * as logto from "../logto.js";
 import type * as me from "../me.js";
+import type * as organizations from "../organizations.js";
 
 import type {
   ApiFromModules,
@@ -24,6 +25,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   logto: typeof logto;
   me: typeof me;
+  organizations: typeof organizations;
 }>;
 
 /**

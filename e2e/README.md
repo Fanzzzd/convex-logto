@@ -44,6 +44,18 @@ Find-or-create, and it *repairs* — an app that exists but has lost a redirect 
 is the failure that actually happens (a port changes, someone edits the console),
 and it presents as an opaque HTTP 400 from `/oidc/auth`. Running it twice is safe.
 
+It also creates the **organization** the authorization steps need
+(`convex-logto-e2e-org`), an organization role named `admin` — the name
+`examples/vite-react-session/convex/organizations.ts` requires — and puts the
+test user in the first holding the second. Membership and the role assignment are
+repaired on every run, because a user quietly dropped from an organization
+presents as an authorization denial with nothing to point at.
+
+The Management API credentials are written back into the file, so `.env.e2e`
+alone is enough to rerun this script. Dropping them is how the setup evaporates:
+the next run reads the file, finds none, and the only other copy was in someone's
+shell history.
+
 Secrets are written to **`e2e/.env.e2e`** with mode `0600` (gitignored), never to
 stdout — a terminal is a scrollback buffer, and in CI it is a log. Only the
 non-secret values are printed. `--out <path>` moves the file.
@@ -94,9 +106,18 @@ node session-flow.mjs
 ```
 
 Drives the real browser through cold sign-in → zero-RTT restore → two rounds of
-rotation → sign-out → re-sign-in → revoking a second device → sign-out
+rotation → organization authorization → the organization token exchange and its
+cache → userinfo → sign-out → re-sign-in → revoking a second device → sign-out
 everywhere. `E2E_HEADED=1` to watch it. A failure writes `failure.png` next to
 the script and exits non-zero.
+
+Progress and failures go to **stderr**, like everything else here — the exit code
+is the machine-readable result, so stdout stays free for a caller to redirect
+without swallowing the log. Keep a run with `2>`:
+
+```bash
+node session-flow.mjs 2> .probe-session-flow.log   # gitignored
+```
 
 The last two steps open **separate browser contexts**, which is what makes them
 worth running: a second context is a second cookie jar and a second storage
@@ -122,7 +143,22 @@ proxy for it:
 - **revocation reaches the other device without a reload**, because a revocation
   that only lands on the next page load is a cache expiry, not a revocation —
   and the device that *did* the revoking has to stay signed in;
-- **sign-out everywhere** is checked on the device that never saw the click.
+- **sign-out everywhere** is checked on the device that never saw the click;
+- **organization authorization** is asserted both ways — the test user's real
+  role in their real organization grants, and the *same role name* in an
+  organization they do not belong to is denied. Whether Logto puts
+  `organizations` and `organization_roles` in the **ID token** for the configured
+  scopes is a property of the deployment, and every one of the
+  `assertOrganization*` helpers is built on it being true;
+- **the organization token is minted, then cached, then forced past the cache.**
+  `minted` is the only externally visible difference between "asked Logto" and
+  "served from the component", every mint spends a refresh grant, and there is no
+  way to prove `forceRefresh` bypasses a cache without first proving the cache
+  exists. The exchange also has to return **no token string**, because the app
+  never set `exposeAccessTokens`;
+- **`fetchUserInfo` answers for the same subject** the ID token names — a
+  userinfo response for a different subject would mean the component
+  authenticated the wrong session, and both are just JSON to an offline test.
 
 Each run names the session it is about to revoke (`e2e-target-<runid>`). The
 test account accumulates sessions — every run leaves some behind — so "the other
@@ -149,8 +185,7 @@ is the opposite — it asks the deployment a question whose answer is not known
 yet, and its output is a finding, not a pass or a fail.
 
 ```bash
-set -a; . ./.env.e2e; set +a
-export LOGTO_M2M_APP_ID=... LOGTO_M2M_APP_SECRET=...   # same as provisioning
+set -a; . ./.env.e2e; set +a      # the M2M credentials it needs are in there
 node probe-org-tokens.mjs
 ```
 
@@ -168,11 +203,10 @@ gitignored), rewritten after every finding so a late failure does not discard
 evidence that cost real authorization grants.
 
 `probe-exchange.mjs` asks the same kind of question one layer up — through the
-*component*, not raw OIDC. It needs an app already running (see step 2) and an
-organization the test user belongs to:
+*component*, not raw OIDC. It needs an app already running (see step 2), and
+`E2E_ORG_ID` from `.env.e2e`:
 
 ```bash
-export E2E_ORG_ID=...          # from `GET /api/organizations`
 node probe-exchange.mjs                       # findings on stderr, like the rest
 node probe-exchange.mjs 2> .probe-exchange.log # …redirect to keep them
 ```

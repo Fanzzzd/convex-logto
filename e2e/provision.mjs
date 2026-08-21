@@ -40,6 +40,11 @@ const webOrigin = process.env.E2E_WEB_ORIGIN ?? "http://localhost:5174";
 
 const SPA_NAME = "convex-logto-e2e-spa";
 const WEB_NAME = "convex-logto-e2e-web";
+const ORG_NAME = "convex-logto-e2e-org";
+// The name `examples/vite-react-session/convex/organizations.ts` requires. The
+// reference app names the role; this provisions the role the reference app
+// names, not the other way round.
+const ORG_ROLE = "admin";
 const USER_EMAIL = "convex-logto-e2e@example.com";
 const USER_PASSWORD = required(
   "E2E_USER_PASSWORD",
@@ -213,6 +218,61 @@ async function ensureUser(call) {
 }
 
 /**
+ * An organization the test user belongs to, holding {@link ORG_ROLE}.
+ *
+ * Find-or-create *and* repair, for the same reason `ensureApplication` is: the
+ * failure that actually happens is an object that exists but has drifted — the
+ * user dropped from the organization, or holding no role in it — and every one
+ * of those presents as an authorization denial with nothing to point at.
+ *
+ * The role assignment is a PUT: it *is* the desired state, so re-running it is
+ * both the repair and the no-op.
+ */
+async function ensureOrganization(call, userId) {
+  const org =
+    (await findPaged(call, "/organizations", (o) => o.name === ORG_NAME)) ??
+    (await call("/organizations", {
+      method: "POST",
+      body: JSON.stringify({
+        name: ORG_NAME,
+        description: "convex-logto live end-to-end tests. Safe to delete.",
+      }),
+    }));
+
+  const role =
+    (await findPaged(call, "/organization-roles", (r) => r.name === ORG_ROLE)) ??
+    (await call("/organization-roles", {
+      method: "POST",
+      body: JSON.stringify({
+        name: ORG_ROLE,
+        description: "convex-logto live end-to-end tests. Safe to delete.",
+      }),
+    }));
+
+  // Paged, for the reason `findPaged`'s own comment gives: a single page of 100
+  // silently misses a member in a larger organization, and "not a member" here
+  // means a POST that adds someone who is already there.
+  const member = await findPaged(
+    call,
+    `/organizations/${org.id}/users`,
+    (candidate) => candidate.id === userId,
+  );
+  if (member === undefined) {
+    await call(`/organizations/${org.id}/users`, {
+      method: "POST",
+      body: JSON.stringify({ userIds: [userId] }),
+    });
+    console.error(`  added the test user to ${ORG_NAME}`);
+  }
+  await call(`/organizations/${org.id}/users/${userId}/roles`, {
+    method: "PUT",
+    body: JSON.stringify({ organizationRoleIds: [role.id] }),
+  });
+
+  return { org, role };
+}
+
+/**
  * The client secret lives only on the application detail response.
  *
  * Fails rather than returning null: session mode's code exchange cannot run
@@ -260,7 +320,8 @@ const web = await ensureApplication(call, {
   type: "Traditional",
   origin: webOrigin,
 });
-await ensureUser(call);
+const user = await ensureUser(call);
+const { org, role } = await ensureOrganization(call, user.id);
 const secret = await clientSecret(call, web.id, WEB_NAME);
 
 // Secrets go to a 0600 file, never to stdout: a terminal is a scrollback buffer,
@@ -282,6 +343,16 @@ E2E_USER_EMAIL=${USER_EMAIL}
 E2E_USER_PASSWORD=${USER_PASSWORD}
 E2E_SPA_ORIGIN=${spaOrigin}
 E2E_WEB_ORIGIN=${webOrigin}
+
+# Organization authorization and the organization token exchange. Not secrets.
+E2E_ORG_ID=${org.id}
+E2E_ORG_ROLE=${role.name}
+
+# Management API client, written back so this file alone can rerun this script.
+# Dropping them is how the setup evaporates: the next run reads the file, finds
+# no credentials, and the only copy was in someone's shell history.
+LOGTO_M2M_APP_ID=${m2mId}
+LOGTO_M2M_APP_SECRET=${m2mSecret}
 `;
 writeFileSync(outPath, env, { mode: 0o600 });
 
@@ -291,6 +362,7 @@ console.error(`done.
   SPA app          ${spa.id}
   web app          ${web.id}
   test user        ${USER_EMAIL}
+  organization     ${org.id} (${ORG_NAME}), test user holds "${role.name}"
   client secret    written to the file below
 
   ${outPath}   (mode 0600, gitignored)
