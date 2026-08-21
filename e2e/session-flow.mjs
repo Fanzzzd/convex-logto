@@ -19,6 +19,10 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 
 const appUrl = trimSlash(need("E2E_APP_URL"));
+// Compared as an origin, never as a prefix: `https://app.example` is a prefix of
+// `https://app.example.invalid`, and a check that accepts the second is the same
+// mistake the library refuses to make in its own redirect validation.
+const appOrigin = new URL(appUrl).origin;
 const convexUrl = trimSlash(need("E2E_CONVEX_URL"));
 const email = need("E2E_USER_EMAIL");
 const password = need("E2E_USER_PASSWORD");
@@ -98,7 +102,7 @@ async function waitForSignedOut(page) {
  * storage assertion waits for this first.
  */
 async function waitForAppOrigin(target) {
-  await target.waitForURL((url) => url.href.startsWith(appUrl), {
+  await target.waitForURL((url) => url.origin === appOrigin, {
     timeout: 45_000,
   });
   await target.waitForLoadState("domcontentloaded");
@@ -280,8 +284,8 @@ try {
   await signInAtLogto(page);
   await waitForSignedIn(page);
   assert(
-    page.url().startsWith(appUrl),
-    `expected to land back on ${appUrl}, got ${page.url()}`,
+    new URL(page.url()).origin === appOrigin,
+    `expected to land back on ${appOrigin}, got ${page.url()}`,
   );
   const firstToken = await readStoredSessionToken(page);
   assert(firstToken !== null, "no session token was persisted after sign-in");
