@@ -57,6 +57,27 @@ touching the network at all. Every example in this repository sets it.
 It is marked experimental in `convex@1.44` and may change; that is the only
 reason it is not the default here.
 
+### What you give up
+
+That per-page-load round trip was doing one useful thing by accident: it asked
+Logto whether the grant was still alive. Reusing the cached token skips the
+question, so a session revoked *at Logto* — an admin ending it, a password
+change, another device signing out everywhere — goes unnoticed until the token
+expires. With Logto's default one-hour ID token, that is a window of up to an
+hour of page loads.
+
+In **session mode** that window is closed by something better: the provider
+subscribes to `sessionValid`, so a revocation lands on the open tab live,
+without a reload and without asking Logto. Turn the option on.
+
+In **bridge mode** there is no such subscription, and the window is real. It is
+the same window an already-open tab has always had — the token is cached for its
+lifetime either way, and closing the browser was never what made a revocation
+take effect — but it now covers page loads too. If your threat model needs
+revocation to bite faster than the ID token's lifetime, either leave the option
+off and pay the round trip knowingly, or shorten the ID token's TTL in Logto,
+or use [session mode](/docs/session-mode).
+
 ## Server-side rendering
 
 `ConvexLogtoProvider` is safe to render on the server. Until the backend config
