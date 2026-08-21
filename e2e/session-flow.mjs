@@ -26,6 +26,11 @@ const appOrigin = new URL(appUrl).origin;
 const convexUrl = trimSlash(need("E2E_CONVEX_URL"));
 const email = need("E2E_USER_EMAIL");
 const password = need("E2E_USER_PASSWORD");
+// The organization `provision.mjs` puts the test user in, and the role it gives
+// them there — which is the role `examples/vite-react-session`'s `adminOnly`
+// query requires.
+const organizationId = need("E2E_ORG_ID");
+const organizationRole = need("E2E_ORG_ROLE");
 const headless = process.env.E2E_HEADED !== "1";
 const screenshotPath = fileURLToPath(new URL("./failure.png", import.meta.url));
 // Labels outlive a run: a revoke aimed at "the other device" would eventually
@@ -219,6 +224,47 @@ async function signInOutcome(page) {
   ]);
 }
 
+/** The cached ID token, read from the library's own key. */
+function readStoredIdToken(page) {
+  return page.evaluate(() => {
+    for (const store of [sessionStorage, localStorage]) {
+      const key = Object.keys(store).find((candidate) =>
+        candidate.endsWith(":idToken"),
+      );
+      if (key === undefined) continue;
+      const stored = JSON.parse(store.getItem(key) ?? "null");
+      const raw = typeof stored === "string" ? stored : stored?.token;
+      if (typeof raw === "string") return raw;
+    }
+    return null;
+  });
+}
+
+/**
+ * Call a Convex function through the page, so the request carries the app's own
+ * origin — the deployment's CORS policy is part of what is under test.
+ *
+ * Returns Convex's envelope untouched (`{status, value}` or
+ * `{status, errorData}`): a helper that threw on `status: "error"` would make
+ * the denial assertions below unable to see the denial they are asserting.
+ */
+async function callConvex(page, kind, path, args, bearer) {
+  return await page.evaluate(
+    async ([url, route, name, payload, token]) => {
+      const response = await fetch(`${url}/api/${route}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ path: name, args: payload, format: "json" }),
+      });
+      return await response.json();
+    },
+    [convexUrl, kind, path, args, bearer ?? null],
+  );
+}
+
 /** Drop the cached ID token so the next restore must go to the deployment. */
 function clearCachedIdToken(page) {
   return page.evaluate(() => {
@@ -328,7 +374,123 @@ try {
   }
   step("rotation persisted across two refreshes");
 
-  // 4. Sign-out has to survive a reload. A cleared UI with live credentials
+  // 4. Organization authorization, straight out of the ID token. Nothing here
+  //    is checkable offline: whether Logto actually puts `organizations` and
+  //    `organization_roles` in the *ID* token for the configured scopes is a
+  //    property of the deployment, and the whole helper family is built on it
+  //    being true. The denial half matters as much as the grant: a check that
+  //    matched on the role alone would authorize one organization's `admin`
+  //    inside another's.
+  const idToken = await readStoredIdToken(page);
+  assert(idToken !== null, "no ID token was cached after sign-in");
+  const granted = await callConvex(
+    page,
+    "query",
+    "organizations:adminOnly",
+    { organizationId },
+    idToken,
+  );
+  assert(
+    granted.status === "success",
+    `adminOnly denied a real ${organizationRole} of ${organizationId}: ` +
+      JSON.stringify(granted),
+  );
+  const foreign = await callConvex(
+    page,
+    "query",
+    "organizations:adminOnly",
+    { organizationId: `${organizationId}-not-mine` },
+    idToken,
+  );
+  assert(
+    foreign.status === "error" &&
+      JSON.stringify(foreign).includes("organization_forbidden"),
+    "adminOnly authorized an organization the user does not belong to: " +
+      JSON.stringify(foreign),
+  );
+  step(
+    "organization authorization",
+    `"${organizationRole}" in ${organizationId}, and nowhere else`,
+  );
+
+  // 5. The organization token exchange, and its cache. `minted` is the only
+  //    externally visible difference between "asked Logto" and "served from the
+  //    component", and it is the thing worth asserting: every mint spends a
+  //    refresh grant, so a cache that silently never hits would multiply this
+  //    deployment's traffic to Logto by however often the app asks. `forceRefresh`
+  //    is the deliberate way past it, and there is no way to prove it bypasses a
+  //    cache without first proving the cache exists.
+  const sessionToken = await readStoredSessionToken(page);
+  assert(sessionToken !== null, "no session token to exchange with");
+  const exchange = async (extra) =>
+    await callConvex(page, "action", "auth:exchangeToken", {
+      sessionToken,
+      organizationId,
+      ...extra,
+    });
+
+  const first = await exchange({});
+  assert(
+    first.status === "success",
+    `the organization token exchange failed: ${JSON.stringify(first)}`,
+  );
+  assert(
+    first.value.minted === true,
+    "the first exchange of this run was served from cache, so nothing proves " +
+      "a mint still works",
+  );
+  assert(
+    first.value.claims.audience === `organization:${organizationId}`,
+    `wrong audience: ${JSON.stringify(first.value.claims)}`,
+  );
+  assert(
+    first.value.claims.expiresAt > Date.now(),
+    `the minted token is already expired: ${JSON.stringify(first.value.claims)}`,
+  );
+  // Never requested, so it must never be returned. `exposeAccessTokens` is off
+  // in this app, and a token string leaking without it is the failure that
+  // would be silent everywhere else.
+  assert(
+    first.value.accessToken === undefined,
+    "the exchange returned a token string that was never asked for",
+  );
+
+  const cached = await exchange({});
+  assert(
+    cached.status === "success" && cached.value.minted === false,
+    "the second exchange minted again — the component's cache did not hit, " +
+      `and every call spends a Logto refresh grant: ${JSON.stringify(cached)}`,
+  );
+
+  const forced = await exchange({ forceRefresh: true });
+  assert(
+    forced.status === "success" && forced.value.minted === true,
+    `forceRefresh was served from cache: ${JSON.stringify(forced)}`,
+  );
+  step("organization token", "minted, cached, and forced past the cache");
+
+  // 6. `fetchUserInfo` goes to Logto's `/oidc/me` with an opaque token the
+  //    component mints for the purpose. Its subject has to be the same person
+  //    the ID token names — a userinfo response for a *different* subject would
+  //    mean the component authenticated the wrong session, and no offline test
+  //    can see the difference because both are just JSON.
+  const userinfo = await callConvex(page, "action", "auth:fetchUserInfo", {
+    sessionToken,
+  });
+  assert(
+    userinfo.status === "success",
+    `fetchUserInfo failed: ${JSON.stringify(userinfo)}`,
+  );
+  const subject = JSON.parse(
+    atob((idToken.split(".")[1] ?? "").replace(/-/g, "+").replace(/_/g, "/")),
+  ).sub;
+  assert(
+    userinfo.value.sub === subject,
+    `userinfo answered for ${userinfo.value.sub}, not ${subject}`,
+  );
+  step("userinfo", "same subject as the ID token");
+
+  // 7. Sign-out has to survive a reload. A cleared UI with live credentials
   //    still in storage would pass a text-only check and is exactly the bug.
   // Not `/^sign out/`: the app also offers "Sign out everywhere", and matching
   // both makes Playwright refuse rather than pick — which is the right call, and
@@ -343,7 +505,7 @@ try {
   );
   step("sign-out", "credentials gone, and still gone after a reload");
 
-  // 5. Sign in again. Sign-out is federated by default — it ends Logto's SSO
+  // 8. Sign in again. Sign-out is federated by default — it ends Logto's SSO
   //    session as well as the local one — so this must *not* be silent. The
   //    credential prompt is the only evidence that the RP-initiated logout
   //    actually reached Logto: clearing local storage looks identical from the
@@ -368,7 +530,7 @@ try {
   );
   step("re-sign-in", "prompted — the federated sign-out reached Logto");
 
-  // 6. Revoking another device has to reach it without a reload, and must not
+  // 9. Revoking another device has to reach it without a reload, and must not
   //    touch this one. This is the reactive `sessionValid` subscription plus
   //    the revocation watermark, and it is the part of the component with the
   //    most moving pieces: a marker commits before the rows are drained, and a
@@ -414,9 +576,9 @@ try {
     await second.context.close();
   }
 
-  // 7. Sign out everywhere. The one guarantee that cannot be checked from a
-  //    single browser: a *different* device, which never sees the click, has to
-  //    lose its session too — live, and without asking for it.
+  // 10. Sign out everywhere. The one guarantee that cannot be checked from a
+  //     single browser: a *different* device, which never sees the click, has
+  //     to lose its session too — live, and without asking for it.
   const third = await newDevice();
   try {
     await signInOnFreshDevice(third.page);
