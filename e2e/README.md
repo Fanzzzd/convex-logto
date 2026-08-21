@@ -173,7 +173,8 @@ organization the test user belongs to:
 
 ```bash
 export E2E_ORG_ID=...          # from `GET /api/organizations`
-node probe-exchange.mjs
+node probe-exchange.mjs                       # findings on stderr, like the rest
+node probe-exchange.mjs 2> .probe-exchange.log # …redirect to keep them
 ```
 
 It found two defects the first time it ran: Logto answers `403` for an
