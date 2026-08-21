@@ -606,10 +606,14 @@ try {
 ```
 
 `code` collapses the same thing to two values: `local_cleanup_failed`, or
-`local_cleanup_and_server_revocation_failed`. Credentials are cleared *before*
-the network call, so a rejection never means "still signed in" — it means the
-wipe could not be made durable, which is worth telling the user on a shared
-device.
+`local_cleanup_and_server_revocation_failed`.
+
+**Take the rejection seriously.** The engine clears its in-memory auth state
+first, so the tab reads "signed out" either way — but this error is thrown
+precisely because the *durable* wipe failed twice, so credentials may still be in
+browser storage. With `revocation_failed` the server session is live as well, and
+a reload can sign the user straight back in. On a shared device that is worth
+saying out loud rather than swallowing.
 - `listSessions()` — a snapshot (not a subscription: the credential it
   authenticates with rotates) of the caller's own sessions, `{ sessions,
   truncated }`, newest first. Call it again after a rename or revoke.
