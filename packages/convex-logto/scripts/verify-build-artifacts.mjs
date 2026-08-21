@@ -143,6 +143,68 @@ if (unresolved.length > 0) {
   process.exit(1);
 }
 
+/**
+ * The two session entries have to agree on the surface they share.
+ *
+ * They are separate tsup entries with separate export lists, so one can quietly
+ * lose a name the other keeps — and nothing else notices, because each entry
+ * typechecks and builds on its own. That has already happened once:
+ * `SessionSignOutError` shipped from `native-session` and not from
+ * `react-session`, leaving a web app matching on `error.name` for a failure a
+ * native app could `instanceof`.
+ *
+ * Deliberately a small explicit list rather than a diff with an exception list:
+ * the entries *should* differ (cookies and `TokenStorageKind` are web-only,
+ * `completeSignIn` is native-only), so a full diff would need an allowlist,
+ * and an allowlist is the thing that rots. These are the names that must be in
+ * both because both engines produce them.
+ */
+const SHARED_SESSION_EXPORTS = [
+  "ConvexLogtoSessionProvider",
+  "useLogtoAuth",
+  "LogtoSessionApi",
+  "LogtoSessionAuth",
+  "LogtoSessionSummary",
+  "LogtoResourceTokenClaims",
+  "LogtoTokenExchangeOptions",
+  "LogtoAuthEvent",
+  "LogtoAuthPhase",
+  "SessionSignOutError",
+  "SessionSignOutServerStatus",
+];
+
+const asymmetric = [];
+for (const entry of ["react-session", "native-session"]) {
+  const declaration = resolve(packageDir, `dist/${entry}.d.ts`);
+  if (!isFile(declaration)) {
+    console.error(`convex-logto: dist/${entry}.d.ts is missing.`);
+    process.exit(1);
+  }
+  const source = readFileSync(declaration, "utf8");
+  // The emitted export list, not the whole file: a `declare class` that no
+  // export names is not part of the public surface, and matching on it would
+  // make this check pass on exactly the drift it exists to catch.
+  const exported = new Set(
+    [...source.matchAll(/^export \{([^}]*)\};?$/gm)]
+      .flatMap(([, names]) => names.split(","))
+      .map((name) => name.trim().replace(/^type\s+/, "").split(/\s+as\s+/).pop())
+      .filter(Boolean),
+  );
+  for (const name of SHARED_SESSION_EXPORTS) {
+    if (!exported.has(name)) asymmetric.push(`${entry} is missing ${name}`);
+  }
+}
+
+if (asymmetric.length > 0) {
+  console.error(
+    `convex-logto: the session entries disagree about their own API:\n  ` +
+      `${asymmetric.join("\n  ")}\n` +
+      "Both engines produce these; exporting one from only one entry makes the " +
+      "same failure handleable in one mode and not the other.",
+  );
+  process.exit(1);
+}
+
 // The component's entry point must also actually load.
 await import(pathToFileURL(resolve(componentDir, "convex.config.js")).href).catch(
   (error) => {
