@@ -113,14 +113,24 @@ export function Dashboard({
         request, so this page was rendered{" "}
         {serverSawToken ? "signed in" : "signed out"}.
       </p>
-      <pre>{me ? JSON.stringify(me, null, 2) : "signed out"}</pre>
+      {/*
+        A null identity is not the same as a signed-out one. Before the client
+        finishes restoring, `me` is null for a visitor who is about to be
+        authenticated, and rendering "signed out" there is the transient
+        logged-out flash — the exact bug the provider's loading phase exists to
+        prevent. So "signed out" appears only under `Unauthenticated`, and the
+        server's preloaded value stays on screen while auth restores, which is
+        the whole point of `preloadQuery`.
+      */}
       <AuthLoading>
-        <p>Auth loading…</p>
+        {me ? <pre>{JSON.stringify(me, null, 2)}</pre> : null}
+        <p>Restoring your session…</p>
       </AuthLoading>
       <Unauthenticated>
         <p>You are signed out.</p>
       </Unauthenticated>
       <Authenticated>
+        <pre>{me ? JSON.stringify(me, null, 2) : "Loading your identity…"}</pre>
         <Devices />
         <Tokens />
       </Authenticated>

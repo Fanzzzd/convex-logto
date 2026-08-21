@@ -51,7 +51,7 @@ Two consequences worth understanding before you copy the wiring:
 
 You need a **Traditional Web** application in Logto (not an SPA — session mode
 uses a client secret), with `http://localhost:3000/callback` as a redirect URI
-and `http://localhost:3000` as a post sign-out redirect URI.
+and `http://localhost:3000` as a post-sign-out redirect URI.
 
 ```bash
 pnpm install

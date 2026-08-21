@@ -173,6 +173,7 @@ Two consequences worth knowing before you turn it on:
   of middleware), which *can* set cookies:
 
 ```ts title="proxy.ts"
+import { NextResponse } from "next/server";
 import { logtoCookieHandler } from "@/server/logto-cookie";
 
 export default async function proxy(request: Request) {
@@ -207,7 +208,8 @@ export const config = { matcher: ["/((?!_next|api).*)"] };
   on mount.
 
 Full app: [`examples/nextjs-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs-session)
-— the cookie transport mounted, the ID token cookie read in a layout,
-`preloadQuery` on the server, and the middleware refresh, all wired together.
+— the cookie transport mounted at `app/api/logto/[route]/route.ts`, the identity
+rendered on the server with `preloadQuery` in `app/page.tsx`, and the
+document-only refresh in `proxy.ts`, all wired together.
 
 Full walkthrough: [Session mode](/docs/session-mode).
