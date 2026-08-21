@@ -1,5 +1,66 @@
 # convex-logto
 
+## 0.7.0
+
+### Minor Changes
+
+- [#218](https://github.com/Fanzzzd/convex-logto/pull/218) [`1fdf084`](https://github.com/Fanzzzd/convex-logto/commit/1fdf08434b6f8c2294c023d569cd13f38bf6aff8) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Export `SessionSignOutError` from `convex-logto/react-session`.
+  
+  `signOut()` rejects with it when local credential cleanup fails twice, and
+  `convex-logto/native-session` has always exported the class — the web entry never
+  did, so the same failure was `instanceof`-checkable in one mode and reachable
+  only through `error.name` in the other. `SessionSignOutServerStatus` comes with
+  it, and the web `signOut`'s type now documents the rejection the way native's
+  already did.
+  
+  The build verifier gained a check for exactly this: a short list of names both
+  session entries must export, asserted against the emitted declaration files.
+  They are separate tsup entries with separate export lists, so one can lose a name
+  the other keeps and nothing else notices — each entry still typechecks and builds
+  on its own.
+
+### Patch Changes
+
+- [#213](https://github.com/Fanzzzd/convex-logto/pull/213) [`710933c`](https://github.com/Fanzzzd/convex-logto/commit/710933c304dc0b9b2072c9356458a7db614b034c) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Expire the SSR ID token cookie on every exit that expires the session cookie.
+  
+  `idTokenCookie: true` writes the ID token to `__Host-convex-logto-id-token`, and
+  sign-out cleared it — but only on the success path. Three exits cleared the
+  session cookie and left the ID token behind: a sign-out the deployment could not
+  complete, a sign-out whose body never parsed, and a terminal `/token` refresh,
+  which is what a revoked, reused or deleted session looks like.
+  
+  Neither cookie is reachable from JavaScript, so nothing on the client could
+  finish the job. The browser went on handing a signed-in identity to every server
+  render until the token's own `Max-Age` ran out — up to its full lifetime, and on
+  a shared computer that is the previous user's identity rendered into the next
+  visitor's HTML. Both cookies are now expired together, whatever the exit.
+  
+  `readLogtoIdTokenCookie` also checks `exp` itself now. The cookie's `Max-Age`
+  already comes from the token's `exp`, but that is the browser's guarantee, and a
+  `Cookie` header replayed from a cache or a proxy does not arrive behind one.
+
+- [#214](https://github.com/Fanzzzd/convex-logto/pull/214) [`f17c431`](https://github.com/Fanzzzd/convex-logto/commit/f17c4310c9d74890b3bded97f92a152a5c05aa22) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Say what organization claims actually are, and stop claiming one scope implies
+  the other.
+  
+  `assertOrganizationMember` / `assertOrganizationRole` read the ID token Convex
+  already validated, which is what makes them free — and also means they read a
+  **snapshot**. The claims were true when the token was issued and stay frozen
+  until the next one is, at most the token's own lifetime (Logto's default is an
+  hour), so removing someone from an organization or taking a role away does not
+  take effect at once. Deleting or suspending the *user* is different: the webhook
+  revokes their sessions immediately. Documented on the helpers and in the API
+  reference, with the mitigation — when a membership change has to bite
+  immediately, check your own table instead.
+  
+  `ORGANIZATION_ROLES_SCOPE`'s doc claimed it implies `ORGANIZATIONS_SCOPE`. It
+  does not: Logto advertises the two separately in `scopes_supported`, maps each to
+  its own claim, and a grant carries exactly what was requested. A deployment that
+  followed that advice and requested only the roles scope has no `organizations`
+  claim, so every `assertOrganizationMember` call denies — for everyone, because a
+  missing claim is deliberately indistinguishable from a user who belongs to
+  nothing. The failure names the missing scope, which is the only thing separating
+  this from an unexplained outage.
+
 ## 0.6.0
 
 ### Minor Changes
