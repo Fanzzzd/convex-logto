@@ -106,12 +106,12 @@ handler module and its `allowedOrigins` are in
 <Callout type="warn">
 Do **not** call `getInitialToken()` from a layout or page. It rotates the session
 cookie, and a Server Component cannot set cookies — Next.js only allows that in
-Route Handlers, Server Actions, and middleware. The rotated cookie would be
-dropped, leaving the browser holding a superseded token that is eventually
-presented outside the reuse window and read as token reuse, which kills the
-session. Use `readLogtoIdTokenCookie` below instead; `getInitialToken()` is still
-the right call **inside** a Route Handler, Server Action, or middleware, where
-you can forward its headers.
+Route Handlers, Server Actions, and the proxy (`middleware` before Next 16). The
+rotated cookie would be dropped, leaving the browser holding a superseded token
+that is eventually presented outside the reuse window and read as token reuse,
+which kills the session. Use `readLogtoIdTokenCookie` below instead;
+`getInitialToken()` is still the right call **inside** a Route Handler, Server
+Action, or the proxy, where you can forward its headers.
 </Callout>
 
 ### Server-side rendering
@@ -169,23 +169,42 @@ Two consequences worth knowing before you turn it on:
   custody trade-off, and it is why this is opt-in — see
   [ADR 0002](https://github.com/Fanzzzd/convex-logto/blob/main/docs/adr/0002-token-custody.md).
 - The cookie is only as fresh as the last client-side refresh. If you want every
-  server render to have a live token, refresh in **middleware**, which *can* set
-  cookies:
+  server render to have a live token, refresh in the **proxy** (Next 16's rename
+  of middleware), which *can* set cookies:
 
-```ts title="middleware.ts"
+```ts title="proxy.ts"
 import { logtoCookieHandler } from "@/server/logto-cookie";
 
-export async function middleware(request: Request) {
-  const seed = await logtoCookieHandler.getInitialToken(request);
+export default async function proxy(request: Request) {
   const response = NextResponse.next();
+  // Documents only. Every call rotates the session token, and a matcher that
+  // also catches favicons, images and RSC prefetches fires several rotations
+  // for one page view — after which the generation the browser keeps may be
+  // older than the server's, and the next client refresh presents it outside
+  // its reuse window and is correctly read as theft.
+  if (request.headers.get("sec-fetch-dest") !== "document") return response;
+
+  const seed = await logtoCookieHandler.getInitialToken(request);
   for (const cookie of seed.headers.getSetCookie()) {
     response.headers.append("Set-Cookie", cookie);
+  }
+  // The seed also carries `Cache-Control: no-store`. Forward it: a per-user
+  // `Set-Cookie` on a response something upstream believes it may cache is how
+  // one visitor's session reaches another.
+  for (const [name, value] of seed.headers) {
+    if (name.toLowerCase() !== "set-cookie") response.headers.set(name, value);
   }
   return response;
 }
 
 export const config = { matcher: ["/((?!_next|api).*)"] };
 ```
+
+  The provider's SSR seed does not apply here: it takes `initialToken` and
+  `initialSessionId` as a pair, and only `getInitialToken()` produces the
+  session id — so a page render cannot obtain one. Render the identity on the
+  server with `preloadQuery` as above, and let the client establish its own auth
+  on mount.
 
 Full app: [`examples/nextjs-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs-session)
 — the cookie transport mounted, the ID token cookie read in a layout,

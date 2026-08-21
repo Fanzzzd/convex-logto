@@ -100,8 +100,9 @@ export function Dashboard({
   preloadedMe: Preloaded<typeof api.me.me>;
   serverSawToken: boolean;
 }) {
-  // Rendered from the server's result first, then live once the client
-  // subscribes. No loading flash for a signed-in visitor.
+  // The server's result until the client's own subscription resolves, then the
+  // live one — so this is *the client's* view of the identity, not the
+  // server's, from the moment auth is restored.
   const me = usePreloadedQuery(preloadedMe);
   return (
     <main style={{ maxWidth: 720, margin: "48px auto", padding: "0 16px" }}>
@@ -112,7 +113,7 @@ export function Dashboard({
         request, so this page was rendered{" "}
         {serverSawToken ? "signed in" : "signed out"}.
       </p>
-      <pre>{me ? JSON.stringify(me, null, 2) : "no identity on the server"}</pre>
+      <pre>{me ? JSON.stringify(me, null, 2) : "signed out"}</pre>
       <AuthLoading>
         <p>Auth loading…</p>
       </AuthLoading>

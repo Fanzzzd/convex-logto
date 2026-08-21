@@ -1,6 +1,4 @@
 import type { Metadata } from "next";
-import { cookies } from "next/headers";
-import { readLogtoIdTokenCookie } from "convex-logto";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
@@ -8,22 +6,18 @@ export const metadata: Metadata = {
   description: "Server-held Logto refresh token, HttpOnly cookie transport, SSR",
 };
 
-// A Server Component. It reads the companion ID-token cookie — a read, not a
-// rotation, which is the only thing a layout is allowed to do with a
-// credential — and seeds the client provider so the first client render agrees
-// with what the server already rendered.
-export default async function RootLayout({
+// Stays a Server Component; it only renders the client <Providers> boundary.
+// The identity is read where it is used — in `app/page.tsx` — rather than here,
+// so a route that does not need it is not forced dynamic by this layout.
+export default function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const initialToken = readLogtoIdTokenCookie(await cookies());
   return (
     <html lang="en">
       <body>
-        <Providers initialToken={initialToken ?? undefined}>
-          {children}
-        </Providers>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

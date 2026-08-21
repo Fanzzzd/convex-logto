@@ -10,13 +10,19 @@ import { api } from "@/convex/_generated/api";
 
 const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
-export function Providers({
-  children,
-  initialToken,
-}: {
-  children: React.ReactNode;
-  initialToken?: string;
-}) {
+/**
+ * No `initialToken` here, deliberately.
+ *
+ * The provider takes an SSR seed, but it takes it as a *pair* —
+ * `initialToken` **and** `initialSessionId`, or neither; passing one alone
+ * throws. The session id comes only from `getInitialToken()`, which rotates the
+ * session cookie and therefore belongs in the proxy, not in a render. So in the
+ * App Router there is no supported way to hand a page's render the paired seed,
+ * and the honest wiring is the one below: the *server* renders authenticated
+ * content from the ID-token cookie (see `app/page.tsx`), and the client
+ * establishes its own auth on mount.
+ */
+export function Providers({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   return (
     <ConvexLogtoSessionProvider
@@ -26,9 +32,6 @@ export function Providers({
       // all: it lives in an HttpOnly cookie and this same-origin route proxies
       // to the component.
       cookieTransport={{ endpoint: "/api/logto" }}
-      // The token the server already rendered with. Without it the client
-      // starts in `restoring` and the first paint disagrees with the server's.
-      initialToken={initialToken}
       clientDescriptor={{ platform: "web", browser: "this browser" }}
       navigate={(to) => router.replace(to)}
       onAuthError={(error) => {
