@@ -13,10 +13,11 @@ import { logtoCookieHandler } from "@/server/logto-cookie";
  *
  * Two things this gets right that a naive matcher does not:
  *
- * - **One rotation per document request.** Every call here is a real Logto
- *   token-endpoint round trip that rotates the session token, and the library
- *   says so: "call at most once per incoming document request". A matcher that
- *   also caught `/favicon.ico`, images and RSC prefetches would fire several
+ * - **One rotation per document request.** Every call here rotates the session
+ *   token — always locally, and additionally through Logto's token endpoint once
+ *   the cached ID token has aged out — and the library says so: "call at most
+ *   once per incoming document request". A matcher that also caught
+ *   `/favicon.ico`, images and RSC prefetches would fire several
  *   rotations for one page view, and whichever `Set-Cookie` the browser happened
  *   to keep last could be an older generation than the server's — which the
  *   next client refresh presents outside its reuse window, and the component
