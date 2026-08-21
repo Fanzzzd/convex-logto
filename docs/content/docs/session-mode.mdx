@@ -676,12 +676,15 @@ Logto requires *before* sign-in) and `exposeAccessTokens`.
 
 ## Organization and API-resource tokens
 
-Organization membership and roles need nothing here: Logto puts them in the ID
-token, so `user.organizations` and `user.organization_roles` are already in
-every authenticated request, and
+Organization membership and roles need no token here. Request
+`ORGANIZATIONS_SCOPE` and `ORGANIZATION_ROLES_SCOPE` in `logtoSessionApi({
+scopes })` — two independent scopes, so ask for both — and Logto puts the
+matching claims in the ID token. `user.organizations` and
+`user.organization_roles` are then in every authenticated request, and
 [`assertOrganizationRole`](/docs/api-reference#organization-authorization)
 reads them server-side for free — as a snapshot taken when the token was issued,
-which is the one thing to know before authorizing on them.
+which is the one thing to know before authorizing on them. Without the scopes the
+claims are absent, and absent authorizes nothing.
 
 What does need a token is a fine-grained organization **permission**, or a
 non-Convex API you registered with Logto. The component mints those from the

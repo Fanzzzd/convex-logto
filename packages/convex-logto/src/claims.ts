@@ -56,7 +56,7 @@ export type LogtoUserClaims = {
 /**
  * Request the `organizations` claim in the ID token.
  *
- * Also what enables the organization *token* grant, so
+ * It also enables the organization *token* grant, so
  * `getOrganizationTokenClaims` needs this scope specifically.
  */
 export const ORGANIZATIONS_SCOPE = "urn:logto:scope:organizations";

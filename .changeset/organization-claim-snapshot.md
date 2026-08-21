@@ -19,5 +19,7 @@ immediately, check your own table instead.
 does not: Logto advertises the two separately in `scopes_supported`, maps each to
 its own claim, and a grant carries exactly what was requested. A deployment that
 followed that advice and requested only the roles scope has no `organizations`
-claim, so every `assertOrganizationMember` call denies — silently, because a
-missing claim is indistinguishable from a user who belongs to nothing.
+claim, so every `assertOrganizationMember` call denies — for everyone, because a
+missing claim is deliberately indistinguishable from a user who belongs to
+nothing. The failure names the missing scope, which is the only thing separating
+this from an unexplained outage.
