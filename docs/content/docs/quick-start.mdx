@@ -97,6 +97,10 @@ root.render(
 );
 ```
 
+Add `{ initialAuthTokenReuse: true }` to the client when you are ready to stop
+paying a Logto round trip on every page load — see
+[one token round trip per page load](/docs/how-it-works#one-token-round-trip-per-page-load-unless-you-opt-out).
+
 <Callout>
 Prefer resolving the config at runtime from the Convex deployment instead (e.g.
 multi-tenant, one frontend artifact for many environments)? Export

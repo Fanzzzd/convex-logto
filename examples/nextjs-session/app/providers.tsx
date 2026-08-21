@@ -8,7 +8,12 @@ import { ConvexLogtoSessionProvider } from "convex-logto/react-session";
 import { useRouter } from "next/navigation";
 import { api } from "@/convex/_generated/api";
 
-const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!, {
+  // Convex otherwise refetches a fresh token the instant it confirms the cached
+  // one, which costs a Logto refresh grant on every page load — and in session
+  // mode a session-token rotation with it. Experimental in convex@1.44.
+  initialAuthTokenReuse: true,
+});
 
 /**
  * No `initialToken` here, deliberately.

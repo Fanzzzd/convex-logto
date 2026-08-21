@@ -31,7 +31,13 @@ export function getRouter() {
     console.error("missing VITE_CONVEX_URL envar");
   }
 
-  const convexQueryClient = new ConvexQueryClient(CONVEX_URL);
+  const convexQueryClient = new ConvexQueryClient(CONVEX_URL, {
+    // Convex otherwise refetches a fresh token the instant it confirms the
+    // cached one, which costs a Logto refresh grant on every page load — and in
+    // session mode a session-token rotation with it. Experimental in
+    // convex@1.44.
+    initialAuthTokenReuse: true,
+  });
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {

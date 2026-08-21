@@ -28,6 +28,35 @@ existing sessions stay signed in. After rotating, the discovery document adverti
 Sessions refresh via Logto's refresh token, which is why `ConvexLogtoProvider`
 requests the `offline_access` scope by default.
 
+## One token round trip per page load, unless you opt out
+
+Convex's client fetches an auth token twice on every page load. It sends the one
+your app already has, waits for the server to confirm it, and then — by default
+— throws it away and asks for a fresh one. The second fetch is `forceRefreshToken`,
+which this library is obliged to honour: it means "the token you last gave me
+will not do."
+
+That costs a **Logto token-endpoint round trip on every page load**, in both
+modes. In bridge mode the Logto SDK spends a refresh grant; in session mode your
+deployment does, and rotates the session token with it. None of it is needed
+when the token in hand is fresh and the server just said so.
+
+Convex has an option for exactly this. Turn it on where you construct the
+client:
+
+```ts
+const convex = new ConvexReactClient(CONVEX_URL, {
+  initialAuthTokenReuse: true,
+});
+```
+
+Now the confirmed token is kept and a refresh is scheduled before it expires,
+which is what makes a warm page load reach an authenticated render without
+touching the network at all. Every example in this repository sets it.
+
+It is marked experimental in `convex@1.44` and may change; that is the only
+reason it is not the default here.
+
 ## Server-side rendering
 
 `ConvexLogtoProvider` is safe to render on the server. Until the backend config
