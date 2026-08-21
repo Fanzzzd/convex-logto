@@ -185,8 +185,8 @@ errors. It now polls both conditions in one `evaluate`, treats a failed read as
 stall a request for tens of seconds. Straight from the shell, three requests to
 the same URL:
 
-```
-sign-in page: 000 in 30.005678s   ← timed out
+```text
+sign-in page: 000 in 30.005678s   ← timed out (30 seconds)
 sign-in page: 302 in 0.304516s
 sign-in page: 302 in 0.300324s
 ```
@@ -196,94 +196,22 @@ waiting on the IdP. It shows up now as a Playwright *navigation* timeout naming
 the `/oidc/auth` URL, which is a much better failure than "neither". Re-run.
 
 **Reading a failure here.** The assertion prints a **redacted** URL — origin and
-path in full, query and fragment reduced to parameter *names*, because this runs
-right after a sign-in click and the raw URL can carry an authorization `code` —
-plus whatever text is on screen. A `"neither"` naming an **app** origin is the
-one worth bisecting: it means the click never got the browser off the app at all.
+path in full, query and fragment reduced to parameter *names*, and only names it
+recognises, since `?SECRET` is a parameter whose name *is* the secret. This runs
+right after a sign-in click, so the raw URL can be a callback carrying
+`code`/`state`, and failures go to stderr, which this file tells you to redirect
+into a log:
 
-Every step is a required assertion, and each one asserts the thing rather than a
-proxy for it:
-
-- **zero-RTT** fails if the restore *mints a token*, named by function rather
-  than counted by URL — elapsed time proves nothing (a fast round trip looks
-  identical), and a POST count would also catch the calls the example's own UI
-  makes, so the library's test would break whenever the example changed;
-- **rotation runs twice**, because a rotated token that was never persisted
-  passes the first refresh and fails the second;
-- **sign-out is re-checked after a reload**, because cleared UI with live
-  credentials still in storage is exactly the bug;
-- **re-sign-in must be prompted.** Sign-out is federated by default, so Logto
-  has to ask for credentials again — that prompt is the only evidence the
-  RP-initiated logout actually reached Logto, since clearing local storage looks
-  identical from the app either way;
-- **revocation reaches the other device without a reload**, because a revocation
-  that only lands on the next page load is a cache expiry, not a revocation —
-  and the device that *did* the revoking has to stay signed in;
-- **sign-out everywhere** is checked on the device that never saw the click;
-- **organization authorization** is asserted both ways — the test user's real
-  role in their real organization grants, and the *same role name* in an
-  organization they do not belong to is denied. Whether Logto puts
-  `organizations` and `organization_roles` in the **ID token** for the configured
-  scopes is a property of the deployment, and every one of the
-  `assertOrganization*` helpers is built on it being true;
-- **the organization token is minted, then cached, then forced past the cache.**
-  `minted` is the only externally visible difference between "asked Logto" and
-  "served from the component", every mint spends a refresh grant, and there is no
-  way to prove `forceRefresh` bypasses a cache without first proving the cache
-  exists. The exchange also has to return **no token string**, because the app
-  never set `exposeAccessTokens`;
-- **`fetchUserInfo` answers for the same subject** the ID token names — a
-  userinfo response for a different subject would mean the component
-  authenticated the wrong session, and both are just JSON to an offline test.
-
-Each run names the session it is about to revoke (`e2e-target-<runid>`). The
-test account accumulates sessions — every run leaves some behind — so "the other
-device" is not something the list can be asked for, and aiming a revoke at it
-would eventually aim at whatever an earlier run abandoned.
-
-### The one flake, and what it turned out to be
-
-The re-sign-in step can report that the click reached *neither* Logto's prompt
-nor a signed-in app. The first time, all it left was a blank screenshot. The
-assertion now prints a **redacted** URL — origin and path in full, query and
-fragment reduced to parameter *names*, because this runs right after a sign-in
-click and the raw URL can carry an authorization `code` — plus whatever text is
-on screen:
-
-```
-✗ failed after 7 step(s): the sign-in click reached neither Logto's prompt nor a
-  signed-in app, at https://auth.example.com/sign-in?[app_id] showing "(unreadable)"
+```text
+at https://auth.example.com/sign-in?[app_id] showing "(unreadable)"
+at http://localhost:5174/callback?[code,state] showing "Loading…"
 ```
 
-Which named it in one run: the browser *had* reached Logto's sign-in experience,
-and that page never rendered. Confirmed straight from the shell — the first
-request hung for the full 30 second timeout and the next two answered in 0.3s:
-
-```
-sign-in page: 000 in 30.005678s
-sign-in page: 302 in 0.304516s
-sign-in page: 302 in 0.300324s
-```
-
-So it is the Logto deployment stalling a request, not the library. Nothing in
-`convex-logto` is on that path — the app has already redirected and is waiting on
-the IdP. Re-run.
-
-A "neither" that names an **app** origin is a different animal and worth
-bisecting: it means the sign-in click never got the browser off the app at all.
-
-> The zero-RTT step needs `initialAuthTokenReuse: true` on the app's
-> `ConvexReactClient`, which every example here sets. Without it Convex confirms
-> the cached token and immediately refetches, spending a Logto refresh grant on
-> every page load — see
-> [how it works](../docs/content/docs/how-it-works.mdx).
-
-It reads the library's own storage keys, so it tests the library rather than the
-example's UI.
-
-Chrome must be installed: `playwright-core` drives the system browser rather than
-downloading its own, which keeps this directory small enough to stay out of the
-way.
+Enough to tell a callback from an authorize request without writing either one's
+values down. A startup self-check proves the redactor before anything can need
+it — it only ever runs on a failure, which is the one place there is no second
+chance. A `"neither"` naming an **app** origin is the one worth bisecting: it
+means the click never got the browser off the app at all.
 
 ## Probes
 
