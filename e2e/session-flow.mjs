@@ -199,29 +199,85 @@ async function renameCurrentDevice(target, label) {
 
 /**
  * Which outcome a sign-in click produced: Logto's credential prompt, or an app
- * that is already signed in. Racing the two is the point — "silent" and
- * "prompted" are both plausible outcomes of the same click, and waiting for
- * only the one we expect turns a wrong answer into an opaque timeout.
+ * that is already signed in. Watching for both is the point — "silent" and
+ * "prompted" are both plausible outcomes of the same click, and waiting for only
+ * the one we expect turns a wrong answer into an opaque timeout.
+ *
+ * Polled rather than raced, and that is not a style choice. Racing two
+ * `waitFor*` calls and mapping each rejection to "neither" makes *any* early
+ * rejection decide the whole question — and a sign-in click navigates, which
+ * destroys the execution context a `waitForFunction` poll is running in. That
+ * rejects immediately, wins the race, and reports "neither" while the credential
+ * prompt is still on its way. It cost an afternoon: the failures looked like
+ * Logto's sign-in page not rendering, and the page was rendering fine.
+ *
+ * So: read both conditions in one evaluate, treat a failed read as "ask again",
+ * and let only the deadline answer "neither".
  */
 async function signInOutcome(page) {
-  return await Promise.race([
-    page
-      .waitForSelector("input[name=identifier]", { timeout: 45_000 })
-      .then(
-        () => "prompted",
-        () => "neither",
-      ),
-    page
-      .waitForFunction(
-        () => /sign out/i.test(document.body.innerText),
-        undefined,
-        { timeout: 45_000 },
-      )
-      .then(
-        () => "silent",
-        () => "neither",
-      ),
-  ]);
+  const deadline = Date.now() + 45_000;
+  while (Date.now() < deadline) {
+    const state = await page
+      .evaluate(() => ({
+        prompted: document.querySelector("input[name=identifier]") !== null,
+        signedIn: /sign out/i.test(document.body.innerText),
+      }))
+      .catch(() => null);
+    if (state?.prompted) return "prompted";
+    if (state?.signedIn) return "silent";
+    await page.waitForTimeout(250);
+  }
+  return "neither";
+}
+
+/**
+ * A URL safe to write down: origin and path in full, query and fragment reduced
+ * to their parameter *names*.
+ *
+ * This runs immediately after a sign-in click, so the browser may be sitting on
+ * an authorization request or a callback — `?code=…&state=…`, or a fragment
+ * carrying a token. Failures go to stderr and the README tells you to redirect
+ * stderr to a file, so a raw URL here is an authorization code written into a
+ * log. The names alone still answer the question being asked: seeing `code` and
+ * `state` present is what tells you the callback was reached.
+ */
+function safeUrl(raw) {
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return "(unparseable URL)";
+  }
+  // `about:blank` — the very page this diagnostic was written for — has origin
+  // "null", and joining that to a pathname produces "nullblank".
+  const base =
+    url.origin === "null"
+      ? `${url.protocol}${url.pathname}`
+      : `${url.origin}${url.pathname}`;
+  const parts = [base.slice(0, 200)];
+  const names = (search) => [...new URLSearchParams(search).keys()].join(",");
+  const query = names(url.search);
+  // A fragment is not always `a=b`, so say it is there even when nothing parses.
+  const fragment = url.hash === "" ? "" : names(url.hash.slice(1)) || "…";
+  if (query) parts.push(`?[${query}]`);
+  if (fragment) parts.push(`#[${fragment}]`);
+  return parts.join("");
+}
+
+/**
+ * Where the browser actually ended up, for the third outcome.
+ *
+ * "Neither" is the one answer that names no cause, and it has happened: a blank
+ * document with nothing to read. Whether that is Logto refusing the authorize
+ * request, a redirect still in flight, or an app that never navigated is the
+ * whole question, and the redacted URL plus whatever text is on screen narrows
+ * it. Reported rather than asserted on, because this is a diagnosis, not a rule.
+ */
+async function describePage(page) {
+  const text = await page
+    .evaluate(() => document.body.innerText.replace(/\s+/g, " ").trim())
+    .catch(() => "(unreadable)");
+  return `at ${safeUrl(page.url())} showing ${text ? JSON.stringify(text.slice(0, 160)) : "an empty document"}`;
 }
 
 /** The cached ID token, read from the library's own key. */
@@ -274,6 +330,42 @@ function clearCachedIdToken(page) {
       }
     }
   });
+}
+
+/**
+ * Prove the redactor before anything can need it.
+ *
+ * It only ever runs on a failure, so a bug in it would first show up in the one
+ * place there is no second chance: a log that has already been written, with an
+ * authorization code in it. Checked here rather than in a test file because
+ * `e2e/` is outside the workspace and has no runner — and because a guarantee
+ * about what may be written down belongs next to the writing.
+ */
+for (const [raw, expected] of [
+  [
+    "http://localhost:5174/callback?code=SECRET&state=SECRET",
+    "http://localhost:5174/callback?[code,state]",
+  ],
+  [
+    "https://auth.example.com/oidc/auth?client_id=a&state=SECRET",
+    "https://auth.example.com/oidc/auth?[client_id,state]",
+  ],
+  [
+    "http://localhost:5174/#access_token=SECRET&token_type=bearer",
+    "http://localhost:5174/#[access_token,token_type]",
+  ],
+  ["http://localhost:5174/", "http://localhost:5174/"],
+  ["about:blank", "about:blank"],
+  ["not a url", "(unparseable URL)"],
+]) {
+  const got = safeUrl(raw);
+  if (got !== expected || got.includes("SECRET")) {
+    console.error(
+      `session-flow: the URL redactor is broken — ${JSON.stringify(raw)} ` +
+        `became ${JSON.stringify(got)}, expected ${JSON.stringify(expected)}.`,
+    );
+    process.exit(1);
+  }
 }
 
 const browser = await chromium.launch({ headless, channel: "chrome" });
@@ -518,7 +610,8 @@ try {
     outcome === "silent"
       ? "sign-out did not end Logto's session: the next sign-in completed " +
           "silently over a surviving SSO cookie"
-      : "the sign-in click reached neither Logto's prompt nor a signed-in app",
+      : "the sign-in click reached neither Logto's prompt nor a signed-in app, " +
+          `${await describePage(page)}`,
   );
   await signInAtLogto(page);
   await waitForSignedIn(page);
