@@ -196,6 +196,37 @@ importers:
         specifier: ~5.9.3
         version: 5.9.3
 
+  examples/nextjs-session:
+    dependencies:
+      convex:
+        specifier: ^1.44.0
+        version: 1.44.0(react@19.2.8)
+      convex-logto:
+        specifier: workspace:*
+        version: link:../../packages/convex-logto
+      next:
+        specifier: ^16.3.1
+        version: 16.3.1(@types/node@22.20.1)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: ^19.2.8
+        version: 19.2.8(react@19.2.8)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
+      '@types/react':
+        specifier: ^19.2.18
+        version: 19.2.18
+      '@types/react-dom':
+        specifier: ^19.2.4
+        version: 19.2.4(@types/react@19.2.18)
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+
   examples/tanstack-router-spa:
     dependencies:
       '@logto/react':
