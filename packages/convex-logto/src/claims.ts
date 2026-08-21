@@ -53,10 +53,24 @@ export type LogtoUserClaims = {
   organization_roles?: string[];
 } & Record<string, unknown>;
 
-/** Request organization membership in the ID token. */
+/**
+ * Request the `organizations` claim in the ID token.
+ *
+ * It also enables the organization *token* grant, so
+ * `getOrganizationTokenClaims` needs this scope specifically.
+ */
 export const ORGANIZATIONS_SCOPE = "urn:logto:scope:organizations";
 
-/** Request organization roles in the ID token. Implies {@link ORGANIZATIONS_SCOPE}. */
+/**
+ * Request the `organization_roles` claim in the ID token.
+ *
+ * Independent of {@link ORGANIZATIONS_SCOPE}, not implied by it and not implying
+ * it: Logto advertises the two separately in `scopes_supported` and maps each to
+ * its own claim, and a grant carries exactly the scopes that were requested. Ask
+ * for both if you read both claims — a deployment that requests only this one
+ * has no `organizations` claim, and every `assertOrganizationMember` check then
+ * denies.
+ */
 export const ORGANIZATION_ROLES_SCOPE = "urn:logto:scope:organization_roles";
 
 /**

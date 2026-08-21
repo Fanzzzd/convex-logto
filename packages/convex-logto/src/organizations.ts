@@ -17,6 +17,19 @@ import {
  * Organization *permissions* are the exception. Logto issues those only in an
  * organization token, audienced `urn:logto:organization:{id}` and typed
  * `at+jwt`, which Convex rejects — see `docs/adr/0002-token-custody.md`.
+ *
+ * **These claims are a snapshot, not a lookup.** They were true when the ID
+ * token was issued and stay frozen until the next one is, which is at most the
+ * token's own lifetime (Logto's default is an hour). Removing a user from an
+ * organization, or taking away a role, therefore does not take effect at once —
+ * nothing here re-reads Logto, by design, because that is what makes the check
+ * free. Deleting or suspending the *user* is different: the webhook in
+ * `convex-logto/webhooks` revokes their sessions, which is immediate.
+ *
+ * When a membership change has to bite immediately, do not reach for these
+ * helpers: keep the membership in your own table and check that, so the
+ * authorization is a read of current state rather than of a past one. Shortening
+ * the ID token's lifetime in Logto narrows the window but never closes it.
  */
 
 /** The slice of a Convex ctx these helpers need. Works in queries, mutations and actions. */
