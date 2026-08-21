@@ -57,12 +57,24 @@ have to be printed to be useful.
 
 ## 2. Point an example at it
 
-Set the printed `LOGTO_*` values on the example's Convex deployment
-(`npx convex env set ...`), start the backend and the app, and note the URL.
-
 Session mode wants `examples/vite-react-session` on `:5174`; bridge mode wants
 `examples/tanstack-router-spa` on `:5173`. Those ports are what `provision.mjs`
 registers as redirect URIs — Logto rejects any other origin with a bare 400.
+
+Set the values on that example's Convex deployment. The names differ on purpose:
+the file names the *app* whose secret it is, the deployment names the *client*
+the library authenticates as, and session mode's `LOGTO_APP_ID` is the
+Traditional Web app, not the SPA one.
+
+```bash
+set -a; . e2e/.env.e2e; set +a          # from the repo root, for this block only
+cd examples/vite-react-session
+npx convex env set LOGTO_ENDPOINT "$LOGTO_ENDPOINT"
+npx convex env set LOGTO_APP_ID "$LOGTO_SESSION_APP_ID"
+npx convex env set LOGTO_CLIENT_SECRET "$LOGTO_APP_SECRET"
+npx convex dev &                        # note the http://127.0.0.1:PORT it prints
+npx vite                                # :5174, per vite.config.ts
+```
 
 > Port conflicts to expect on a dev machine: `:5173` is a common Vite default and
 > `:3212` is used by another local Convex backend. If you move a port, re-run
@@ -71,30 +83,57 @@ registers as redirect URIs — Logto rejects any other origin with a bare 400.
 
 ## 3. Run the flow
 
-All commands in this file run **from `e2e/`**.
+Back in **`e2e/`**, where every other command in this file runs.
 
 ```bash
 npm install                       # playwright-core only; no browser download
 set -a; . ./.env.e2e; set +a
 export E2E_APP_URL=http://localhost:5174
-export E2E_CONVEX_URL=http://127.0.0.1:3214     # the deployment the app talks to
+export E2E_CONVEX_URL=http://127.0.0.1:3216     # the port `convex dev` printed
 node session-flow.mjs
 ```
 
 Drives the real browser through cold sign-in → zero-RTT restore → two rounds of
-rotation → sign-out → re-sign-in. `E2E_HEADED=1` to watch it. A failure writes
-`failure.png` next to the script and exits non-zero.
+rotation → sign-out → re-sign-in → revoking a second device → sign-out
+everywhere. `E2E_HEADED=1` to watch it. A failure writes `failure.png` next to
+the script and exits non-zero.
+
+The last two steps open **separate browser contexts**, which is what makes them
+worth running: a second context is a second cookie jar and a second storage
+origin, so it is a second *device* to both Logto and the component — and
+"another device lost its session, live, without asking" is not a claim one
+browser can check.
 
 Every step is a required assertion, and each one asserts the thing rather than a
 proxy for it:
 
-- **zero-RTT** watches for a POST at the deployment and fails if one happens —
-  elapsed time proves nothing, because a fast round trip looks identical;
+- **zero-RTT** fails if the restore *mints a token*, named by function rather
+  than counted by URL — elapsed time proves nothing (a fast round trip looks
+  identical), and a POST count would also catch the calls the example's own UI
+  makes, so the library's test would break whenever the example changed;
 - **rotation runs twice**, because a rotated token that was never persisted
   passes the first refresh and fails the second;
 - **sign-out is re-checked after a reload**, because cleared UI with live
   credentials still in storage is exactly the bug;
-- **re-sign-in** must mint a *different* session token, not resurrect the old one.
+- **re-sign-in must be prompted.** Sign-out is federated by default, so Logto
+  has to ask for credentials again — that prompt is the only evidence the
+  RP-initiated logout actually reached Logto, since clearing local storage looks
+  identical from the app either way;
+- **revocation reaches the other device without a reload**, because a revocation
+  that only lands on the next page load is a cache expiry, not a revocation —
+  and the device that *did* the revoking has to stay signed in;
+- **sign-out everywhere** is checked on the device that never saw the click.
+
+Each run names the session it is about to revoke (`e2e-target-<runid>`). The
+test account accumulates sessions — every run leaves some behind — so "the other
+device" is not something the list can be asked for, and aiming a revoke at it
+would eventually aim at whatever an earlier run abandoned.
+
+> The zero-RTT step needs `initialAuthTokenReuse: true` on the app's
+> `ConvexReactClient`, which every example here sets. Without it Convex confirms
+> the cached token and immediately refetches, spending a Logto refresh grant on
+> every page load — see
+> [how it works](../docs/content/docs/how-it-works.mdx).
 
 It reads the library's own storage keys, so it tests the library rather than the
 example's UI.

@@ -23,6 +23,10 @@ import { api } from "./convex/_generated/api";
 // from the Convex deployment, so it's set in exactly one place per environment.
 const convex = new ConvexReactClient(process.env.EXPO_PUBLIC_CONVEX_URL!, {
   unsavedChangesWarning: false,
+  // Convex otherwise refetches a fresh token the instant it confirms the cached
+  // one, which costs a Logto refresh grant on every page load — and in session
+  // mode a session-token rotation with it. Experimental in convex@1.44.
+  initialAuthTokenReuse: true,
 });
 
 function Spinner({ label }: { label: string }) {

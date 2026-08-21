@@ -5,7 +5,12 @@ import { ConvexLogtoProvider, useLogtoAuth } from "convex-logto/react";
 import { RouterProvider } from "@tanstack/react-router";
 import { router } from "./router";
 
-const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL as string);
+const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL as string, {
+  // Convex otherwise refetches a fresh token the instant it confirms the cached
+  // one, which costs a Logto refresh grant on every page load — and in session
+  // mode a session-token rotation with it. Experimental in convex@1.44.
+  initialAuthTokenReuse: true,
+});
 
 // Inside <ConvexLogtoProvider> so useLogtoAuth() has its context.
 function RouterWithAuth() {

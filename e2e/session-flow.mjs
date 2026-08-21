@@ -19,11 +19,18 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 
 const appUrl = trimSlash(need("E2E_APP_URL"));
+// Compared as an origin, never as a prefix: `https://app.example` is a prefix of
+// `https://app.example.invalid`, and a check that accepts the second is the same
+// mistake the library refuses to make in its own redirect validation.
+const appOrigin = new URL(appUrl).origin;
 const convexUrl = trimSlash(need("E2E_CONVEX_URL"));
 const email = need("E2E_USER_EMAIL");
 const password = need("E2E_USER_PASSWORD");
 const headless = process.env.E2E_HEADED !== "1";
 const screenshotPath = fileURLToPath(new URL("./failure.png", import.meta.url));
+// Labels outlive a run: a revoke aimed at "the other device" would eventually
+// aim at a session some earlier run abandoned. Every run names its own.
+const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 function trimSlash(value) {
   return value.replace(/\/+$/, "");
@@ -85,6 +92,65 @@ async function waitForSignedOut(page) {
   );
 }
 
+/**
+ * Wait until the browser is back on the app's own origin.
+ *
+ * `localStorage` is per origin, and a federated sign-out leaves the page on
+ * Logto's while it ends the OP session. Reading storage there answers a
+ * question about *Logto's* storage — and answers "no session token" no matter
+ * what the app kept, which is a passing assertion that checked nothing. Every
+ * storage assertion waits for this first.
+ */
+async function waitForAppOrigin(target) {
+  await target.waitForURL((url) => url.origin === appOrigin, {
+    timeout: 45_000,
+  });
+  await target.waitForLoadState("domcontentloaded");
+}
+
+/**
+ * Sign out, and wait for the logout to actually reach Logto and come back.
+ *
+ * The app clears its own credentials *before* the network call, and the browser
+ * is still on the app's origin while it does — so "signed out, and on the app"
+ * is already true a millisecond after the click, before the end-session
+ * redirect has even started. Anything that navigates into that window cancels
+ * the request to Logto, and the OP session survives a sign-out that every
+ * local assertion says succeeded. Waiting for the end-session request itself is
+ * the only thing that closes it.
+ */
+async function signOutAndWaitForLogto(target, buttonName) {
+  const reachedLogto = target.waitForRequest(
+    (request) => request.url().includes("/oidc/session/end"),
+    { timeout: 45_000 },
+  );
+  await target.getByRole("button", { name: buttonName }).click();
+  await reachedLogto;
+  await waitForAppOrigin(target);
+  await waitForSignedOut(target);
+}
+
+/**
+ * Load the app again, tolerating a redirect still in flight.
+ *
+ * A federated sign-out is a chain — app → Logto's end-session → back — and the
+ * last hop can still be committing when the signed-out UI is already on screen.
+ * A navigation issued into that window aborts. Retrying is not papering over a
+ * product bug: the chain really is asynchronous, and the assertion that follows
+ * is about storage, not about how many redirects it took to get here.
+ */
+async function reopenApp(target) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await target.goto(appUrl, { waitUntil: "domcontentloaded" });
+      return;
+    } catch (error) {
+      if (attempt >= 3) throw error;
+      await target.waitForTimeout(500);
+    }
+  }
+}
+
 /** The rotating session token the library persisted, read from its own key. */
 function readStoredSessionToken(page) {
   return page.evaluate(() => {
@@ -100,6 +166,59 @@ function readStoredSessionToken(page) {
   });
 }
 
+/**
+ * Sign in from a browser context that has never seen Logto. Its cookie jar is
+ * empty, so the credential prompt is guaranteed — this is a second device, not
+ * a second tab.
+ */
+async function signInOnFreshDevice(target) {
+  await target.goto(appUrl, { waitUntil: "domcontentloaded" });
+  await target.getByRole("button", { name: /sign in/i }).click();
+  await signInAtLogto(target);
+  await waitForSignedIn(target);
+}
+
+/** Rename this device's own session through the app's list UI. */
+async function renameCurrentDevice(target, label) {
+  const own = target.getByRole("listitem").filter({ hasText: "this device" });
+  await own.first().waitFor({ timeout: 30_000 });
+  await own.first().getByRole("button", { name: /^rename$/i }).click();
+  await own.first().getByRole("textbox").fill(label);
+  await own.first().getByRole("button", { name: /^save$/i }).click();
+  await target
+    .getByRole("listitem")
+    .filter({ hasText: label })
+    .first()
+    .waitFor({ timeout: 30_000 });
+}
+
+/**
+ * Which outcome a sign-in click produced: Logto's credential prompt, or an app
+ * that is already signed in. Racing the two is the point — "silent" and
+ * "prompted" are both plausible outcomes of the same click, and waiting for
+ * only the one we expect turns a wrong answer into an opaque timeout.
+ */
+async function signInOutcome(page) {
+  return await Promise.race([
+    page
+      .waitForSelector("input[name=identifier]", { timeout: 45_000 })
+      .then(
+        () => "prompted",
+        () => "neither",
+      ),
+    page
+      .waitForFunction(
+        () => /sign out/i.test(document.body.innerText),
+        undefined,
+        { timeout: 45_000 },
+      )
+      .then(
+        () => "silent",
+        () => "neither",
+      ),
+  ]);
+}
+
 /** Drop the cached ID token so the next restore must go to the deployment. */
 function clearCachedIdToken(page) {
   return page.evaluate(() => {
@@ -112,16 +231,49 @@ function clearCachedIdToken(page) {
 }
 
 const browser = await chromium.launch({ headless, channel: "chrome" });
-const context = await browser.newContext();
-const page = await context.newPage();
 
-/** Every POST at the deployment — the session actions all go through one. */
-const deploymentPosts = [];
+/**
+ * A browser context is a separate cookie jar and a separate storage origin, so
+ * a second one is a second *device* as far as Logto and the component are
+ * concerned — which is the only way to test revoking one from the other.
+ */
+async function newDevice() {
+  const context = await browser.newContext();
+  return { context, page: await context.newPage() };
+}
+
+const { page } = await newDevice();
+
+/**
+ * Every action the page runs at the deployment, by function name.
+ *
+ * The name, not the URL: session mode's whole surface is one HTTP endpoint, so
+ * a URL count cannot tell the library's own token round-trip apart from a call
+ * the *app* made — and the app in front of this one lists its devices on
+ * render. Asserting on the count would make the library's test fail whenever
+ * the example's UI changed, which is the definition of testing a proxy.
+ */
+const deploymentCalls = [];
 page.on("request", (request) => {
-  if (request.method() === "POST" && request.url().startsWith(convexUrl)) {
-    deploymentPosts.push(request.url());
+  if (request.method() !== "POST" || !request.url().startsWith(convexUrl)) {
+    return;
   }
+  let path = "(unparseable)";
+  try {
+    path = JSON.parse(request.postData() ?? "{}").path ?? "(no path)";
+  } catch {
+    // Keep the placeholder: an action call whose body we cannot read is still
+    // evidence, and it must not be silently dropped from the record.
+  }
+  deploymentCalls.push(path);
 });
+
+/** The calls that mint a token — the ones a warm restore must not need. */
+function tokenCalls() {
+  return deploymentCalls.filter((path) =>
+    /:(refresh|callback)$/.test(path),
+  );
+}
 
 try {
   console.error(`session-flow against ${appUrl} (deployment ${convexUrl})\n`);
@@ -132,8 +284,8 @@ try {
   await signInAtLogto(page);
   await waitForSignedIn(page);
   assert(
-    page.url().startsWith(appUrl),
-    `expected to land back on ${appUrl}, got ${page.url()}`,
+    new URL(page.url()).origin === appOrigin,
+    `expected to land back on ${appOrigin}, got ${page.url()}`,
   );
   const firstToken = await readStoredSessionToken(page);
   assert(firstToken !== null, "no session token was persisted after sign-in");
@@ -142,15 +294,20 @@ try {
   // 2. Zero-RTT restore. Timing proves nothing — a fast round trip looks
   //    identical — so assert the absence of the round trip itself. The library
   //    should serve the cached ID token without asking the deployment for one.
-  deploymentPosts.length = 0;
+  //
+  //    This needs `initialAuthTokenReuse: true` on the ConvexReactClient. Without
+  //    it Convex confirms the cached token and then immediately refetches, which
+  //    spends a Logto refresh grant on every page load; the app under test sets
+  //    it, so a failure here is a real regression and not a missing flag.
+  deploymentCalls.length = 0;
   await page.reload({ waitUntil: "domcontentloaded" });
   await waitForSignedIn(page);
   assert(
-    deploymentPosts.length === 0,
-    `restore should not reach the deployment, but posted ${deploymentPosts.length}×: ` +
-      deploymentPosts.slice(0, 3).join(", "),
+    tokenCalls().length === 0,
+    "restore should not mint a token, but called " +
+      `${tokenCalls().join(", ")} (all calls: ${deploymentCalls.join(", ") || "none"})`,
   );
-  step("zero-RTT restore", "no deployment request before authenticated render");
+  step("zero-RTT restore", "no token minted before authenticated render");
 
   // 3. Rotation, twice. Once proves a refresh worked; the failure worth catching
   //    is a rotated token that was never persisted, and that only surfaces on the
@@ -173,9 +330,11 @@ try {
 
   // 4. Sign-out has to survive a reload. A cleared UI with live credentials
   //    still in storage would pass a text-only check and is exactly the bug.
-  await page.getByRole("button", { name: /^sign out/i }).click();
-  await waitForSignedOut(page);
-  await page.reload({ waitUntil: "domcontentloaded" });
+  // Not `/^sign out/`: the app also offers "Sign out everywhere", and matching
+  // both makes Playwright refuse rather than pick — which is the right call, and
+  // the reason this names the one it means.
+  await signOutAndWaitForLogto(page, /^sign out(?! everywhere)/i);
+  await reopenApp(page);
   await waitForSignedOut(page);
   const afterSignOut = await readStoredSessionToken(page);
   assert(
@@ -184,10 +343,22 @@ try {
   );
   step("sign-out", "credentials gone, and still gone after a reload");
 
-  // 5. Sign in again over Logto's surviving SSO cookie. This is how a user
-  //    retries anything that looks like a sign-out, and it must work without a
-  //    fresh credential prompt.
+  // 5. Sign in again. Sign-out is federated by default — it ends Logto's SSO
+  //    session as well as the local one — so this must *not* be silent. The
+  //    credential prompt is the only evidence that the RP-initiated logout
+  //    actually reached Logto: clearing local storage looks identical from the
+  //    app either way, and a surviving OP session would sign the next visitor
+  //    straight back in.
   await page.getByRole("button", { name: /sign in/i }).click();
+  const outcome = await signInOutcome(page);
+  assert(
+    outcome === "prompted",
+    outcome === "silent"
+      ? "sign-out did not end Logto's session: the next sign-in completed " +
+          "silently over a surviving SSO cookie"
+      : "the sign-in click reached neither Logto's prompt nor a signed-in app",
+  );
+  await signInAtLogto(page);
   await waitForSignedIn(page);
   const resigned = await readStoredSessionToken(page);
   assert(resigned !== null, "re-sign-in produced no session token");
@@ -195,7 +366,82 @@ try {
     resigned !== previous,
     "re-sign-in reused the previous session token instead of minting one",
   );
-  step("re-sign-in", "silent through the surviving SSO session");
+  step("re-sign-in", "prompted — the federated sign-out reached Logto");
+
+  // 6. Revoking another device has to reach it without a reload, and must not
+  //    touch this one. This is the reactive `sessionValid` subscription plus
+  //    the revocation watermark, and it is the part of the component with the
+  //    most moving pieces: a marker commits before the rows are drained, and a
+  //    row that is logically revoked has to stop being an authority — and stop
+  //    being *visible* — before it is physically gone.
+  const second = await newDevice();
+  try {
+    await signInOnFreshDevice(second.page);
+    // Name it, and revoke it *by that name*. The test account accumulates
+    // sessions — every earlier run left some behind — so "the other one" is not
+    // a thing the list can be asked for. Naming the target also means the
+    // revoke below is aimed at a session this run created, never at a stranger.
+    const label = `e2e-target-${runId}`;
+    await renameCurrentDevice(second.page, label);
+
+    // This device's list was rendered before the other one existed.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await waitForSignedIn(page);
+    const target = page.getByRole("listitem").filter({ hasText: label });
+    await target.first().waitFor({ timeout: 30_000 });
+    assert(
+      (await target.count()) === 1,
+      `expected exactly one session named ${label}, saw ${await target.count()}`,
+    );
+    assert(
+      !(await target.first().innerText()).includes("this device"),
+      `${label} is this device — the rename landed on the wrong session`,
+    );
+    await target.first().getByRole("button", { name: /^revoke$/i }).click();
+
+    // No reload on the revoked device: a revocation that only lands on the next
+    // page load is not a revocation, it is a cache expiry.
+    await waitForSignedOut(second.page);
+    assert(
+      (await readStoredSessionToken(second.page)) === null,
+      "the revoked device kept its session token",
+    );
+    // And the device that did the revoking is still signed in — revoking
+    // another session must not sign me out of this one.
+    await waitForSignedIn(page);
+    step("revocation", "reached the other device live, and left this one alone");
+  } finally {
+    await second.context.close();
+  }
+
+  // 7. Sign out everywhere. The one guarantee that cannot be checked from a
+  //    single browser: a *different* device, which never sees the click, has to
+  //    lose its session too — live, and without asking for it.
+  const third = await newDevice();
+  try {
+    await signInOnFreshDevice(third.page);
+    await signOutAndWaitForLogto(page, /^sign out everywhere$/i);
+    // Same settling as step 4, for the same reason: the sign-out chain's last
+    // hop can still be committing, and a storage read into that window is
+    // evaluated in a document that is being replaced.
+    await reopenApp(page);
+    await waitForSignedOut(page);
+    await waitForSignedOut(third.page);
+    // Both devices, not just the far one: sign-out-everywhere is a different
+    // code path from sign-out, and "cleared UI, live credentials in storage" is
+    // as much a bug on the device that clicked as on the one that did not.
+    assert(
+      (await readStoredSessionToken(page)) === null,
+      "the device that signed out everywhere kept its own session token",
+    );
+    assert(
+      (await readStoredSessionToken(third.page)) === null,
+      "a device kept its session token through sign-out-everywhere",
+    );
+    step("sign out everywhere", "the other device lost its session too");
+  } finally {
+    await third.context.close();
+  }
 
   console.error(`\n${passed} steps passed.`);
 } catch (error) {

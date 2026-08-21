@@ -119,6 +119,11 @@ const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
 </ConvexLogtoSessionProvider>;
 ```
 
+Pass `{ initialAuthTokenReuse: true }` to the client too. Without it Convex
+refetches a token the moment it confirms the cached one, which in session mode
+means a Logto refresh grant *and* a session-token rotation on every page load —
+see [one token round trip per page load](/docs/how-it-works#one-token-round-trip-per-page-load-unless-you-opt-out).
+
 That's the whole frontend. No `@logto/react`, no callback component — the
 provider finishes the exchange on `/callback` and replace-navigates back into
 the app by itself. `useLogtoAuth()` from `convex-logto/react-session` extends
