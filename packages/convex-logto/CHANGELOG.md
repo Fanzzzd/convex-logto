@@ -1,5 +1,121 @@
 # convex-logto
 
+## 0.6.0
+
+### Minor Changes
+
+- [#201](https://github.com/Fanzzzd/convex-logto/pull/201) [`e60400c`](https://github.com/Fanzzzd/convex-logto/commit/e60400cb66f617f37aef6a21b93a29bf1d8ba7aa) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - One `useLogtoAuth()` shape across all four entries, and organization authorization.
+  
+  **Breaking.** The four entries disagreed about their own API, which mattered most for the one migration the package exists to make easy — bridge mode to session mode:
+  
+  - `user` was the Logto SDK's `IdTokenClaims` in bridge mode and a bare `Record<string, unknown>` in session mode, so the same ID token produced two types and `user?.email` compiled in one mode and not the other. Both now return `LogtoUserClaims`: standard claims named, everything else still reachable through an index signature — which bridge mode's interface never had, so a custom claim was unreachable there.
+  - `signOut(postLogoutRedirectUri?: string)` becomes `signOut({ postLogoutRedirectUri? })` in bridge mode, matching session mode. Native's `signOut()` takes the same options object and can now pass a post-logout redirect through to `@logto/rn`.
+  - Native's `signIn(redirectUri?: string)` becomes `signIn({ redirectUri? })`.
+  - The deprecated `signIn(redirectUri: string)` overload on the web bridge is removed. A redirect URI whose path was not `callbackPath` produced a sign-in nothing handled, and warning about it afterwards was never a fix.
+  
+  **New: organization authorization, with no extra round trip.** Logto maps `urn:logto:scope:organizations` to an `organizations` claim and `urn:logto:scope:organization_roles` to an `organization_roles` claim *in the ID token*, and Convex passes claims it does not recognise through to `ctx.auth.getUserIdentity()`. So membership and roles are already inside the request Convex authenticated:
+  
+  ```ts
+  import { assertOrganizationRole } from "convex-logto";
+  
+  export const deleteInvoice = mutation({
+    args: { organizationId: v.string(), id: v.id("invoices") },
+    handler: async (ctx, { organizationId, id }) => {
+      await assertOrganizationRole(ctx, organizationId, ["admin", "billing"]);
+      await ctx.db.delete(id);
+    },
+  });
+  ```
+  
+  Also exported: `logtoOrganizations`, `logtoOrganizationRoles`, `assertOrganizationMember`, `parseOrganizationRole`, `ORGANIZATIONS_SCOPE`, `ORGANIZATION_ROLES_SCOPE`. A role check matches on the organization *and* the role, so one organization's `viewer` cannot authorize another's; and a missing scope authorizes nothing rather than everything, with the scope named in the failure so a configuration gap does not read as a denial.
+  
+  Organization *permissions* are not covered: Logto issues those only in an organization token, audienced `urn:logto:organization:{id}` and typed `at+jwt`, which Convex rejects. See `docs/adr/0002-token-custody.md`.
+
+- [#209](https://github.com/Fanzzzd/convex-logto/pull/209) [`af9218f`](https://github.com/Fanzzzd/convex-logto/commit/af9218fa744e84d350d652efacf27a4166151a57) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Session mode: organization and API-resource tokens, `fetchUserInfo`, `getIdToken`
+  
+  `useLogtoAuth()` gains `getOrganizationTokenClaims(organizationId)`,
+  `getAccessTokenClaims(resource)`, `fetchUserInfo()` and `getIdToken()`, closing
+  the last gap against `@logto/react`'s `useLogto()`. The component mints the
+  token from the session's Logto refresh token and returns **what it authorizes**
+  — nothing long-lived enters `window`. `exposeAccessTokens: true` on
+  `logtoSessionApi()` opts into the token string itself, for a caller that must
+  reach a non-Convex API from the browser; without it the token-returning methods
+  reject by name rather than quietly returning nothing.
+  
+  Re-export the two new actions (`exchangeToken`, `fetchUserInfo`) from your
+  `logtoSessionApi(...)` module to enable them. A module that has not been
+  updated keeps working — the methods report the missing export instead.
+  
+  Organization membership and *roles* still need none of this: Logto puts them in
+  the ID token, so `assertOrganizationRole` costs no round trip. This is for
+  fine-grained organization permissions and registered API resources.
+  
+  `resources` on `logtoSessionApi()` is no longer a no-op. It is the input to the
+  resource exchange — and it has to be set before sign-in, because Logto refuses
+  to issue a token for a resource the grant never named.
+  
+  The exchange runs inside the same claim as `refresh`. The client serializes the
+  two behind the same lock and retries, so an app does not have to — but a second
+  tab or device can still see the transient `refresh_in_flight`.
+  
+  That sharing is not caution. Logto rotates the refresh token on a rule blind to
+  what the grant was for, and for a confidential client only once the token is
+  past 70% of its lifetime — so an exchange outside the claim would look correct
+  until real tokens aged, then start tripping reuse detection on a grant sibling
+  sessions share. Measured on a public client, where the same rule rotates every
+  time: a plain refresh, an organization token and a resource token all rotate.
+  `docs/adr/0003-organization-token-exchange.md` records it.
+  
+  The optional same-site cookie transport gains a sixth route (`tokens`) so both
+  new methods work there too.
+
+- [#204](https://github.com/Fanzzzd/convex-logto/pull/204) [`eecb1fe`](https://github.com/Fanzzzd/convex-logto/commit/eecb1fed2f309bd02dcc450812a1e1aa641d3852) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Server-side rendering with session mode, in any framework.
+  
+  `getInitialToken()` rotates the session cookie, and a framework that forbids writing cookies during render — the Next.js App Router's Server Components, notably — cannot persist that rotation. Dropping it leaves the browser holding a superseded token that later reads as reuse and kills the session, so the documented advice has been "do not seed SSR there", which in practice means no server-side identity at all.
+  
+  `idTokenCookie: true` on `createLogtoSessionCookieHandler` makes the route handler also write the ID token to an `HttpOnly` `__Host-convex-logto-id-token` cookie, with `Max-Age` taken from the token's own `exp`. Read it with `readLogtoIdTokenCookie(source)`, which accepts a `Request`, a raw `Cookie` header, or a store shaped like Next's `cookies()` — so there is no framework entry point to keep in step:
+  
+  ```tsx
+  const token = readLogtoIdTokenCookie(await cookies());
+  const preloaded = await preloadQuery(api.me.me, {}, token ? { token } : {});
+  ```
+  
+  Nothing is minted and nothing is rotated, so the session token's reuse detection is untouched. It is opt-in because the trade-off is custody: a cookie rides on every same-origin request, reaching access logs and proxies an `Authorization` header does not. A token read this way is a bearer Convex validates, not a claim to trust — revocation is enforced by `assertSubjectHasActiveSession` inside the function you call, exactly as it is everywhere else.
+  
+  An ID token that is expired, malformed, or too large for a cookie is skipped rather than cleared, so a size problem cannot become a sign-out; sign-out clears the cookie unconditionally, even when the option is off, so turning it off never strands a live token.
+
+- [#212](https://github.com/Fanzzzd/convex-logto/pull/212) [`298e7df`](https://github.com/Fanzzzd/convex-logto/commit/298e7dfe441e77884d7316518f44c15937e18e9e) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Add `forceRefresh` to every token-exchange method, and make `fetchUserInfo`
+  recover from a rejected cached token on its own.
+  
+  The component caches a minted Organization or Resource token until it expires,
+  so a token the *resource server* has stopped accepting — a revoked grant, a
+  clock that drifted past the skew allowance, an organization whose roles changed
+  — kept being served for the rest of its lifetime, and the caller had no way to
+  say "not that one". `getOrganizationTokenClaims`, `getAccessTokenClaims`,
+  `getOrganizationToken`, `getAccessToken` and `fetchUserInfo` now take a final
+  `{ forceRefresh: true }` that skips the cache and replaces what was there. It
+  costs a Logto grant, so it belongs on the failure path.
+  
+  `fetchUserInfo` is the one caller inside the library that consumes a minted
+  token, so it does that itself: when Logto answers `401`/`403` for a token that
+  came from the cache it mints once and retries. A rejection of a token it just
+  minted is a deployment fault, and it does not spend a second grant on one.
+  
+  Also: a userinfo response that is not JSON no longer reports as
+  `logto_unreachable`, which sent readers looking at the network for a deployment
+  answering wrongly.
+  
+  Also, and separately: a `403` from Logto's token endpoint was read as "the
+  refresh outcome is unknown", which keeps the refresh claim — so the session
+  answered `refresh_in_flight` to everything and was **deleted** when the claim
+  aged out. Logto answers exactly that for an Organization token asked for on a
+  grant without `urn:logto:scope:organizations`, so one missing scope in a
+  deployment's config signed every user out. A 403 with a machine-readable body
+  is a decision like a 400 or a 401, and `insufficient_scope` is a configuration
+  fault: transient, sessions kept, message naming the scope. `logtoSessionApi`
+  now refuses an organization exchange it can see cannot work, before it spends a
+  claim.
+
 ## 0.5.0
 
 ### Minor Changes
