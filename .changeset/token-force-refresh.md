@@ -22,3 +22,14 @@ minted is a deployment fault, and it does not spend a second grant on one.
 Also: a userinfo response that is not JSON no longer reports as
 `logto_unreachable`, which sent readers looking at the network for a deployment
 answering wrongly.
+
+Also, and separately: a `403` from Logto's token endpoint was read as "the
+refresh outcome is unknown", which keeps the refresh claim — so the session
+answered `refresh_in_flight` to everything and was **deleted** when the claim
+aged out. Logto answers exactly that for an Organization token asked for on a
+grant without `urn:logto:scope:organizations`, so one missing scope in a
+deployment's config signed every user out. A 403 with a machine-readable body
+is a decision like a 400 or a 401, and `insufficient_scope` is a configuration
+fault: transient, sessions kept, message naming the scope. `logtoSessionApi`
+now refuses an organization exchange it can see cannot work, before it spends a
+claim.

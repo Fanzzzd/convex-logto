@@ -22,7 +22,15 @@ That measurement had to be arranged, and arranging it is the point. A confidenti
 Three more answers from the same run shape the surface rather than the concurrency:
 
 - **Every `refresh_token` grant returns an `id_token`**, including the Organization and Resource variants — so an exchange also mints a fresh Short bearer, and discarding it would throw away a free refresh and leave the Session ageing faster than it needs to. The exchange persists it like any other refresh outcome.
-- **Membership and organization roles need no exchange at all.** The ID token carried `organizations: ["<id>"]` and `organization_roles: ["<id>:<role>"]`, confirming what [ADR 0002](./0002-token-custody.md) assumes. Only fine-grained organization *permissions* require a token.
+- **Membership and organization roles need no exchange at all.** The ID token carried `organizations: ["<id>"]` and `organization_roles: ["<id>:<role>"]`, confirming what [ADR 0002](./0002-token-custody.md) assumes.
+- **And organization *permissions* cannot be reached through this exchange at all.** A later measurement (2026-08-21, through the component this time rather than raw OIDC) found the minted Organization token's own `scope` claim empty, for a user holding a role that grants `e2e:manage`. Logto issues `availableScopes ∩ requestedScopes` — the user's organization permissions intersected with the request's scope set, which defaults to the *grant's* scopes:
+
+  ```js
+  const scope = params.scope ? requestParamScopes : refreshToken.scopes;
+  const issuedScopes = availableScopes.filter((name) => scope.has(name)).join(" ");
+  ```
+
+  Organization permissions are not OIDC scopes: they are absent from `scopes_supported`, so oidc-provider drops them from the authorize request and they can never be in `refreshToken.scopes`. The intersection is therefore always empty, and naming one on the token request is refused by the subset check above it (`invalid_scope`, "refresh token missing requested scope"). Authorization on organization permissions has to come from `organization_roles`, which is free and in the ID token; the Organization token remains the right thing to *send* to a service that validates the `urn:logto:organization:<id>` audience itself. A Resource token is different, and does carry the scopes its grant named.
 - **A rejected grant is not a spend.** Presenting a refresh token for an unregistered resource answers `invalid_target` and leaves the token usable — checked by replaying it immediately afterwards. This is what makes releasing the claim on a terminal token-endpoint failure safe rather than a guess.
 
 A resource, finally, must be named by the **`resource` parameter at authorization time**. Requesting the resource's *scope* instead does not work — that combination was rejected `invalid_target`, and the `resource` parameter alone succeeded — so `resources` is a sign-in-time input, and `scopes` is a separate one: a grant that named the resource but not its scopes yields a token with no scopes at all.
@@ -32,5 +40,5 @@ A resource, finally, must be named by the **`resource` parameter at authorizatio
 - The exchange is not a fast path. It queues behind an in-flight refresh on the same Session, and inherits the claim's whole failure vocabulary — including "outcome unknown, keep the claim and let it age into `claim-expired`".
 - `resources` must be declared before sign-in, and the scopes wanted from those resources belong in `scopes`. An app that discovers it needs a new API resource has to sign the user in again; there is no way to widen a grant in place.
 - A Session's stored ID token can be replaced by an Organization token exchange. Anything reasoning about *why* the Short bearer changed must not assume a plain refresh caused it.
-- Organization membership and role checks stay synchronous and free (`logtoOrganizations`, `assertOrganizationRole`). Only permission checks pay for a round trip, and the difference is worth documenting because it is invisible from the call site.
+- Organization membership and role checks stay synchronous and free (`logtoOrganizations`, `assertOrganizationRole`) — and they are the *only* organization authorization this library can offer, because an Organization token's scopes are always empty. `getOrganizationTokenClaims(...).scopes` must never be used as a permission check; the docs say so in a warning callout.
 - The rotation toggle is a deployment's to set, and turning it *off* does not make the exchange safe to run outside the claim: it makes the bug invisible instead of absent.

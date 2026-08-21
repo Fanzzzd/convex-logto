@@ -486,7 +486,17 @@ async function tokenEndpoint(
     }
     const error =
       isRecord(body) && typeof body.error === "string" ? body.error : undefined;
-    if (!res.ok) throw classifyTokenEndpointFailure(res.status, { error });
+    // Logto names the missing scope in a `scope` field beside the error. It is
+    // the difference between "insufficient_scope" and a message that says which
+    // option to add, so it is worth carrying the extra field.
+    const scope =
+      isRecord(body) && typeof body.scope === "string" ? body.scope : undefined;
+    if (!res.ok) {
+      throw classifyTokenEndpointFailure(res.status, {
+        ...(error === undefined ? {} : { error }),
+        ...(scope === undefined ? {} : { scope }),
+      });
+    }
     if (!parsed || !isRecord(body)) return { tokenResponse: false };
     return {
       tokenResponse: true,

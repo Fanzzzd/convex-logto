@@ -167,6 +167,24 @@ decoded claims are credentials and go to `.probe-org-tokens.json` (mode `0600`,
 gitignored), rewritten after every finding so a late failure does not discard
 evidence that cost real authorization grants.
 
+`probe-exchange.mjs` asks the same kind of question one layer up — through the
+*component*, not raw OIDC. It needs an app already running (see step 2) and an
+organization the test user belongs to:
+
+```bash
+export E2E_ORG_ID=...          # from `GET /api/organizations`
+node probe-exchange.mjs
+```
+
+It found two defects the first time it ran: Logto answers `403` for an
+organization token asked for on a grant without
+`urn:logto:scope:organizations`, and the component read that as *"the refresh
+outcome is unknown"* — keeping the claim, so every later refresh answered
+`refresh_in_flight` and the session was deleted when the claim aged out. One
+missing scope in a deployment's config signed every user out. It also showed
+that an Organization token's `scopes` is always empty, which the docs had been
+telling readers to authorize on.
+
 > **Design the experiment so the answer is visible.** Rotation is invisible on
 > any *confidential* client's fresh refresh token — Logto only rotates one past
 > 70% of its lifetime — so asking that client answers "no rotation" no matter
