@@ -51,6 +51,7 @@ library and will miss a broken example or docs build.
 | Test | `pnpm test` (vitest) |
 | Build | `NEXT_PUBLIC_CONVEX_URL=… pnpm build` |
 | Validate package | `pnpm lint:package` (publint + are-the-types-wrong) |
+| Check documented imports | `pnpm check:docs` (every `import … from "convex-logto…"` in `docs/` names a real export; reads `dist/`, so it runs after the build) |
 
 Not part of that sequence — `format` rewrites files and `dev` never exits:
 
@@ -69,7 +70,8 @@ clean clone (`git clone --no-hardlinks . /tmp/x && cd /tmp/x && pnpm install
 - **Lint/format:** OXC — `oxlint` + `oxfmt`. Run `format` before committing; CI enforces `lint` + `format:check`. oxfmt is scoped to `src/` (never reformats `package.json` / `CHANGELOG.md` / lockfiles).
 - **Runtime:** the library must run in Convex's **V8 runtime** — use Web APIs (e.g. `crypto.subtle`), not Node-only APIs.
 - **TypeScript:** strict, `verbatimModuleSyntax`. `check-types` runs **two** projects: `tsconfig.json` (the library, `types: []` — no ambient Node globals, because it runs in Convex's V8 runtime) and `tsconfig.test.json` (the same options plus `@types/node` and ES2023, over the test files the base config excludes so tsup and the component build never emit them). A new test file is covered automatically; a test that needs a Node API belongs in the second project only.
-- **Build verification:** `packages/convex-logto/scripts/verify-build-artifacts.mjs` runs at the end of every build. It asserts every path in `package.json#exports` exists, and — since nothing else ever loads them — that every relative specifier under `dist/component/` resolves and `dist/component/convex.config.js` imports. Without it a broken component emit surfaces on a *user's* next `convex dev` push.
+- **Build verification:** `packages/convex-logto/scripts/verify-build-artifacts.mjs` runs at the end of every build. It asserts every path in `package.json#exports` exists, that every relative specifier under `dist/component/` resolves and `dist/component/convex.config.js` imports (nothing else ever loads them), and that the two session entries still export the small set of names they share. Without it a broken component emit surfaces on a *user's* next `convex dev` push, and an export lost from one entry surfaces as a failure handleable in one mode and not the other.
+- **Docs verification:** `scripts/check-docs-imports.mjs` (`pnpm check:docs`, after the build) checks every `import { … } from "convex-logto…"` in `docs/content/docs/` against the **emitted** declaration files. Nothing compiles an `.mdx` code fence, so a renamed export otherwise reaches readers as a build error in *their* project. Import lines only, on purpose: making every snippet typecheck would mean giving each one a preamble it does not need to be read.
 - **`convex-logto/react` is ESM-only** because it depends on `@logto/react@4` (ESM-only). The root `convex-logto` entry is dual ESM+CJS.
 - **Auth model:** validate Logto's **ID token** over OIDC (Convex rejects `at+jwt` access tokens). No manual JWT config — the signing algorithm and JWKS are auto-discovered.
 - **Component schema evolution:** new fields on existing component tables must be `v.optional(...)`. There is no migration mechanism — the schema ships inside the npm package and is validated against existing rows on the app's next push. A brand-new table may have required fields.

@@ -15,6 +15,7 @@
     "format:check": "turbo run format:check",
     "lint:package": "turbo run lint:package",
     "audit:dependencies": "node ./scripts/audit-dependencies.mjs",
+    "check:docs": "node ./scripts/check-docs-imports.mjs",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "changeset publish"

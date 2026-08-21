@@ -44,3 +44,8 @@ jobs:
 
       - name: Validate published package (publint + are-the-types-wrong)
         run: pnpm lint:package
+
+      # After the build, because it reads the emitted declarations rather than
+      # the source — it sees the surface a reader's `npm i` would.
+      - name: Check documented imports against the built exports
+        run: pnpm check:docs
