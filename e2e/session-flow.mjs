@@ -241,6 +241,40 @@ async function signInOutcome(page) {
  * log. The names alone still answer the question being asked: seeing `code` and
  * `state` present is what tells you the callback was reached.
  */
+/**
+ * Parameter names that may be written down.
+ *
+ * A name is still content the URL supplied, and `?SECRET` is a parameter whose
+ * *name* is the secret. So this is an allowlist rather than a denylist, and it
+ * is safe to let rot: a name that is not here shows as `?`, which loses a little
+ * diagnostic detail and leaks nothing. Everything on it is a fixed OAuth/OIDC
+ * parameter name from the flows this harness drives.
+ */
+const NAMEABLE_PARAMS = new Set([
+  "access_token",
+  "app_id",
+  "client_id",
+  "code",
+  "code_challenge",
+  "code_challenge_method",
+  "error",
+  "error_description",
+  "id_token",
+  "id_token_hint",
+  "iss",
+  "nonce",
+  "post_logout_redirect_uri",
+  "organization_id",
+  "prompt",
+  "redirect_uri",
+  "resource",
+  "response_type",
+  "scope",
+  "session_state",
+  "state",
+  "token_type",
+]);
+
 function safeUrl(raw) {
   let url;
   try {
@@ -255,7 +289,10 @@ function safeUrl(raw) {
       ? `${url.protocol}${url.pathname}`
       : `${url.origin}${url.pathname}`;
   const parts = [base.slice(0, 200)];
-  const names = (search) => [...new URLSearchParams(search).keys()].join(",");
+  const names = (search) =>
+    [...new URLSearchParams(search).keys()]
+      .map((name) => (NAMEABLE_PARAMS.has(name) ? name : "?"))
+      .join(",");
   const query = names(url.search);
   // A fragment is not always `a=b`, so say it is there even when nothing parses.
   const fragment = url.hash === "" ? "" : names(url.hash.slice(1)) || "…";
@@ -353,6 +390,10 @@ for (const [raw, expected] of [
   [
     "http://localhost:5174/#access_token=SECRET&token_type=bearer",
     "http://localhost:5174/#[access_token,token_type]",
+  ],
+  [
+    "http://localhost:5174/callback?SECRET&code=SECRET",
+    "http://localhost:5174/callback?[?,code]",
   ],
   ["http://localhost:5174/", "http://localhost:5174/"],
   ["about:blank", "about:blank"],
