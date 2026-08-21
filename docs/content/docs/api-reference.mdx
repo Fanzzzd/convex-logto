@@ -31,6 +31,7 @@ description: Every export from convex-logto and its web, native, and session-mod
 | `ConvexLogtoSessionProvider` | `convex-logto/react-session` | Session mode's provider — no Logto SDK; talks to your `logtoSessionApi` functions. |
 | `useLogtoAuth()` | `convex-logto/react-session` | Session auth plus `signOutEverywhere({ postLogoutRedirectUri? })`, `listSessions()` / `renameSession()` / `revokeSession()`, and `getIdToken()` / `getOrganizationTokenClaims()` / `getAccessTokenClaims()` / `fetchUserInfo()`. |
 | `SessionSignOutError` | `convex-logto/react-session`, `convex-logto/native-session` | The error `signOut()` rejects with when local credential cleanup fails twice; `serverSessionStatus` says whether the server session survived. |
+| `LogtoUserClaims` | `convex-logto` | The type of `user` in all four entries — standard claims named, everything else through an index signature. Import it to type a helper that takes one. |
 | `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `config` / `configQuery` model; no callback route. |
 | `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signIn({ redirectUri? })` / `signOut({ postLogoutRedirectUri? })`. |
 | `ConvexLogtoSessionProvider` | `convex-logto/native-session` | React Native / Expo session provider using SecureStore + the system browser. |
