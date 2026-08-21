@@ -1,10 +1,12 @@
+import { getFunctionName, type FunctionReference } from "convex/server";
 import { ConvexError } from "convex/values";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   beginTokenExchange,
   cachedResourceToken,
   completeTokenExchange,
   exchangeToken,
+  fetchUserInfo,
 } from "./lib";
 import {
   MAX_CACHEABLE_ACCESS_TOKEN_LENGTH,
@@ -846,5 +848,203 @@ describe("exchangeToken", () => {
     ).rejects.toMatchObject({
       data: { kind: "terminal", code: "missing_token_target" },
     });
+  });
+});
+
+// --- forceRefresh and the userinfo self-heal --------------------------------
+
+/**
+ * A minimal action ctx plus a `fetch` that answers by URL. Enough to drive the
+ * exchange end to end without a deployment: the mutations are the only state,
+ * and what this asserts is which calls were made, not what they stored.
+ */
+function actionHarness(options: {
+  cached?: { accessToken: string } | null;
+  userInfoStatuses?: number[];
+}) {
+  const cached = options.cached ?? null;
+  const userInfoStatuses = [...(options.userInfoStatuses ?? [])];
+  const runQuery = vi.fn((reference: unknown) => {
+    const name = getFunctionName(
+      reference as FunctionReference<"query", "internal">,
+    );
+    if (name === "lib:devicePublicKeyForToken") return Promise.resolve(null);
+    if (name === "lib:cachedResourceToken") {
+      return Promise.resolve(
+        cached === null
+          ? null
+          : {
+              audience: "default",
+              grantedScope: "",
+              expiresAt: Date.now() + 3_600_000,
+              accessToken: cached.accessToken,
+            },
+      );
+    }
+    throw new Error(`unexpected query ${name}`);
+  });
+  const runMutation = vi.fn((reference: unknown) => {
+    const name = getFunctionName(
+      reference as FunctionReference<"mutation", "internal">,
+    );
+    if (name === "lib:beginTokenExchange") {
+      return Promise.resolve({
+        outcome: "exchange" as const,
+        sessionId: "session-1",
+        refreshToken: "refresh-1",
+      });
+    }
+    if (name === "lib:completeTokenExchange") {
+      return Promise.resolve({
+        outcome: "committed" as const,
+        expiresAt: Date.now() + 3_600_000,
+        grantedScope: "",
+      });
+    }
+    throw new Error(`unexpected mutation ${name}`);
+  });
+  const tokenRequests: string[] = [];
+  const userInfoRequests: string[] = [];
+  const fetchMock = vi.fn((input: unknown, init?: { body?: unknown }) => {
+    const url = String(input);
+    if (url.endsWith("/oidc/token")) {
+      tokenRequests.push(String(init?.body ?? ""));
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: `minted-${tokenRequests.length}`,
+            expires_in: 3600,
+            scope: "",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    }
+    if (url.endsWith("/oidc/me")) {
+      userInfoRequests.push(url);
+      const status = userInfoStatuses.shift() ?? 200;
+      return Promise.resolve(
+        new Response(JSON.stringify({ sub: "user-1" }), { status }),
+      );
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return {
+    ctx: { runQuery, runMutation },
+    runQuery,
+    runMutation,
+    tokenRequests,
+    userInfoRequests,
+    args: {
+      endpoint: "https://auth.example.com",
+      appId: "app",
+      clientSecret: "secret",
+      sessionToken: "session-token",
+    },
+  };
+}
+
+describe("forceRefresh", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("serves the cached token when it is not asked to mint", async () => {
+    const harness = actionHarness({ cached: { accessToken: "cached-1" } });
+    const handler = handlerOf<Record<string, unknown>, { minted: boolean }>(
+      exchangeToken,
+    );
+    const result = await handler(harness.ctx, {
+      ...harness.args,
+      organizationId: "org-1",
+    });
+    expect(result.minted).toBe(false);
+    expect(harness.tokenRequests).toHaveLength(0);
+  });
+
+  it("skips the cache and mints when asked, so a rejected token can be replaced", async () => {
+    // The whole point: the component caches a minted token until it expires,
+    // so without this a token the resource server has stopped accepting keeps
+    // being served and the caller has no way to say "not that one".
+    const harness = actionHarness({ cached: { accessToken: "cached-1" } });
+    const handler = handlerOf<Record<string, unknown>, { minted: boolean }>(
+      exchangeToken,
+    );
+    const result = await handler(harness.ctx, {
+      ...harness.args,
+      organizationId: "org-1",
+      forceRefresh: true,
+    });
+    expect(result.minted).toBe(true);
+    expect(harness.tokenRequests).toHaveLength(1);
+    expect(
+      harness.runQuery.mock.calls.map((call) =>
+        getFunctionName(call[0] as FunctionReference<"query", "internal">),
+      ),
+    ).not.toContain("lib:cachedResourceToken");
+  });
+
+  it("still proves the device before minting, so a forced call is not a way past it", async () => {
+    const harness = actionHarness({ cached: null });
+    const handler = handlerOf<Record<string, unknown>, unknown>(exchangeToken);
+    await handler(harness.ctx, {
+      ...harness.args,
+      organizationId: "org-1",
+      forceRefresh: true,
+    });
+    expect(
+      harness.runQuery.mock.calls.map((call) =>
+        getFunctionName(call[0] as FunctionReference<"query", "internal">),
+      ),
+    ).toContain("lib:devicePublicKeyForToken");
+  });
+});
+
+describe("fetchUserInfo", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("mints once and retries when Logto rejects a token that came from the cache", async () => {
+    const harness = actionHarness({
+      cached: { accessToken: "cached-1" },
+      userInfoStatuses: [401, 200],
+    });
+    const handler = handlerOf<Record<string, unknown>, unknown>(fetchUserInfo);
+    await expect(handler(harness.ctx, harness.args)).resolves.toEqual({
+      sub: "user-1",
+    });
+    expect(harness.userInfoRequests).toHaveLength(2);
+    // Exactly one extra grant: the retry, and nothing more.
+    expect(harness.tokenRequests).toHaveLength(1);
+  });
+
+  it("does not retry a rejection of a token it just minted", async () => {
+    // A freshly minted token Logto refuses is a deployment fault — a wrong
+    // client, a disabled user. Minting again would spend grants on it forever.
+    const harness = actionHarness({
+      cached: null,
+      userInfoStatuses: [401, 200],
+    });
+    const handler = handlerOf<Record<string, unknown>, unknown>(fetchUserInfo);
+    await expect(handler(harness.ctx, harness.args)).rejects.toMatchObject({
+      data: { kind: "transient", code: "userinfo_failed" },
+    });
+    expect(harness.userInfoRequests).toHaveLength(1);
+    expect(harness.tokenRequests).toHaveLength(1);
+  });
+
+  it("does not spend a second grant on a 5xx, which says nothing about the token", async () => {
+    const harness = actionHarness({
+      cached: { accessToken: "cached-1" },
+      userInfoStatuses: [503, 200],
+    });
+    const handler = handlerOf<Record<string, unknown>, unknown>(fetchUserInfo);
+    await expect(handler(harness.ctx, harness.args)).rejects.toMatchObject({
+      data: { kind: "transient", code: "userinfo_failed" },
+    });
+    expect(harness.userInfoRequests).toHaveLength(1);
+    expect(harness.tokenRequests).toHaveLength(0);
   });
 });

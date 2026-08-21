@@ -1209,6 +1209,8 @@ type ExchangeArgs = {
   resource?: string;
   scopes?: string[];
   includeToken?: boolean;
+  /** Skip the cache and mint a new token, replacing whatever was cached. */
+  forceRefresh?: boolean;
   reuseWindowMs?: number;
 };
 
@@ -1228,6 +1230,18 @@ export const exchangeToken = action({
     scopes: v.optional(v.array(v.string())),
     /** Return the token string, not just its claims. Gated by the caller. */
     includeToken: v.optional(v.boolean()),
+    /**
+     * Mint a new token even if a live one is cached.
+     *
+     * The cache is keyed by target and scope set and holds a token until it
+     * expires, so a token the *resource server* has stopped accepting — a
+     * revoked grant, a clock that drifted past the skew allowance, an
+     * organization whose roles changed — would otherwise keep being served for
+     * up to its whole lifetime with no way for the caller to say "not that
+     * one". This is that way. It costs a grant, so it belongs on the failure
+     * path, not on every call.
+     */
+    forceRefresh: v.optional(v.boolean()),
     reuseWindowMs: v.optional(v.number()),
   },
   returns: v.object({
@@ -1277,16 +1291,17 @@ async function runExchange(
     proof: args.deviceProof,
   });
 
-  const cached: CachedResourceToken | null = await ctx.runQuery(
-    internal.lib.cachedResourceToken,
-    {
-      presentedHash,
-      audience,
-      scopeKey,
-      now: Date.now(),
-      reuseWindowMs: args.reuseWindowMs ?? DEFAULT_REUSE_WINDOW_MS,
-    },
-  );
+  // The device proof is checked above, before this branch: a forced mint must
+  // not be a way to skip it, and neither must a cache hit.
+  const cached: CachedResourceToken | null = args.forceRefresh
+    ? null
+    : await ctx.runQuery(internal.lib.cachedResourceToken, {
+        presentedHash,
+        audience,
+        scopeKey,
+        now: Date.now(),
+        reuseWindowMs: args.reuseWindowMs ?? DEFAULT_REUSE_WINDOW_MS,
+      });
   if (cached) {
     return {
       claims: claimsFromRow(cached, args),
@@ -1727,6 +1742,7 @@ export const fetchUserInfo = action({
     ...oidcArgs,
     sessionToken: v.string(),
     deviceProof: v.optional(v.string()),
+    forceRefresh: v.optional(v.boolean()),
     reuseWindowMs: v.optional(v.number()),
   },
   returns: v.any(),
@@ -1734,41 +1750,93 @@ export const fetchUserInfo = action({
     // The `default` audience: no organization, no resource — the opaque token
     // Logto's userinfo endpoint accepts. `exposeAccessTokens` does not gate it,
     // because it never leaves this function.
-    const exchanged = await runExchange(ctx, { ...args, includeToken: true });
-    if (exchanged.accessToken === undefined) {
+    const first = await callUserInfo(ctx, args);
+    if (first.ok) return first.profile;
+    // Logto refused the token itself. If it came from the cache, this is the
+    // one caller in the library that *knows* a cached token has stopped
+    // working — and the only one that can act on it. Mint once and retry:
+    // without this, a token Logto has stopped honouring keeps being served for
+    // the rest of its lifetime and every profile fetch fails until it expires.
+    // Bounded to a single extra grant, and only when the first token was
+    // cached: a freshly minted token Logto rejects is a deployment fault, and
+    // minting again would spend grants on it forever.
+    if (!first.tokenRejected || first.minted) {
       throw transient(
-        "no_userinfo_token",
-        "Could not obtain an access token for Logto's userinfo endpoint.",
+        "userinfo_failed",
+        `Logto's userinfo endpoint answered ${first.status}.`,
       );
     }
-    const controller = new AbortController();
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, TOKEN_ENDPOINT_TIMEOUT_MS);
-    try {
-      const res = await fetch(buildLogtoEndpointUrl(args.endpoint, "me"), {
-        headers: { Authorization: `Bearer ${exchanged.accessToken}` },
-        signal: controller.signal,
-      });
-      const body = await readBoundedBody(res, MAX_TOKEN_RESPONSE_BYTES);
-      if (!res.ok || !body.ok) {
-        throw transient(
-          "userinfo_failed",
-          `Logto's userinfo endpoint answered ${res.status}.`,
-        );
-      }
-      return JSON.parse(tokenResponseDecoder.decode(body.bytes)) as unknown;
-    } catch (error) {
-      if (error instanceof ConvexError) throw error;
-      throw transient(
-        "logto_unreachable",
-        "Could not reach Logto's userinfo endpoint.",
-      );
-    } finally {
-      clearTimeout(timeout);
-    }
+    const second = await callUserInfo(ctx, { ...args, forceRefresh: true });
+    if (second.ok) return second.profile;
+    throw transient(
+      "userinfo_failed",
+      `Logto's userinfo endpoint answered ${second.status}, ` +
+        "including for a freshly minted token.",
+    );
   },
 });
+
+type UserInfoAttempt =
+  | { ok: true; profile: unknown }
+  | { ok: false; status: number; tokenRejected: boolean; minted: boolean };
+
+/** One exchange plus one `/oidc/me` call. */
+async function callUserInfo(
+  ctx: GenericActionCtx<DataModel>,
+  args: ExchangeArgs,
+): Promise<UserInfoAttempt> {
+  const exchanged = await runExchange(ctx, { ...args, includeToken: true });
+  if (exchanged.accessToken === undefined) {
+    throw transient(
+      "no_userinfo_token",
+      "Could not obtain an access token for Logto's userinfo endpoint.",
+    );
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, TOKEN_ENDPOINT_TIMEOUT_MS);
+  let payload: string;
+  try {
+    const res = await fetch(buildLogtoEndpointUrl(args.endpoint, "me"), {
+      headers: { Authorization: `Bearer ${exchanged.accessToken}` },
+      signal: controller.signal,
+    });
+    const body = await readBoundedBody(res, MAX_TOKEN_RESPONSE_BYTES);
+    if (!res.ok || !body.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        // 401 is "this credential is not acceptable" and 403 is "it is, but it
+        // does not authorize this" — Logto answers the second for a token
+        // whose scopes no longer cover the profile. Both are answers about the
+        // token, and both are worth one fresh mint. A 5xx is not.
+        tokenRejected: res.status === 401 || res.status === 403,
+        minted: exchanged.minted,
+      };
+    }
+    payload = tokenResponseDecoder.decode(body.bytes);
+  } catch (error) {
+    if (error instanceof ConvexError) throw error;
+    throw transient(
+      "logto_unreachable",
+      "Could not reach Logto's userinfo endpoint.",
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+  // Parsed outside the network `try`: a body that is not JSON is a deployment
+  // answering wrongly, not an unreachable one, and folding it into
+  // "could not reach Logto" sends the reader looking at the network.
+  try {
+    return { ok: true, profile: JSON.parse(payload) as unknown };
+  } catch {
+    throw transient(
+      "userinfo_malformed",
+      "Logto's userinfo endpoint answered with something that is not JSON.",
+    );
+  }
+}
 
 // --- sign-out ---------------------------------------------------------------
 

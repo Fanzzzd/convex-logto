@@ -75,6 +75,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           clientSecret: string;
           deviceProof?: string;
           endpoint: string;
+          forceRefresh?: boolean;
           includeToken?: boolean;
           organizationId?: string;
           resource?: string;
@@ -103,6 +104,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           clientSecret: string;
           deviceProof?: string;
           endpoint: string;
+          forceRefresh?: boolean;
           reuseWindowMs?: number;
           sessionToken: string;
         },

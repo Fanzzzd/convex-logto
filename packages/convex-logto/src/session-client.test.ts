@@ -2451,6 +2451,62 @@ describe("token exchange", () => {
     });
   });
 
+  it("forwards forceRefresh, and omits it entirely when unasked", async () => {
+    // Omitted rather than sent as `false`: the arg is optional on the action,
+    // and a client that always sent it would make every existing call look
+    // like a deliberate cache decision in the deployment's logs.
+    const harness = makeHarness({
+      storedSession: { token: "session-token", sessionId: "session-1" },
+      storedIdToken: freshToken(),
+    });
+    harness.engine.start();
+    await settled(harness.engine);
+    harness.handlers.exchangeToken.mockResolvedValue({
+      claims: {
+        audience: "organization:org-1",
+        scopes: [],
+        expiresAt: 5_000_000,
+      },
+      minted: true,
+    });
+
+    await harness.engine.getOrganizationTokenClaims("org-1");
+    expect(harness.handlers.exchangeToken).toHaveBeenLastCalledWith({
+      sessionToken: "session-token",
+      organizationId: "org-1",
+    });
+
+    await harness.engine.getOrganizationTokenClaims("org-1", undefined, {
+      forceRefresh: true,
+    });
+    expect(harness.handlers.exchangeToken).toHaveBeenLastCalledWith({
+      sessionToken: "session-token",
+      organizationId: "org-1",
+      forceRefresh: true,
+    });
+  });
+
+  it("forwards forceRefresh on a profile fetch too", async () => {
+    const harness = makeHarness({
+      storedSession: { token: "session-token", sessionId: "session-1" },
+      storedIdToken: freshToken(),
+    });
+    harness.engine.start();
+    await settled(harness.engine);
+    harness.handlers.fetchUserInfo.mockResolvedValue({ sub: "user-1" });
+
+    await harness.engine.fetchUserInfo();
+    expect(harness.handlers.fetchUserInfo).toHaveBeenLastCalledWith({
+      sessionToken: "session-token",
+    });
+
+    await harness.engine.fetchUserInfo({ forceRefresh: true });
+    expect(harness.handlers.fetchUserInfo).toHaveBeenLastCalledWith({
+      sessionToken: "session-token",
+      forceRefresh: true,
+    });
+  });
+
   it("asks for a resource by indicator, never as an organization", async () => {
     const harness = makeHarness({
       storedSession: { token: "session-token", sessionId: "session-1" },

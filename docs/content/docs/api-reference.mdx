@@ -360,11 +360,31 @@ export const { /* ... */ exchangeToken, fetchUserInfo } = logtoSessionApi(
 - **Minted tokens are cached** per session, audience and requested scope set, so
   a permission check on render does not cost a grant. A revoked session's cache
   is invisible immediately and deleted with it.
+- **When the API you called rejects the token, ask for a new one.** Every method
+  takes a final `{ forceRefresh: true }`, which skips the cache and replaces
+  what was there. Without it a token the resource server has stopped accepting
+  would go on being served for the rest of its lifetime, with no way to say
+  "not that one". It costs a grant, so it belongs on the failure path:
+
+  ```ts
+  let token = await getAccessToken("https://api.example.com");
+  let res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (res.status === 401) {
+    token = await getAccessToken("https://api.example.com", undefined, {
+      forceRefresh: true,
+    });
+    res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  }
+  ```
 - **The exchange queues behind a refresh.** It spends the same Logto refresh
   token, so it takes the same claim and can answer the transient
   `refresh_in_flight` — retry it.
 - `fetchUserInfo()` is Logto's live `/oidc/me`, unlike `user`, which is the copy
   the last ID token froze. `getIdToken()` returns that Short bearer itself.
+  `fetchUserInfo` does the retry above for you — it is the one caller inside the
+  library that consumes a minted token, so when Logto answers `401`/`403` for a
+  *cached* one it mints once and tries again. A rejection of a token it just
+  minted is a deployment fault, and it does not spend a second grant on that.
 
 See [ADR 0002](https://github.com/Fanzzzd/convex-logto/blob/main/docs/adr/0002-token-custody.md)
 for the custody decision and

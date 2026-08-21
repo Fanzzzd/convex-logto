@@ -126,6 +126,7 @@ export type LogtoSessionComponent = {
         resource?: string;
         scopes?: string[];
         includeToken?: boolean;
+        forceRefresh?: boolean;
         reuseWindowMs?: number;
       },
       {
@@ -143,6 +144,7 @@ export type LogtoSessionComponent = {
         clientSecret: string;
         sessionToken: string;
         deviceProof?: string;
+        forceRefresh?: boolean;
         reuseWindowMs?: number;
       },
       unknown
@@ -396,6 +398,7 @@ export type LogtoSessionApi = {
       resource?: string;
       scopes?: string[];
       includeToken?: boolean;
+      forceRefresh?: boolean;
     },
     {
       claims: LogtoResourceTokenClaims;
@@ -406,7 +409,7 @@ export type LogtoSessionApi = {
   fetchUserInfo?: FunctionReference<
     "action",
     "public",
-    { sessionToken: string; deviceProof?: string },
+    { sessionToken: string; deviceProof?: string; forceRefresh?: boolean },
     unknown
   >;
   sessionValid: FunctionReference<
@@ -770,6 +773,7 @@ export function logtoSessionApi(
         resource: v.optional(v.string()),
         scopes: v.optional(v.array(v.string())),
         includeToken: v.optional(v.boolean()),
+        forceRefresh: v.optional(v.boolean()),
       },
       returns: v.object({
         claims: v.object({
@@ -816,6 +820,7 @@ export function logtoSessionApi(
           resource: args.resource,
           scopes: args.scopes,
           includeToken: args.includeToken,
+          forceRefresh: args.forceRefresh,
           reuseWindowMs: options.reuseWindowMs,
         });
       },
@@ -824,6 +829,7 @@ export function logtoSessionApi(
       args: {
         sessionToken: v.string(),
         deviceProof: v.optional(v.string()),
+        forceRefresh: v.optional(v.boolean()),
       },
       returns: v.any(),
       handler: async (ctx, args) => {
@@ -831,6 +837,7 @@ export function logtoSessionApi(
           ...readSessionConfig(options),
           sessionToken: args.sessionToken,
           deviceProof: args.deviceProof,
+          forceRefresh: args.forceRefresh,
           reuseWindowMs: options.reuseWindowMs,
         });
       },

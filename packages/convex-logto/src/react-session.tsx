@@ -22,6 +22,7 @@ import {
 import {
   SessionAuthEngine,
   SessionStorageArea,
+  type LogtoTokenExchangeOptions,
   type TokenStorageKind,
 } from "./session-client";
 import { defaultSessionTransport } from "./session-transport";
@@ -497,6 +498,7 @@ export type LogtoSessionAuth = {
   getOrganizationTokenClaims: (
     organizationId: string,
     scopes?: string[],
+    options?: LogtoTokenExchangeOptions,
   ) => Promise<LogtoResourceTokenClaims>;
   /**
    * What a Resource token authorizes. The resource must be listed in
@@ -506,6 +508,7 @@ export type LogtoSessionAuth = {
   getAccessTokenClaims: (
     resource: string,
     scopes?: string[],
+    options?: LogtoTokenExchangeOptions,
   ) => Promise<LogtoResourceTokenClaims>;
   /**
    * The Organization token *string*, for a caller that must reach a non-Convex
@@ -515,14 +518,19 @@ export type LogtoSessionAuth = {
   getOrganizationToken: (
     organizationId: string,
     scopes?: string[],
+    options?: LogtoTokenExchangeOptions,
   ) => Promise<string>;
   /** The Resource token *string*, under the same `exposeAccessTokens` gate. */
-  getAccessToken: (resource: string, scopes?: string[]) => Promise<string>;
+  getAccessToken: (
+    resource: string,
+    scopes?: string[],
+    options?: LogtoTokenExchangeOptions,
+  ) => Promise<string>;
   /**
    * Logto's live profile (`/oidc/me`), fetched by the component. A round trip,
    * unlike `user`, which is the copy the last ID token froze.
    */
-  fetchUserInfo: () => Promise<unknown>;
+  fetchUserInfo: (options?: LogtoTokenExchangeOptions) => Promise<unknown>;
 };
 
 /**
@@ -567,26 +575,41 @@ export function useLogtoAuth(): LogtoSessionAuth {
   );
   const getIdToken = useCallback(() => engine.getIdToken(), [engine]);
   const getOrganizationTokenClaims = useCallback(
-    (organizationId: string, scopes?: string[]) =>
-      engine.getOrganizationTokenClaims(organizationId, scopes),
+    (
+      organizationId: string,
+      scopes?: string[],
+      options?: LogtoTokenExchangeOptions,
+    ) => engine.getOrganizationTokenClaims(organizationId, scopes, options),
     [engine],
   );
   const getAccessTokenClaims = useCallback(
-    (resource: string, scopes?: string[]) =>
-      engine.getAccessTokenClaims(resource, scopes),
+    (
+      resource: string,
+      scopes?: string[],
+      options?: LogtoTokenExchangeOptions,
+    ) => engine.getAccessTokenClaims(resource, scopes, options),
     [engine],
   );
   const getOrganizationToken = useCallback(
-    (organizationId: string, scopes?: string[]) =>
-      engine.getOrganizationToken(organizationId, scopes),
+    (
+      organizationId: string,
+      scopes?: string[],
+      options?: LogtoTokenExchangeOptions,
+    ) => engine.getOrganizationToken(organizationId, scopes, options),
     [engine],
   );
   const getAccessToken = useCallback(
-    (resource: string, scopes?: string[]) =>
-      engine.getAccessToken(resource, scopes),
+    (
+      resource: string,
+      scopes?: string[],
+      options?: LogtoTokenExchangeOptions,
+    ) => engine.getAccessToken(resource, scopes, options),
     [engine],
   );
-  const fetchUserInfo = useCallback(() => engine.fetchUserInfo(), [engine]);
+  const fetchUserInfo = useCallback(
+    (options?: LogtoTokenExchangeOptions) => engine.fetchUserInfo(options),
+    [engine],
+  );
   return useMemo(
     () => ({
       isAuthenticated,
@@ -637,5 +660,8 @@ export type {
   LogtoSessionClientDescriptor,
   LogtoSessionSummary,
 } from "./session";
-export type { TokenStorageKind } from "./session-client";
+export type {
+  LogtoTokenExchangeOptions,
+  TokenStorageKind,
+} from "./session-client";
 export type { LogtoSessionCookieTransportOptions } from "./session-cookie";

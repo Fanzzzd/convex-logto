@@ -243,6 +243,17 @@ function sessionErrorCode(error: unknown): string | null {
 
 // --- storage -----------------------------------------------------------------
 
+/**
+ * Options every token-exchange method takes.
+ *
+ * `forceRefresh` is the escape hatch for a token the *resource server* has
+ * stopped accepting. The component caches a minted token until it expires, so
+ * without this a rejected one keeps being served for the rest of its lifetime
+ * and the caller has no way to say "not that one". It costs a Logto grant:
+ * reach for it on the failure path, not on every call.
+ */
+export type LogtoTokenExchangeOptions = { forceRefresh?: boolean };
+
 export type StoredSession = { token: string; sessionId: string };
 type StoredTransaction = { state: string };
 type StorageKind = "local" | "session" | "memory";
@@ -1406,8 +1417,15 @@ export class SessionAuthEngine {
   async getOrganizationTokenClaims(
     organizationId: string,
     scopes?: string[],
+    options?: LogtoTokenExchangeOptions,
   ): Promise<LogtoResourceTokenClaims> {
-    return (await this.exchange({ organizationId, scopes })).claims;
+    return (
+      await this.exchange({
+        organizationId,
+        scopes,
+        forceRefresh: options?.forceRefresh,
+      })
+    ).claims;
   }
 
   /**
@@ -1419,8 +1437,15 @@ export class SessionAuthEngine {
   async getAccessTokenClaims(
     resource: string,
     scopes?: string[],
+    options?: LogtoTokenExchangeOptions,
   ): Promise<LogtoResourceTokenClaims> {
-    return (await this.exchange({ resource, scopes })).claims;
+    return (
+      await this.exchange({
+        resource,
+        scopes,
+        forceRefresh: options?.forceRefresh,
+      })
+    ).claims;
   }
 
   /**
@@ -1436,16 +1461,31 @@ export class SessionAuthEngine {
   async getOrganizationToken(
     organizationId: string,
     scopes?: string[],
+    options?: LogtoTokenExchangeOptions,
   ): Promise<string> {
     return this.requireToken(
-      await this.exchange({ organizationId, scopes, includeToken: true }),
+      await this.exchange({
+        organizationId,
+        scopes,
+        includeToken: true,
+        forceRefresh: options?.forceRefresh,
+      }),
     );
   }
 
   /** The Resource token *string*, under the same `exposeAccessTokens` gate. */
-  async getAccessToken(resource: string, scopes?: string[]): Promise<string> {
+  async getAccessToken(
+    resource: string,
+    scopes?: string[],
+    options?: LogtoTokenExchangeOptions,
+  ): Promise<string> {
     return this.requireToken(
-      await this.exchange({ resource, scopes, includeToken: true }),
+      await this.exchange({
+        resource,
+        scopes,
+        includeToken: true,
+        forceRefresh: options?.forceRefresh,
+      }),
     );
   }
 
@@ -1455,7 +1495,7 @@ export class SessionAuthEngine {
    * A round trip, unlike `user`: this is the live profile from Logto rather
    * than the copy the last ID token froze. Use it after a profile edit.
    */
-  async fetchUserInfo(): Promise<unknown> {
+  async fetchUserInfo(options?: LogtoTokenExchangeOptions): Promise<unknown> {
     const action = this.options.api.fetchUserInfo;
     if (action === undefined) throw sessionApiUpgradeError("fetchUserInfo");
     const credential = await this.sessionCallCredential("fetchUserInfo");
@@ -1464,7 +1504,12 @@ export class SessionAuthEngine {
     return await this.withLock(() =>
       this.retrying(() =>
         this.callSessionAction("fetchUserInfo", () =>
-          this.options.transport.action(action, credential),
+          this.options.transport.action(action, {
+            ...credential,
+            ...(options?.forceRefresh === undefined
+              ? {}
+              : { forceRefresh: options.forceRefresh }),
+          }),
         ),
       ),
     );
@@ -1475,6 +1520,7 @@ export class SessionAuthEngine {
     resource?: string;
     scopes?: string[];
     includeToken?: boolean;
+    forceRefresh?: boolean;
   }): Promise<{
     claims: LogtoResourceTokenClaims;
     accessToken?: string;
@@ -1505,6 +1551,7 @@ export class SessionAuthEngine {
       resource?: string;
       scopes?: string[];
       includeToken?: boolean;
+      forceRefresh?: boolean;
     },
   ): Promise<{
     claims: LogtoResourceTokenClaims;
@@ -1522,6 +1569,9 @@ export class SessionAuthEngine {
         ...(args.includeToken === undefined
           ? {}
           : { includeToken: args.includeToken }),
+        ...(args.forceRefresh === undefined
+          ? {}
+          : { forceRefresh: args.forceRefresh }),
       }),
     );
   }

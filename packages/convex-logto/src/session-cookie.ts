@@ -860,12 +860,14 @@ export function createLogtoSessionCookieHandler(
             const resource = optionalDisplayString(body, "resource");
             const scopes = optionalStringArray(body, "scopes");
             const includeToken = optionalBoolean(body, "includeToken");
+            const forceRefresh = optionalBoolean(body, "forceRefresh");
             return jsonResponse(
               await options.action(exchangeToken, {
                 sessionToken,
                 ...(organizationId === undefined ? {} : { organizationId }),
                 ...(resource === undefined ? {} : { resource }),
                 ...(scopes === undefined ? {} : { scopes }),
+                ...(forceRefresh === undefined ? {} : { forceRefresh }),
                 // Forwarded as asked. Whether it is *allowed* is the app
                 // action's decision (`exposeAccessTokens` on
                 // `logtoSessionApi`), and duplicating that gate here would
@@ -881,8 +883,12 @@ export function createLogtoSessionCookieHandler(
             if (fetchUserInfo === undefined) {
               return sessionManagementUnavailable("fetchUserInfo", origin);
             }
+            const forceRefresh = optionalBoolean(body, "forceRefresh");
             return jsonResponse(
-              await options.action(fetchUserInfo, { sessionToken }),
+              await options.action(fetchUserInfo, {
+                sessionToken,
+                ...(forceRefresh === undefined ? {} : { forceRefresh }),
+              }),
               {},
               origin,
             );
@@ -1264,11 +1270,13 @@ function readExchangeArgs(args: Record<string, unknown>): {
   resource?: string;
   scopes?: string[];
   includeToken?: boolean;
+  forceRefresh?: boolean;
 } {
   const organizationId = args["organizationId"];
   const resource = args["resource"];
   const scopes = args["scopes"];
   const includeToken = args["includeToken"];
+  const forceRefresh = args["forceRefresh"];
   return {
     ...(typeof organizationId === "string" ? { organizationId } : {}),
     ...(typeof resource === "string" ? { resource } : {}),
@@ -1277,6 +1285,7 @@ function readExchangeArgs(args: Record<string, unknown>): {
       ? { scopes }
       : {}),
     ...(typeof includeToken === "boolean" ? { includeToken } : {}),
+    ...(typeof forceRefresh === "boolean" ? { forceRefresh } : {}),
   };
 }
 
@@ -1558,7 +1567,11 @@ export function createLogtoSessionCookieTransport(
         actionNames.fetchUserInfo !== undefined &&
         actionName === actionNames.fetchUserInfo
       ) {
-        return await post("tokens", { op: "userinfo" });
+        const forceRefresh = args["forceRefresh"];
+        return await post("tokens", {
+          op: "userinfo",
+          ...(typeof forceRefresh === "boolean" ? { forceRefresh } : {}),
+        });
       }
       throw new Error(
         "convex-logto: the cookie transport received an unknown session action.",
