@@ -60,10 +60,14 @@ A Logto grouping that a Subject may belong to many of, each carrying its own rol
 _Avoid_: tenant, workspace, team (those are the *application's* words for whatever it maps an Organization onto)
 
 **Organization membership**:
-The list of Organizations a Subject belongs to. It travels in the Short bearer as an `organizations` claim, so it is readable wherever the Short bearer is — including inside Convex functions, which pass unrecognised claims through.
+The list of Organizations a Subject belongs to. It travels in the Short bearer as an `organizations` claim, so it is readable wherever the Short bearer is — including inside Convex functions, which pass unrecognised claims through. Because it travels *in* the bearer it is a Claim snapshot, not a lookup.
 
 **Organization role**:
 A named role a Subject holds within one Organization. Like membership it travels in the Short bearer, as an `organization_roles` claim. Distinct from an Organization permission, which travels only in an Organization token.
+
+**Claim snapshot**:
+A value that was true when the Short bearer was issued and stays frozen until the next one is. Organization membership and Organization roles are claim snapshots: a Subject removed from an Organization keeps the claim until a fresh Short bearer is issued. Distinct from Reactive revocation, which is delivered *before* the Short bearer expires — nothing reactive exists for Organization membership.
+_Avoid_: cached, stale (both suggest a copy that could have been refreshed; this one could not)
 
 **Organization permission**:
 A fine-grained capability within one Organization. The only part of Logto's organization model that the Short bearer cannot carry.
@@ -76,6 +80,10 @@ _Avoid_: org JWT, organization credential
 **Resource token**:
 Any access token Logto issues for a registered API resource, of which an Organization token is one shape. Never a request credential for Convex.
 _Avoid_: API token, service token
+
+**ID token cookie**:
+An opt-in companion cookie carrying the Short bearer itself, written only by a route handler and readable during a server render. It mints nothing and rotates nothing, which is what lets a renderer that cannot set cookies read an identity. Distinct from the Session-token cookie, which is a credential the server rotates.
+_Avoid_: SSR token, auth cookie (the deployment has two cookies; naming either one "the" auth cookie loses the distinction that matters)
 
 **Token custody**:
 Which side of the deployment boundary a token is allowed to reach. Session mode's default custody is server-only for every token except the Short bearer; the Logto refresh token has no custody setting because it never leaves the component.
