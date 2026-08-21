@@ -244,10 +244,12 @@ const token = readLogtoIdTokenCookie(await cookies());
 const preloaded = await preloadQuery(api.me.me, {}, token ? { token } : {});
 ```
 
-Returns `null` when the cookie is absent — including once the token has expired,
-because the cookie's `Max-Age` comes from the token's own `exp`. A cookie that
-outlived its token would server-render a page as signed in for a bearer Convex
-refuses.
+Returns `null` when the cookie is absent, and when the token has expired. The
+cookie's `Max-Age` comes from the token's own `exp`, so a browser stops sending
+an expired one on its own; the read checks `exp` as well, because a `Cookie`
+header replayed from a cache or a proxy is not behind that guarantee. A token
+that outlived its cookie would server-render a page as signed in for a bearer
+Convex refuses.
 
 This mints nothing and rotates nothing, so it costs the session token's
 rotation-based theft detection nothing. What it does cost is custody: a cookie
@@ -259,9 +261,11 @@ everywhere else.
 
 An ID token that is already expired, is not a JWT, or is too large for a cookie
 (over 3 KiB encoded) is **skipped rather than cleared** — the previous cookie
-expires on its own instead of a size problem becoming a sign-out. Sign-out clears
-it unconditionally, even when the option is off, so turning it off never strands
-a live token.
+expires on its own instead of a size problem becoming a sign-out. Every exit that
+expires the session cookie expires this one with it: sign-out on success *and* on
+failure, and a terminal `/token` refresh. That holds even when `idTokenCookie` is
+off, so turning it off never strands a live token. Neither cookie is reachable
+from JavaScript, so a half-cleared pair is one nothing on the client can finish.
 
 Cookie transport and device binding cannot be combined: HttpOnly makes the
 session token unavailable to the JavaScript-held signing key, and cookie
