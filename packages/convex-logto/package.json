@@ -125,15 +125,15 @@
     "convex": "^1.44.0",
     "expo-secure-store": "^56.0.4",
     "expo-web-browser": "^56.0.5",
-    "happy-dom": "^20.11.2",
-    "oxfmt": "^0.63.0",
-    "oxlint": "^1.78.0",
+    "happy-dom": "^20.11.6",
+    "oxfmt": "^0.64.0",
+    "oxlint": "^1.79.0",
     "oxlint-tsgolint": "^7.0.2001",
-    "publint": "^0.3.23",
+    "publint": "^0.3.24",
     "react": "^19.1.0",
     "react-dom": "^19.2.8",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }
