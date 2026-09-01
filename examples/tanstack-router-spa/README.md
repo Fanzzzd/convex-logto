@@ -1,6 +1,6 @@
 # convex-logto + TanStack Router (SPA)
 
-All three ways to use auth: declarative `<Authenticated>` gating, the `useLogtoAuth()` hook, and **`beforeLoad` route guards** that protect routes outside of render — plus a webhook-synced `users` table with a per-app **role** (RBAC).
+All three ways to use auth: declarative `<Authenticated>` gating, the `useLogtoAuth()` hook, and **`beforeLoad` route guards** that protect routes outside of render, plus a webhook-synced `users` table with a per-app **role** (RBAC).
 
 ## Run
 
@@ -14,7 +14,7 @@ All three ways to use auth: declarative `<Authenticated>` gating, the `useLogtoA
    - **Post sign-out redirect URI** → `http://localhost:5173`
 
    Also rotate the tenant's OIDC signing key to **RSA** (Tenant settings → OIDC configs → **Rotate private keys** → choose RSA). Convex rejects Logto's default ES384, so this is required; otherwise `getUserIdentity()` returns `null`. Note its **endpoint** and **App ID** for the next step.
-4. Point that deployment at your Logto app — the one place config lives:
+4. Point that deployment at your Logto app, the one place config lives:
    ```bash
    npx convex env set LOGTO_ENDPOINT https://your-logto.example.com
    npx convex env set LOGTO_APP_ID   your-spa-app-id
@@ -31,7 +31,7 @@ per-app `role`. (Full write-up: [Webhook sync](../../docs/content/docs/webhook-s
 
 **Try it:**
 
-1. Sign in. The first time, the dashboard shows an **onboarding form** — pick
+1. Sign in. The first time, the dashboard shows an **onboarding form**; pick
    `user` or `admin`. Submitting creates your `users` row.
 2. Open **Admin (admin-only)**. As a `user` you get a 403; as an `admin` you see
    the admin stats.
@@ -40,14 +40,14 @@ per-app `role`. (Full write-up: [Webhook sync](../../docs/content/docs/webhook-s
 
 **How it's wired:**
 
-- `convex/schema.ts` — the `users` table. `email`/`name`/`status` are Logto-owned
+- `convex/schema.ts`: the `users` table. `email`/`name`/`status` are Logto-owned
   (synced); `role` is app-owned.
-- `convex/logto.ts` — the `logtoSync` webhook handlers (production sync of
+- `convex/logto.ts`: the `logtoSync` webhook handlers (production sync of
   email/name + suspend/delete), registered in `convex/http.ts`.
-- `convex/authz.ts` — `requireIdentity` / `getActiveUser` / `requireActiveUser` /
+- `convex/authz.ts`: `requireIdentity` / `getActiveUser` / `requireActiveUser` /
   `requireRole`. Reads are nullable (never throw mid-provisioning); writes and
   privileged reads throw and honor suspend + delete.
-- `convex/users.ts` — `myProfile`, `completeOnboarding` (first-login row creation),
+- `convex/users.ts`: `myProfile`, `completeOnboarding` (first-login row creation),
   `setMyRole` (the demo switcher, active-only), and `adminStats` (gated by
   `requireRole`).
 
@@ -56,7 +56,7 @@ per-app `role`. (Full write-up: [Webhook sync](../../docs/content/docs/webhook-s
 - **The webhook writes only Logto-owned fields (email, name, status), never
   `role`.** Otherwise a Logto profile edit (`User.Data.Updated`) would reset
   everyone's role to the default.
-- **The webhook never creates rows — it only syncs existing ones.** Rows are created
+- **The webhook never creates rows; it only syncs existing ones.** Rows are created
   by the onboarding mutation, from the logged-in state. `User.Created` does **not**
   fire for a user who already existed in Logto (or who arrived via another app on the
   same Logto), so a webhook-only approach would leave them permanently row-less.
@@ -65,7 +65,7 @@ per-app `role`. (Full write-up: [Webhook sync](../../docs/content/docs/webhook-s
   so authz fails closed and nothing referencing the user by id dangles.
 
 **Demo vs production:** a real app creates everyone as `user` and grants admin out
-of band — a Convex dashboard mutation, an internal mutation, or an allowlist —
+of band, by a Convex dashboard mutation, an internal mutation, or an allowlist,
 never self-service. The "become admin" button exists only so you can try the gate
 from both sides.
 

@@ -13,7 +13,7 @@ the release, and the next person had to reconstruct all of it from a chat log.
 
 Logto's real token lifetimes; whether a grant actually rotates its refresh token;
 what the SSO cookie does on a second sign-in; and how the component behaves when
-the wall clock — not a fake timer — advances. Every session-mode defect that took
+the wall clock, not a fake timer, advances. Every session-mode defect that took
 longest to find was in that gap.
 
 ## 1. Provision
@@ -32,7 +32,7 @@ node provision.mjs
 
 If that fails with `invalid_client`, the secret is probably fine and the *issuer*
 is wrong. A self-hosted Logto with the admin console enabled runs two OIDC
-issuers, and the built-in `m-default` client exists only in the admin one — while
+issuers, and the built-in `m-default` client exists only in the admin one, while
 the Management API it grants access to is served from `LOGTO_ENDPOINT`. Point the
 token request at the admin console and keep the API where it is:
 
@@ -40,13 +40,13 @@ token request at the admin console and keep the API where it is:
 export LOGTO_ADMIN_ENDPOINT=https://admin.example.com
 ```
 
-Find-or-create, and it *repairs* — an app that exists but has lost a redirect URI
+Find-or-create, and it *repairs*. An app that exists but has lost a redirect URI
 is the failure that actually happens (a port changes, someone edits the console),
 and it presents as an opaque HTTP 400 from `/oidc/auth`. Running it twice is safe.
 
 It also creates the **organization** the authorization steps need
-(`convex-logto-e2e-org`), an organization role named `admin` — the name
-`examples/vite-react-session/convex/organizations.ts` requires — and puts the
+(`convex-logto-e2e-org`), an organization role named `admin`, the name
+`examples/vite-react-session/convex/organizations.ts` requires, and puts the
 test user in the first holding the second. Membership and the role assignment are
 repaired on every run, because a user quietly dropped from an organization
 presents as an authorization denial with nothing to point at.
@@ -57,7 +57,7 @@ the next run reads the file, finds none, and the only other copy was in someone'
 shell history.
 
 Secrets are written to **`e2e/.env.e2e`** with mode `0600` (gitignored), never to
-stdout — a terminal is a scrollback buffer, and in CI it is a log. Only the
+stdout. A terminal is a scrollback buffer, and in CI it is a log. Only the
 non-secret values are printed. `--out <path>` moves the file.
 
 ```bash
@@ -71,7 +71,7 @@ have to be printed to be useful.
 
 Session mode wants `examples/vite-react-session` on `:5174`; bridge mode wants
 `examples/tanstack-router-spa` on `:5173`. Those ports are what `provision.mjs`
-registers as redirect URIs — Logto rejects any other origin with a bare 400.
+registers as redirect URIs; Logto rejects any other origin with a bare 400.
 
 Set the values on that example's Convex deployment. The names differ on purpose:
 the file names the *app* whose secret it is, the deployment names the *client*
@@ -111,7 +111,7 @@ cache → userinfo → sign-out → re-sign-in → revoking a second device → 
 everywhere. `E2E_HEADED=1` to watch it. A failure writes `failure.png` next to
 the script and exits non-zero.
 
-Progress and failures go to **stderr**, like everything else here — the exit code
+Progress and failures go to **stderr**, like everything else here; the exit code
 is the machine-readable result, so stdout stays free for a caller to redirect
 without swallowing the log. Keep a run with `2>`:
 
@@ -121,7 +121,7 @@ node session-flow.mjs 2> .probe-session-flow.log   # gitignored
 
 The last two steps open **separate browser contexts**, which is what makes them
 worth running: a second context is a second cookie jar and a second storage
-origin, so it is a second *device* to both Logto and the component — and
+origin, so it is a second *device* to both Logto and the component, and
 "another device lost its session, live, without asking" is not a claim one
 browser can check.
 
@@ -129,7 +129,7 @@ Every step is a required assertion, and each one asserts the thing rather than a
 proxy for it:
 
 - **zero-RTT** fails if the restore *mints a token*, named by function rather
-  than counted by URL — elapsed time proves nothing (a fast round trip looks
+  than counted by URL. Elapsed time proves nothing (a fast round trip looks
   identical), and a POST count would also catch the calls the example's own UI
   makes, so the library's test would break whenever the example changed;
 - **rotation runs twice**, because a rotated token that was never persisted
@@ -137,14 +137,14 @@ proxy for it:
 - **sign-out is re-checked after a reload**, because cleared UI with live
   credentials still in storage is exactly the bug;
 - **re-sign-in must be prompted.** Sign-out is federated by default, so Logto
-  has to ask for credentials again — that prompt is the only evidence the
+  has to ask for credentials again; that prompt is the only evidence the
   RP-initiated logout actually reached Logto, since clearing local storage looks
   identical from the app either way;
 - **revocation reaches the other device without a reload**, because a revocation
-  that only lands on the next page load is a cache expiry, not a revocation —
+  that only lands on the next page load is a cache expiry, not a revocation,
   and the device that *did* the revoking has to stay signed in;
 - **sign-out everywhere** is checked on the device that never saw the click;
-- **organization authorization** is asserted both ways — the test user's real
+- **organization authorization** is asserted both ways: the test user's real
   role in their real organization grants, and the *same role name* in an
   organization they do not belong to is denied. Whether Logto puts
   `organizations` and `organization_roles` in the **ID token** for the configured
@@ -156,12 +156,12 @@ proxy for it:
   way to prove `forceRefresh` bypasses a cache without first proving the cache
   exists. The exchange also has to return **no token string**, because the app
   never set `exposeAccessTokens`;
-- **`fetchUserInfo` answers for the same subject** the ID token names — a
+- **`fetchUserInfo` answers for the same subject** the ID token names; a
   userinfo response for a different subject would mean the component
   authenticated the wrong session, and both are just JSON to an offline test.
 
 Each run names the session it is about to revoke (`e2e-target-<runid>`). The
-test account accumulates sessions — every run leaves some behind — so "the other
+test account accumulates sessions, every run leaves some behind, so "the other
 device" is not something the list can be asked for, and aiming a revoke at it
 would eventually aim at whatever an earlier run abandoned.
 
@@ -172,12 +172,12 @@ nor a signed-in app. The first time, all it left was a blank screenshot. Two
 things were wrong, and only the diagnostic separated them.
 
 **The harness's own race.** `signInOutcome` used to race two `waitFor*` calls and
-map each rejection to `"neither"` — so *any* early rejection decided the whole
+map each rejection to `"neither"`, so *any* early rejection decided the whole
 question. A sign-in click navigates, navigation destroys the execution context a
 `waitForFunction` poll is running in, and that rejects **immediately**: it won
 the race and reported "neither" while the credential prompt was still on its way.
 The failures looked exactly like Logto's sign-in page failing to render. It was
-rendering fine — a probe found `input[name=identifier]` present and no console
+rendering fine; a probe found `input[name=identifier]` present and no console
 errors. It now polls both conditions in one `evaluate`, treats a failed read as
 "ask again", and lets only the deadline answer `"neither"`.
 
@@ -191,11 +191,11 @@ sign-in page: 302 in 0.304516s
 sign-in page: 302 in 0.300324s
 ```
 
-Nothing in `convex-logto` is on that path — the app has already redirected and is
+Nothing in `convex-logto` is on that path; the app has already redirected and is
 waiting on the IdP. It shows up now as a Playwright *navigation* timeout naming
 the `/oidc/auth` URL, which is a much better failure than "neither". Re-run.
 
-**Reading a failure here.** The assertion prints a **redacted** URL — origin and
+**Reading a failure here.** The assertion prints a **redacted** URL: origin and
 path in full, query and fragment reduced to parameter *names*, and only names it
 recognises, since `?SECRET` is a parameter whose name *is* the secret. This runs
 right after a sign-in click, so the raw URL can be a callback carrying
@@ -209,14 +209,14 @@ at http://localhost:5174/callback?[code,state] showing "Loading…"
 
 Enough to tell a callback from an authorize request without writing either one's
 values down. A startup self-check proves the redactor before anything can need
-it — it only ever runs on a failure, which is the one place there is no second
+it, because it only ever runs on a failure, which is the one place there is no second
 chance. A `"neither"` naming an **app** origin is the one worth bisecting: it
 means the click never got the browser off the app at all.
 
 ## Probes
 
 `session-flow.mjs` is a regression: it asserts known-good behaviour. A **probe**
-is the opposite — it asks the deployment a question whose answer is not known
+is the opposite; it asks the deployment a question whose answer is not known
 yet, and its output is a finding, not a pass or a fail.
 
 ```bash
@@ -229,7 +229,7 @@ node probe-org-tokens.mjs
 roles reach the ID token, whether an organization-token grant returns an
 `id_token`, whether it rotates the refresh token, whether a *rejected* grant
 still spends it, and what makes a resource askable. It creates its own
-organization, role, API resource and scope — all find-or-create, all named
+organization, role, API resource and scope, all find-or-create, all named
 `convex-logto-e2e-*`.
 
 Findings go to **stderr** (redirect with `2>`), like everything else here. The
@@ -237,7 +237,7 @@ decoded claims are credentials and go to `.probe-org-tokens.json` (mode `0600`,
 gitignored), rewritten after every finding so a late failure does not discard
 evidence that cost real authorization grants.
 
-`probe-exchange.mjs` asks the same kind of question one layer up — through the
+`probe-exchange.mjs` asks the same kind of question one layer up, through the
 *component*, not raw OIDC. It needs an app already running (see step 2), and
 `E2E_ORG_ID` from `.env.e2e`:
 
@@ -249,15 +249,15 @@ node probe-exchange.mjs 2> .probe-exchange.log # …redirect to keep them
 It found two defects the first time it ran: Logto answers `403` for an
 organization token asked for on a grant without
 `urn:logto:scope:organizations`, and the component read that as *"the refresh
-outcome is unknown"* — keeping the claim, so every later refresh answered
+outcome is unknown"*, keeping the claim, so every later refresh answered
 `refresh_in_flight` and the session was deleted when the claim aged out. One
 missing scope in a deployment's config signed every user out. It also showed
 that an Organization token's `scopes` is always empty, which the docs had been
 telling readers to authorize on.
 
 > **Design the experiment so the answer is visible.** Rotation is invisible on
-> any *confidential* client's fresh refresh token — Logto only rotates one past
-> 70% of its lifetime — so asking that client answers "no rotation" no matter
+> any *confidential* client's fresh refresh token, because Logto only rotates one
+> past 70% of its lifetime, so asking that client answers "no rotation" no matter
 > what the rule is. The probe asks the **public** SPA client instead, where the
 > same rule rotates on every grant. Reaching for a second configuration beats
 > inferring from a null result.
@@ -265,5 +265,5 @@ telling readers to authorize on.
 ## Cleanup
 
 Everything is named `convex-logto-e2e-*` and described "safe to delete". Deleting
-the apps and the user in the Logto console costs nothing — re-run `provision.mjs`
+the apps and the user in the Logto console costs nothing; re-run `provision.mjs`
 to get them back.

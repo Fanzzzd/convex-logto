@@ -60,13 +60,13 @@ A Logto grouping that a Subject may belong to many of, each carrying its own rol
 _Avoid_: tenant, workspace, team (those are the *application's* words for whatever it maps an Organization onto)
 
 **Organization membership**:
-The list of Organizations a Subject belongs to. It travels in the Short bearer as an `organizations` claim, so it is readable wherever the Short bearer is — including inside Convex functions, which pass unrecognised claims through. Because it travels *in* the bearer it is a Claim snapshot, not a lookup.
+The list of Organizations a Subject belongs to. It travels in the Short bearer as an `organizations` claim, so it is readable wherever the Short bearer is, including inside Convex functions, which pass unrecognised claims through. Because it travels *in* the bearer it is a Claim snapshot, not a lookup.
 
 **Organization role**:
 A named role a Subject holds within one Organization. Like membership it travels in the Short bearer, as an `organization_roles` claim. Distinct from an Organization permission, which travels only in an Organization token.
 
 **Claim snapshot**:
-A value that was true when the Short bearer was issued and stays frozen until the next one is. Organization membership and Organization roles are claim snapshots: a Subject removed from an Organization keeps the claim until a fresh Short bearer is issued. Distinct from Reactive revocation, which is delivered *before* the Short bearer expires — nothing reactive exists for Organization membership.
+A value that was true when the Short bearer was issued and stays frozen until the next one is. Organization membership and Organization roles are claim snapshots: a Subject removed from an Organization keeps the claim until a fresh Short bearer is issued. Distinct from Reactive revocation, which is delivered *before* the Short bearer expires; nothing reactive exists for Organization membership.
 _Avoid_: cached, stale (both suggest a copy that could have been refreshed; this one could not)
 
 **Organization permission**:

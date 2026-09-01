@@ -13,7 +13,7 @@
 4. **TTL 默认 14 天，per-app 可配 1–180 天（Console 与 Management API 均可）。** 另有两条独立上限：Grant TTL 硬编码 180 天（refresh 处理器不续期 grant，grant 过期后 refresh 直接失败）；不带 `offline_access` 签发的 refresh token 绑定用户 session（session 默认 14 天）。
 5. **复用检测：已被轮换（consumed）的 refresh token 再次被使用时，Logto 销毁该 token 并吊销整个 grant（整条 token 族），返回 `invalid_grant`。** 这是 node-oidc-provider 的语义，Logto 复制的 grant handler 原样保留，`revokeGrantPolicy` 未被覆盖（默认吊销 grant 本体）。**没有任何并发宽限窗口**：合法客户端自己并发 refresh 撞上刚被 consume 的旧 token，同样会核掉整个 token 族。
 6. **文档与源码总体一致，但有三处值得记录：** Console 的 TTL 提示文案对 SPA 不成立（说「token 请求会把 TTL 延长到该值」，而 SPA 明确不延长）；`@logto/schemas` 里的代码注释过时（称 rotation 开关「只有 traditional web 可关」，实际任何应用类型都能关且服务端会尊重）；**复用检测「吊销整族」的行为在 Logto 产品文档里没有描述**，只出现在其 node-oidc-provider fork 的 README 与源码中。
-7. **对 convex-logto 的直接推论：**（动机 1）默认配置下 SPA 的被盗 refresh token 不能「长期静默滥用」——攻击者每用一次就轮换，受害者客户端下一次 refresh 即触发整族吊销，且整条链有绝对 TTL（默认 14 天）封顶；风险表述应降级为「在受害者下次刷新或绝对 TTL 到期之前的窗口」。（动机 2）Logto 对 confidential client **确实会轮换**（≥70% TTL 时），session component 必须把「token 响应里出现新 `refresh_token` 就原子持久化」和「单飞（single-flight）refresh」写进契约，否则并发刷新会触发整族吊销。
+7. **对 convex-logto 的直接推论：**（动机 1）默认配置下 SPA 的被盗 refresh token 不能「长期静默滥用」，攻击者每用一次就轮换，受害者客户端下一次 refresh 即触发整族吊销，且整条链有绝对 TTL（默认 14 天）封顶；风险表述应降级为「在受害者下次刷新或绝对 TTL 到期之前的窗口」。（动机 2）Logto 对 confidential client **确实会轮换**（≥70% TTL 时），session component 必须把「token 响应里出现新 `refresh_token` 就原子持久化」和「单飞（single-flight）refresh」写进契约，否则并发刷新会触发整族吊销。
 
 ## 调研版本边界
 
@@ -43,7 +43,7 @@ rotateRefreshToken: (ctx) => {
 
 三层组成：
 
-1. **per-app 开关**：`customClientMetadata.rotateRefreshToken`，布尔，默认 `true`（[`customClientMetadataDefault`，schemas L14-L18](https://github.com/logto-io/logto/blob/v1.42.0/packages/schemas/src/consts/oidc.ts#L14-L18)）。任何应用类型设为 `false` 都会让该应用**完全不轮换**——代码对 client 类型无区分。
+1. **per-app 开关**：`customClientMetadata.rotateRefreshToken`，布尔，默认 `true`（[`customClientMetadataDefault`，schemas L14-L18](https://github.com/logto-io/logto/blob/v1.42.0/packages/schemas/src/consts/oidc.ts#L14-L18)）。任何应用类型设为 `false` 都会让该应用**完全不轮换**，代码对 client 类型无区分。
 2. **Logto 本地复刻的默认策略** [`packages/core/src/oidc/defaults.ts` L23-L41](https://github.com/logto-io/logto/blob/v1.42.0/packages/core/src/oidc/defaults.ts#L23-L41)：
    - `totalLifetime() >= 365.25 天` → 不再轮换（轮换 1 年上限，此后 TTL 定格）；
    - `clientAuthMethod === 'none'` 且 token 非 sender-constrained → **轮换（public client 每次 refresh 都轮换）**；
@@ -127,7 +127,7 @@ if (refreshToken.consumed) {
 
 发现的不一致（按影响排序）：
 
-1. **复用检测行为在产品文档缺失。** 「已用 token 再现 → 吊销整个 grant/token 族」只见于 fork README 与源码，Application data structure 页未提及。*不确定*：docs.logto.io 其他页面是否有描述——本次只系统检查了该主页面与其链接节，未做全站遍历。
+1. **复用检测行为在产品文档缺失。** 「已用 token 再现 → 吊销整个 grant/token 族」只见于 fork README 与源码，Application data structure 页未提及。*不确定*：docs.logto.io 其他页面是否有描述，本次只系统检查了该主页面与其链接节，未做全站遍历。
 2. **Console 提示文案对 SPA 不成立。** `refresh_token_ttl_tip`：「Token requests will extend the TTL of the refresh token to this value.」（[phrases L67-L69](https://github.com/logto-io/logto/blob/v1.42.0/packages/phrases/src/locales/en/translation/admin-console/application-details.ts#L67-L69)）。对 SPA，TTL 从不延长（§2）；docs 网页版在同一句后补了 SPA 例外说明，Console UI 没有。另外该句对 confidential client 也不精确：TTL 只在**轮换时**（≥70%）重置，普通 token 请求不延长现有 token 的 `exp`。
 3. **`@logto/schemas` 的代码注释过时。** [`oidc-module.ts` L76-L82](https://github.com/logto-io/logto/blob/v1.42.0/packages/schemas/src/foundations/jsonb-types/oidc-module.ts#L76-L82) 称 rotation「当 70% TTL 已过时签发新 token」（漏掉 public client 每次轮换）且「It can be turned off for only traditional web apps」。实际源码对任何应用类型都尊重 `rotateRefreshToken: false`（§1），Console 也对 Native/SPA 渲染该开关（只是换了一句「for each token request」的文案并提示 public client 建议保持开启，[RefreshTokenSettings.tsx L63-L72](https://github.com/logto-io/logto/blob/v1.42.0/packages/console/src/pages/ApplicationDetails/ApplicationDetailsContent/RefreshTokenSettings.tsx#L51-L73)、[phrases L70-L75](https://github.com/logto-io/logto/blob/v1.42.0/packages/phrases/src/locales/en/translation/admin-console/application-details.ts#L70-L75)）。当前网页文档「For public clients, it is highly recommended to keep refresh token rotation enabled」也印证开关对 public client 有效。
 4. 小问题：Console 开关的「Learn more」链到旧文档路径 `docs.logto.io/docs/references/applications/#rotate-refresh-token`（[RefreshTokenSettings.tsx L58](https://github.com/logto-io/logto/blob/v1.42.0/packages/console/src/pages/ApplicationDetails/ApplicationDetailsContent/RefreshTokenSettings.tsx#L58)），依赖重定向。
@@ -145,7 +145,7 @@ if (refreshToken.consumed) {
 
 ### 5.2 session component 的服务端 refresh 语义（ticket 08 动机 2）
 
-- **Logto 对 confidential client 也会轮换**——不是每次，而是 ≥70% TTL 时。契约不能假设 refresh token 恒定：每次 token 响应都可能带新 `refresh_token`，**必须先原子持久化新 token 再认为 refresh 完成**；持久化失败后用旧 token 重试 = 复用 consumed token = 整族吊销、用户被迫重登。
+- **Logto 对 confidential client 也会轮换**，不是每次，而是 ≥70% TTL 时。契约不能假设 refresh token 恒定：每次 token 响应都可能带新 `refresh_token`，**必须先原子持久化新 token 再认为 refresh 完成**；持久化失败后用旧 token 重试 = 复用 consumed token = 整族吊销、用户被迫重登。
 - **必须单飞**：同一 grant 的 refresh 要串行化（跨实例需要锁或 compare-and-swap），因为服务端没有任何 reuse 宽限窗口。相对宽慰的是：默认 14 天 TTL 下轮换大约每 ~9.8 天才发生一次，未轮换期间旧 token 可重复使用，竞态暴露面比「每次轮换」的 SPA 小得多。
 - 组件若自己再做一层「组件级 session token」轮换，两层轮换叠加的竞态只发生在 Logto 侧轮换的那次 refresh 上；契约里应把「Logto 返回了新 refresh_token 的那次刷新」当作需要强一致持久化的特殊路径。
 - 链的硬上限：grant 180 天（硬编码，不可配）。服务端 session 想活过 180 天必须让用户重新走一次授权流程。

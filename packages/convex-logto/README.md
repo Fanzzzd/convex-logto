@@ -4,18 +4,18 @@
 [![CI](https://github.com/Fanzzzd/convex-logto/actions/workflows/ci.yml/badge.svg)](https://github.com/Fanzzzd/convex-logto/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/convex-logto.svg)](./LICENSE)
 
-Use [Logto](https://logto.io) (self-hosted or cloud) as the auth provider for a [Convex](https://convex.dev) React app — with the least setup possible.
+Use [Logto](https://logto.io) (self-hosted or cloud) as the auth provider for a [Convex](https://convex.dev) React app, with the least setup possible.
 
 - **One provider on the frontend.** `<ConvexLogtoProvider>` wires Logto + Convex + the sign-in callback. No hand-rolled `useAuth` bridge.
 - **One line on the backend.** `logtoAuthConfig()` reads your env. No JWT template, no algorithm, no JWKS URL to copy.
-- **One source of truth across environments.** The frontend can pull its Logto config from the backend, so you configure Logto in exactly one place per environment — the Convex deployment.
+- **One source of truth across environments.** The frontend can pull its Logto config from the backend, so you configure Logto in exactly one place per environment: the Convex deployment.
 
-It uses Logto's **ID token** over OIDC, so Convex auto-discovers the signing key and JWKS — no JWT template, no algorithm, no JWKS URL to configure. (One Logto-side requirement: the OIDC signing key must be RSA/RS256 — see [step 1](#1-create-a-logto-app).)
+It uses Logto's **ID token** over OIDC, so Convex auto-discovers the signing key and JWKS: no JWT template, no algorithm, no JWKS URL to configure. (One Logto-side requirement: the OIDC signing key must be RSA/RS256; see [step 1](#1-create-a-logto-app).)
 
 Two modes share the same backend identity model:
 
 - **Bridge mode** (the default, shown below): Logto's SPA SDK signs in the browser; the package bridges its ID token into Convex. Zero server-side state.
-- **[Session mode](#session-mode)**: a Convex component holds the Logto refresh token server-side and rotates an application session token with the browser — smallest browser attack surface, live session revocation, and no Logto SDK in the bundle.
+- **[Session mode](#session-mode)**: a Convex component holds the Logto refresh token server-side and rotates an application session token with the browser: smallest browser attack surface, live session revocation, and no Logto SDK in the bundle.
 
 Whichever mode you choose, apply the [SPA security baseline][security-baseline-docs] to the scripts and dependencies that share its browser origin.
 
@@ -26,20 +26,20 @@ pnpm add convex-logto @logto/react
 ```
 
 `convex` and `react` are peers you already have. For **React Native / Expo**, install
-`@logto/rn` in place of `@logto/react` — everything else is the same (see
+`@logto/rn` in place of `@logto/react`; everything else is the same (see
 [React Native / Expo](#react-native--expo)). **[Session mode](#session-mode)** needs
-no Logto package at all — `pnpm add convex-logto` is the whole install.
+no Logto package at all; `pnpm add convex-logto` is the whole install.
 
 ## Quick start
 
 The snippets below use **Vite**. For the exact env var, provider placement, and
-callback wiring for each framework — Vite, TanStack Router, TanStack Start, and
-Next.js — see the [Next.js note](#nextjs-note) and the runnable
+callback wiring on Vite, TanStack Router, TanStack Start, and Next.js, see the
+[Next.js note](#nextjs-note) and the runnable
 [examples](https://github.com/Fanzzzd/convex-logto/tree/main/examples).
 
 ### 1. Create a Logto app
 
-In Logto Console → **Applications** → **Create application** → under **Single page app** pick your framework (e.g. **React**) — **not** a **Third-party app**. A third-party app is for letting *other people's* apps sign in through your Logto; it withholds the `profile` / `email` scopes this package requests, so sign-in fails with `invalid_scope`. The app type can't be changed after creation.
+In Logto Console → **Applications** → **Create application** → under **Single page app** pick your framework (e.g. **React**), **not** a **Third-party app**. A third-party app is for letting *other people's* apps sign in through your Logto; it withholds the `profile` / `email` scopes this package requests, so sign-in fails with `invalid_scope`. The app type can't be changed after creation.
 
 Note the **endpoint** (e.g. `https://auth.example.com`) and the **App ID**, and add two URLs on the app (for each environment):
 
@@ -48,7 +48,7 @@ Note the **endpoint** (e.g. `https://auth.example.com`) and the **App ID**, and 
 
 `signIn()` returns to the redirect URI and `signOut()` to the post-sign-out URI, so remember to add both.
 
-**Required — use an RSA signing key.** Convex only accepts ID tokens signed with **RS256** (or EdDSA); Logto signs with **ES384** by default, which Convex silently rejects (sign-in looks fine, but `ctx.auth.getUserIdentity()` returns `null`). Rotate it once per tenant: in the Logto Console, open **Tenant settings → OIDC configs**, click **Rotate private keys**, and choose **RSA** as the signing algorithm. Logto keeps the old key during a transition, so existing sessions stay signed in.
+**Required: use an RSA signing key.** Convex only accepts ID tokens signed with **RS256** (or EdDSA); Logto signs with **ES384** by default, which Convex silently rejects (sign-in looks fine, but `ctx.auth.getUserIdentity()` returns `null`). Rotate it once per tenant: in the Logto Console, open **Tenant settings → OIDC configs**, click **Rotate private keys**, and choose **RSA** as the signing algorithm. Logto keeps the old key during a transition, so existing sessions stay signed in.
 
 ### 2. Set the config
 
@@ -59,7 +59,7 @@ npx convex env set LOGTO_ENDPOINT https://auth.example.com
 npx convex env set LOGTO_APP_ID   your-app-id
 ```
 
-And in your frontend env (`.env.local`) — both are **public** OAuth values (the app id is a client id, not a secret), safe in the bundle:
+And in your frontend env (`.env.local`). Both are **public** OAuth values (the app id is a client id, not a secret), safe in the bundle:
 
 ```bash
 VITE_LOGTO_ENDPOINT=https://auth.example.com
@@ -91,7 +91,7 @@ import { ConvexLogtoProvider } from "convex-logto/react";
 
 const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL, {
   // Without this, Convex confirms the cached token and then immediately
-  // refetches a fresh one — a Logto refresh grant on every page load, and in
+  // refetches a fresh one: a Logto refresh grant on every page load, and in
   // session mode a session-token rotation with it. Experimental in convex@1.44.
   initialAuthTokenReuse: true,
 });
@@ -109,11 +109,11 @@ root.render(
 );
 ```
 
-Prefer runtime-resolved config (multi-tenant, one artifact for many environments)? Export `logtoConfigQuery()` from a Convex file and pass `configQuery={api.logto.config}` instead of `config` — the frontend then carries no Logto values at all.
+Prefer runtime-resolved config (multi-tenant, one artifact for many environments)? Export `logtoConfigQuery()` from a Convex file and pass `configQuery={api.logto.config}` instead of `config`; the frontend then carries no Logto values at all.
 
 ### 5. Add a callback route
 
-The provider finishes the OIDC code exchange automatically — the route just needs to render. With TanStack Router:
+The provider finishes the OIDC code exchange automatically; the route just needs to render. With TanStack Router:
 
 ```tsx
 // src/routes/callback.tsx
@@ -166,7 +166,7 @@ that varies per environment is the Convex deployment the frontend points at**
 Logto env vars to manage. With the default static `config`, keep the two public
 Logto values in each frontend environment as shown in the quick start.
 
-Create one Logto app per environment (dev / staging / prod — best practice, so tokens can't cross environments), then set each deployment's env once:
+Create one Logto app per environment (dev / staging / prod, so tokens can't cross environments), then set each deployment's env once:
 
 ```bash
 # dev deployment
@@ -185,18 +185,18 @@ own public Logto configuration.
 ## Session mode
 
 Keep the Logto refresh token out of the browser entirely: a Convex component
-becomes the OAuth client (a Logto **Traditional web** app — client secret stays
+becomes the OAuth client (a Logto **Traditional web** app; client secret stays
 on the server), and the browser holds only a short-lived ID token plus a
 **rotating session token** issued in generations (the server stores only hashes;
 the current generation and a bounded set of recently superseded generations may
 be accepted during the reuse window). Presenting a superseded token after that
 window triggers reuse containment. Session liveness is a Convex subscription, so
 sign-out elsewhere, token-theft detection, or a webhook suspension drops auth
-**live**, not at token expiry. Works on any static host — no cookie domain, no
+**live**, not at token expiry. Works on any static host: no cookie domain, no
 server for the frontend, no `@logto/react`.
 
 ```ts
-// convex/convex.config.ts — install the component
+// convex/convex.config.ts: install the component
 import { defineApp } from "convex/server";
 import logto from "convex-logto/convex.config";
 
@@ -206,7 +206,7 @@ export default app;
 ```
 
 ```ts
-// convex/auth.ts — the whole server surface
+// convex/auth.ts: the whole server surface
 import { logtoSessionApi } from "convex-logto";
 import { components } from "./_generated/api";
 
@@ -226,7 +226,7 @@ export const {
 ```
 
 ```tsx
-// src/main.tsx — no Logto SDK, no Logto config in the bundle
+// src/main.tsx: no Logto SDK, no Logto config in the bundle
 import { ConvexLogtoSessionProvider } from "convex-logto/react-session";
 import { api } from "../convex/_generated/api";
 
@@ -240,9 +240,8 @@ root.render(
 Config lives on the deployment (`LOGTO_ENDPOINT`, `LOGTO_APP_ID`,
 `LOGTO_CLIENT_SECRET`); `useLogtoAuth()` from `convex-logto/react-session` has
 the bridge actions plus `signOutEverywhere()` and the session list
-(`listSessions()` / `renameSession()` / `revokeSession()`). Full guide — threat model, token
-dance, subject-level revocation enforcement with
-`assertSubjectHasActiveSession` — in the
+(`listSessions()` / `renameSession()` / `revokeSession()`). The full guide, covering the threat model, the token dance, and subject-level
+revocation enforcement with `assertSubjectHasActiveSession`, is in the
 [Session mode docs][session-mode-docs] and the runnable
 [`vite-react-session`][session-example] example.
 
@@ -255,9 +254,9 @@ sign-in. The returned `count` is the number of physical session rows removed by
 the completed cleanup, not the moment at which revocation became effective.
 
 `listSessions()` returns the caller's own sessions for a "where am I signed in"
-screen — `{ sessionId, current, createdAt, lastRefreshedAt, label?, client?,
-deviceBound }`, newest first — with `renameSession()` and `revokeSession()` for
-naming a device or signing one out. The subject always comes from the presented
+screen, newest first, each `{ sessionId, current, createdAt, lastRefreshedAt,
+label?, client?, deviceBound }`. `renameSession()` and `revokeSession()` name a
+device or sign one out. The subject always comes from the presented
 token, so another user's `sessionId` resolves to `session_not_found`. The optional
 `clientDescriptor` provider prop supplies the advisory device description; the
 library never reads a User-Agent or IP.
@@ -265,7 +264,7 @@ library never reads a User-Agent or IP.
 `revokeSession()` is an RP-level boundary, like `signOutEverywhere()`: it deletes
 that session and its server-held refresh token, but it cannot erase the Logto SSO
 cookie in the other device's browser. A device that still holds one can start a
-new sign-in and may be authenticated without another credential prompt — revoke a
+new sign-in and may be authenticated without another credential prompt; revoke a
 genuinely lost device in Logto itself (or suspend the user) as well.
 
 Apps with a same-site server endpoint can additionally mount
@@ -279,13 +278,13 @@ TanStack Start, and Convex custom-domain mounts, plus the cookie/device-binding
 exclusion.
 
 `getInitialToken()` *rotates* the session cookie, so it belongs somewhere that
-can set cookies — a middleware, never a Server Component. Where the framework
+can set cookies: a middleware, never a Server Component. Where the framework
 forbids that during render, set `idTokenCookie: true` and read the ID token back
 with `readLogtoIdTokenCookie(request | cookieHeader | cookieStore)`: it mints
 nothing and rotates nothing, so a page can server-render an identity without
 touching the rotation-based theft detection. The cookie expires with the token it
 holds, and every exit that expires the session cookie expires it too. A token
-read that way is still a bearer Convex validates, not a claim to trust — enforce
+read that way is still a bearer Convex validates, not a claim to trust; enforce
 revocation inside the function, with `assertSubjectHasActiveSession`.
 
 Alternatively, opt into `deviceBinding` on the provider to require an ECDSA
@@ -308,7 +307,7 @@ reactive revocation. Native intentionally has no cookie-transport or software
 Two runnable apps: [`examples/vite-react-session`][session-example] for the SPA
 shape, and
 [`examples/nextjs-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs-session)
-for the parts an SPA cannot exercise — the HttpOnly cookie transport, and
+for the parts an SPA cannot exercise: the HttpOnly cookie transport, and
 server-side rendering with a real identity.
 
 Register `registerLogtoBackchannelLogout(http, { sessions: components.logto })`
@@ -326,7 +325,7 @@ Logto maps `urn:logto:scope:organizations` to an `organizations` claim and
 `urn:logto:scope:organization_roles` to an `organization_roles` claim **in the ID
 token**, and Convex passes claims it does not recognise through to
 `ctx.auth.getUserIdentity()`. So membership and roles are already inside the
-request Convex authenticated — no token exchange, no second round trip:
+request Convex authenticated. No token exchange, no second round trip:
 
 ```ts
 import { assertOrganizationRole } from "convex-logto";
@@ -340,34 +339,34 @@ export const deleteInvoice = mutation({
 });
 ```
 
-Add both scopes — they are independent, and neither implies the other — to the
-provider's `scopes` in bridge mode or to `logtoSessionApi({ scopes })` in session
-mode. `assertOrganizationMember`, `logtoOrganizations` and
+Add both scopes to the provider's `scopes` in bridge mode or to
+`logtoSessionApi({ scopes })` in session mode; they are independent, and neither
+implies the other. `assertOrganizationMember`, `logtoOrganizations` and
 `logtoOrganizationRoles` are exported too. A role check matches on the
 organization **and** the role, so one organization's `viewer` cannot authorize
 another's, and a missing scope authorizes nothing rather than everything.
 
-These claims are a **snapshot**, frozen until the next ID token is issued — at
+These claims are a **snapshot**, frozen until the next ID token is issued, at
 most its own lifetime. Removing someone from an organization does not take effect
 at once; when it has to, keep membership in your own table and check that
 instead. (Deleting or suspending the *user* is different: the webhook revokes
 their sessions immediately.)
 
-Fine-grained organization **permissions** are the exception — Logto puts those
+Fine-grained organization **permissions** are the exception; Logto puts those
 only in an organization token, which Convex cannot accept as a request
 credential. Session mode can mint one for you with `getOrganizationTokenClaims()`
 and hand back what it authorizes rather than the token itself.
 
 ## Optional: sync Logto users into a table
 
-You don't need a table to authenticate — identity comes from the token, so attach
+You don't need a table to authenticate; identity comes from the token, so attach
 your data to your own tables keyed by `identity.subject`. Add a `users` table only
 when you need to query users (an admin list, another user's name) or store fields
 the token doesn't carry (a per-app **role**). The table is **yours**; the package
 just provides the webhook glue.
 
 ```ts
-// convex/schema.ts — fields grouped by who owns them
+// convex/schema.ts: fields grouped by who owns them
 users: defineTable({
   authId: v.string(), // == identity.subject
   email: v.optional(v.string()), // Logto-owned (synced)
@@ -380,16 +379,17 @@ users: defineTable({
 Three rules keep it correct:
 
 - **The webhook writes only Logto-owned fields (`email`, `name`, `status`), never
-  `role`** — otherwise a Logto profile edit would reset everyone's role.
-- **The webhook never creates rows — it only syncs existing ones.** `User.Created`
+  `role`**; otherwise a Logto profile edit would reset everyone's role.
+- **The webhook never creates rows; it only syncs existing ones.** `User.Created`
   doesn't fire for users who already existed in Logto, so create rows from an
   authenticated mutation on first load (get-or-create) and let the webhook keep them
   in sync. (Webhook-only creation is the bug that bites component-owned auth tables.)
-- **Soft-delete on `User.Deleted`** — scrub PII but keep a tombstone row, so authz
+- **Soft-delete on `User.Deleted`.** Scrub PII but keep a tombstone row, so authz
   fails closed and nothing referencing the user by id dangles.
 
-Full walkthrough — `logtoSync` handlers, `registerLogtoWebhook`, signing-key setup,
-and `requireRole` authz — in the [Webhook sync guide][webhook-sync] and the runnable
+The full walkthrough, covering `logtoSync` handlers, `registerLogtoWebhook`,
+signing-key setup, and `requireRole` authz, is in the
+[Webhook sync guide][webhook-sync] and the runnable
 [`tanstack-router-spa`][spa-example] example.
 
 [webhook-sync]: https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/webhook-sync.mdx
@@ -397,7 +397,7 @@ and `requireRole` authz — in the [Webhook sync guide][webhook-sync] and the ru
 
 ## Why the ID token (and why there's no JWT config)
 
-Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`, which Convex does not accept ([convex#75](https://github.com/get-convex/convex-backend/issues/75)), so this package returns the ID token. Because it goes through Convex's **OIDC** provider (not Custom JWT), Convex reads the issuer's discovery document and JWKS itself, so you never set an algorithm or a JWKS URL — with one catch: Convex's OIDC verifier accepts only **RS256**/**EdDSA**, while Logto signs with **ES384** by default, so you rotate the Logto OIDC signing key to **RSA** once (step 1). A mismatch is rejected silently (`getUserIdentity()` returns `null`). Sessions refresh via Logto's refresh token, which is why `ConvexLogtoProvider` requests the `offline_access` scope by default.
+Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`, which Convex does not accept ([convex#75](https://github.com/get-convex/convex-backend/issues/75)), so this package returns the ID token. Because it goes through Convex's **OIDC** provider (not Custom JWT), Convex reads the issuer's discovery document and JWKS itself, so you never set an algorithm or a JWKS URL. One catch: Convex's OIDC verifier accepts only **RS256**/**EdDSA**, while Logto signs with **ES384** by default, so you rotate the Logto OIDC signing key to **RSA** once (step 1). A mismatch is rejected silently (`getUserIdentity()` returns `null`). Sessions refresh via Logto's refresh token, which is why `ConvexLogtoProvider` requests the `offline_access` scope by default.
 
 ## API
 
@@ -421,12 +421,12 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 | `LOGTO_SESSION_COOKIE_*`, `LOGTO_ID_TOKEN_COOKIE_NAME`, `LOGTO_SESSION_CSRF_*` | `convex-logto` | Fixed cookie names/base path and CSRF header/value constants. |
 | `assertOrganizationMember` / `assertOrganizationRole` | `convex-logto` | [Organization authorization](#organization-authorization) from the ID token Convex already validated. |
 | `logtoOrganizations` / `logtoOrganizationRoles` / `parseOrganizationRole` | `convex-logto` | The same claims, read rather than asserted. |
-| `ORGANIZATIONS_SCOPE` / `ORGANIZATION_ROLES_SCOPE` | `convex-logto` | The two scope strings those claims need. Independent — request both if you read both. |
+| `ORGANIZATIONS_SCOPE` / `ORGANIZATION_ROLES_SCOPE` | `convex-logto` | The two scope strings those claims need. They are independent; request both if you read both. |
 | `LogtoUserClaims` | `convex-logto` | The type of `user` in all four entries: standard claims named, everything else through an index signature. |
 | `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Static `config` or backend `configQuery`. |
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
 | default | `convex-logto/convex.config` | The session component, for `app.use(logto)`. |
-| `ConvexLogtoSessionProvider` | `convex-logto/react-session` | Session mode's provider — no Logto SDK; talks to your `logtoSessionApi` functions. |
+| `ConvexLogtoSessionProvider` | `convex-logto/react-session` | Session mode's provider. No Logto SDK; talks to your `logtoSessionApi` functions. |
 | `useLogtoAuth()` | `convex-logto/react-session` | Session auth actions, including `signOutEverywhere({ postLogoutRedirectUri? })`, `listSessions()` / `renameSession()` / `revokeSession()`, and `getIdToken()` / `getOrganizationTokenClaims()` / `getAccessTokenClaims()` / `fetchUserInfo()`. |
 | `SessionSignOutError` | `convex-logto/react-session`, `convex-logto/native-session` | What `signOut()` rejects with when local credential cleanup fails twice; `serverSessionStatus` says whether the server session survived. |
 | `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `configQuery` model; no callback route. |
@@ -436,11 +436,11 @@ Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`,
 
 ### Next.js note
 
-`ConvexLogtoProvider` and `useLogtoAuth` use React hooks (and `window` for sign-in / sign-out), so in the Next.js App Router render them from a `"use client"` component — the provider is SSR-safe within that boundary.
+`ConvexLogtoProvider` and `useLogtoAuth` use React hooks (and `window` for sign-in / sign-out), so in the Next.js App Router render them from a `"use client"` component; the provider is SSR-safe within that boundary.
 
 ### React Native / Expo
 
-For Expo bridge mode, import from **`convex-logto/native`** (built on [`@logto/rn`](https://github.com/logto-io/react-native)) instead of `convex-logto/react`. For server-held session mode, use **`convex-logto/native-session`** with `expo-secure-store` and `expo-web-browser`. Neither native entry needs a callback route — `signIn` opens the system browser and resolves on the deep-link return. See the [React Native guide](https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/react-native.mdx) and the two runnable apps: bridge-mode [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo) and session-mode [`examples/expo-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo-session).
+For Expo bridge mode, import from **`convex-logto/native`** (built on [`@logto/rn`](https://github.com/logto-io/react-native)) instead of `convex-logto/react`. For server-held session mode, use **`convex-logto/native-session`** with `expo-secure-store` and `expo-web-browser`. Neither native entry needs a callback route; `signIn` opens the system browser and resolves on the deep-link return. See the [React Native guide](https://github.com/Fanzzzd/convex-logto/blob/main/docs/content/docs/react-native.mdx) and the two runnable apps: bridge-mode [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo) and session-mode [`examples/expo-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo-session).
 
 ## License
 

@@ -4,13 +4,13 @@ description: Mirror Logto users into a queryable Convex table you own, with veri
 ---
 
 If you want a queryable `users` table (to list users, store roles, or join app
-data), add a webhook sync. The table is **yours** — `convex-logto` owns nothing —
-and a [runnable version of everything here is in the `tanstack-router-spa`
+data), add a webhook sync. The table is **yours**; `convex-logto` owns
+nothing. A [runnable version of everything here is in the `tanstack-router-spa`
 example](https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-router-spa).
 
 ## 1. Schema
 
-Two kinds of fields share the row, with **different owners** — this split is what
+Two kinds of fields share the row, with **different owners**; this split is what
 keeps the sync from fighting your app:
 
 ```ts title="convex/schema.ts"
@@ -42,7 +42,7 @@ const byAuthId = (ctx: QueryCtx | MutationCtx, authId: string) =>
     .unique();
 
 // Mirror only the fields the event carries: present → set it (a `null` clears it),
-// absent → leave it. Never write `role` — that's app-owned.
+// absent → leave it. Never write `role`; that's app-owned.
 const syncedFields = (u: {
   primaryEmail?: string | null;
   name?: string | null;
@@ -55,7 +55,7 @@ const syncedFields = (u: {
     : {}),
 });
 
-// The webhook only SYNCS rows that already exist — it never creates them (the next
+// The webhook only SYNCS rows that already exist; it never creates them (the next
 // section explains why). No row yet → there's nothing to sync.
 const syncRow: LogtoSyncHandler<DataModel> = async (ctx, u) => {
   const row = await byAuthId(ctx, u.id);
@@ -68,7 +68,7 @@ export const { sync } = logtoSync<DataModel>({
   "User.SuspensionStatus.Updated": syncRow,
   // Soft delete: scrub PII but keep the row (status "deleted") so authz fails
   // closed and anything referencing the user by id doesn't dangle. `User.Deleted`
-  // carries no entity — just the id — so `u` here is the minimal `{ id }`.
+  // carries no entity, just the id, so `u` here is the minimal `{ id }`.
   "User.Deleted": async (ctx, u) => {
     const row = await byAuthId(ctx, u.id);
     if (row)
@@ -81,14 +81,14 @@ export const { sync } = logtoSync<DataModel>({
 });
 ```
 
-> **The webhook never creates rows — it only syncs.** `User.Created` fires only for
+> **The webhook never creates rows; it only syncs.** `User.Created` fires only for
 > users created _after_ you add the webhook, never for users who already existed in
 > Logto or who arrive from another app on the same Logto. A webhook-created row would
 > also have to invent the app-owned `role`. So a row the webhook alone makes is both
 > unreliable and wrongly-owned.
 
-Create the row from an **authenticated mutation** instead — it runs as the signed-in
-user, so it always fires — and let the webhook keep it in sync afterward:
+Create the row from an **authenticated mutation** instead; it runs as the
+signed-in user, so it always fires. Let the webhook keep it in sync afterward:
 
 ```ts title="convex/users.ts"
 import { mutation } from "./_generated/server";
@@ -113,7 +113,7 @@ export const ensureUser = mutation({
 });
 ```
 
-Call it once on first authenticated load — an onboarding screen, or an effect.
+Call it once on first authenticated load: an onboarding screen, or an effect.
 
 ## 3. Register the route
 
@@ -128,7 +128,7 @@ export default http;
 ```
 
 Beyond the HMAC signature, the route enforces a **freshness window** on the
-delivery's `createdAt` (minutes — retires replayed captures; Logto's own retries
+delivery's `createdAt` (minutes, which retires replayed captures; Logto's own retries
 land within seconds) and caps the body at **1 MB**.
 
 If you use [session mode](/docs/session-mode), also pass the component:
@@ -141,23 +141,23 @@ registerLogtoWebhook(http, internal.logto.sync, { sessions: components.logto });
 
 That adds two things: **exactly-once handling** (deliveries are deduplicated by
 raw-body hash, so a retry whose `200` got lost doesn't re-run your handlers) and
-**session revocation** — `User.Deleted`, and a suspension flipping ON, kill all
+**session revocation**: `User.Deleted`, and a suspension flipping ON, kill all
 of that user's sessions before your sync handlers run, so reactive clients drop
 to signed-out live.
 
 ## 4. Create the webhook in Logto
 
 Logto Console → **Webhooks** → **Create webhook**, pointed at
-`<your-convex-site-url>/logto/webhook`. That's your Convex **HTTP Actions** URL —
-the `.convex.site` one, **not** `.convex.cloud` — e.g.
+`<your-convex-site-url>/logto/webhook`. That's your Convex **HTTP Actions** URL,
+the `.convex.site` one, **not** `.convex.cloud`, e.g.
 `https://happy-otter-123.convex.site/logto/webhook`. Find it in the Convex dashboard
 on your deployment's **Settings** page (it lists both URLs); each deployment has its
 own, so use the dev URL while developing and the prod URL in production.
 
-Under the **Data mutation** events, subscribe to the ones you handle —
+Under the **Data mutation** events, subscribe to the ones you handle:
 `User.Data.Updated`, `User.SuspensionStatus.Updated`, and `User.Deleted`. Subscribing
 to `User.Created` as well is harmless: with no handler mapped for it the route just
-answers `200` and does nothing — new rows come from your authenticated mutation
+answers `200` and does nothing. New rows come from your authenticated mutation
 (section 2), not the webhook.
 
 Then copy the **Signing key**, the one Logto value that _is_ a secret:
@@ -171,19 +171,19 @@ The signature is verified with Web Crypto (HMAC-SHA256) inside the Convex runtim
 **Confirm it's wired.** The definitive check is a real event: change a test user's
 profile in Logto (fires `User.Data.Updated`), then watch your Convex logs
 (dashboard → **Logs**, or `npx convex logs`) for `POST /logto/webhook`. Logto's
-**Send test payload** button is a quick reachability check too — though it sends a
+**Send test payload** button is a quick reachability check too, though it sends a
 synthetic payload, so read the status it gets back rather than expecting a `200`:
 
 | Status | Meaning |
 | --- | --- |
 | `200` | Verified and dispatched to your `sync` mutation (or a deduplicated retry). |
 | `400` | Body wasn't valid JSON, wasn't a recognized `User.*` event, named no user, or its `createdAt` fell outside the freshness window. |
-| `401` | Signature didn't match — wrong (or unset) `LOGTO_WEBHOOK_SIGNING_KEY`. |
+| `401` | Signature didn't match: wrong (or unset) `LOGTO_WEBHOOK_SIGNING_KEY`. |
 | `413` | Body over 1 MB. |
 | `500` | `LOGTO_WEBHOOK_SIGNING_KEY` isn't set on the deployment. |
 
 A verified delivery is never refused over a field the library doesn't read.
-Logto retries a `5xx` and not a `4xx`, so a `400` is permanent — and the same
+Logto retries a `5xx` and not a `4xx`, so a `400` is permanent, and the same
 route revokes sessions for deleted and suspended users, which makes "reject the
 odd-looking delivery" the wrong default. Acceptance turns on the event, the
 `createdAt` freshness window and a usable user id; a field whose type drifts out
@@ -193,7 +193,7 @@ Logto adds later pass straight through.
 
 ## RBAC
 
-Gate on the row, not just the token — `getUserIdentity()` means "the token still
+Gate on the row, not just the token; `getUserIdentity()` means "the token still
 validates", not "the account is still active":
 
 ```ts title="convex/authz.ts"
@@ -224,5 +224,5 @@ Use `requireRole(ctx, "admin")` for privileged work. For ordinary reads, prefer 
 **nullable** variant (return `null` instead of throwing) so a just-signed-up user
 isn't locked out in the moment between sign-in and their row being created.
 
-Keep the ability map in your app — the package stays out of your authorization
+Keep the ability map in your app. The package stays out of your authorization
 policy.

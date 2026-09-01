@@ -14,12 +14,12 @@ export const Route = createRootRoute({
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       {
-        title: "convex-logto — Logto auth for Convex React apps",
+        title: "convex-logto: Logto auth for Convex React apps",
       },
       {
         name: "description",
         content:
-          "Logto auth for Convex React apps — with the least setup. ID-token over OIDC, one provider, one backend line.",
+          "Logto auth for Convex React apps, with the least setup. ID-token over OIDC, one provider, one backend line.",
       },
     ],
     links: [{ rel: "stylesheet", href: appCss }],

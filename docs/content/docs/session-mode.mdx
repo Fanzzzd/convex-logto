@@ -1,13 +1,13 @@
 ---
 title: Session mode
-description: Keep the Logto refresh token out of the browser — a Convex component holds it, rotates application session tokens, and revokes sessions reactively.
+description: Keep the Logto refresh token out of the browser. A Convex component holds it, rotates application session tokens, and revokes sessions reactively.
 ---
 
 Session mode makes your **Convex deployment the OAuth client** instead of the
 browser. A Convex component holds the Logto refresh token server-side; the
 browser holds only two things:
 
-- a **short-lived ID token** (the bearer Convex validates — minutes of exposure,
+- a **short-lived ID token** (the bearer Convex validates; minutes of exposure,
   not weeks), and
 - a **rotating session token** issued in generations. The server stores only
   hashes; the current generation and a bounded set of recently superseded
@@ -31,7 +31,7 @@ These are relative mode trade-offs, not an XSS boundary. Apply the
 Trusted Types, third-party scripts, and scope minimization without repeating
 this token model.
 
-The default localStorage transport works on any static host/CDN — no cookie
+The default localStorage transport works on any static host/CDN, no cookie
 domain or frontend server required. Apps with a same-site server endpoint can
 optionally move the rotating session token into an HttpOnly cookie; that upgrade
 is covered below.
@@ -46,7 +46,7 @@ In Logto Console: **Applications → Create application → Traditional web**. A
 - **Post sign-out redirect URI** → `http://localhost:5173`
 
 Note the **App ID** and **App Secret**. As in bridge mode, the tenant's OIDC
-signing key must be **RSA** (Convex rejects Logto's default ES384 — see the
+signing key must be **RSA** (Convex rejects Logto's default ES384; see the
 warning at the top of the [Quick start](/docs/quick-start)).
 
 ### 2. Install the component
@@ -62,7 +62,7 @@ export default app;
 
 ### 3. Configure the deployment
 
-All Logto config lives server-side — including the app secret, which never
+All Logto config lives server-side, including the app secret, which never
 reaches the browser:
 
 ```bash
@@ -77,7 +77,7 @@ pass `{ allowInsecureHttp: true }` to both `logtoAuthConfig` and
 `logtoSessionApi`; prefer terminating TLS instead.
 
 `convex/auth.config.ts` is the same one line as bridge mode
-(`logtoAuthConfig()`) — session mode validates the same OIDC ID token, just
+(`logtoAuthConfig()`); session mode validates the same OIDC ID token, just
 issued to the Traditional Web app.
 
 ### 4. Expose the auth functions
@@ -101,7 +101,7 @@ export const {
 } = logtoSessionApi(components.logto);
 ```
 
-Re-export all eleven with these exact names — the provider looks them up on the
+Re-export all eleven with these exact names. The provider looks them up on the
 module you pass it. A missing one disables that feature with a named error
 rather than failing the build, so a rolling upgrade is safe.
 
@@ -121,10 +121,10 @@ const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
 
 Pass `{ initialAuthTokenReuse: true }` to the client too. Without it Convex
 refetches a token the moment it confirms the cached one, which in session mode
-means a Logto refresh grant *and* a session-token rotation on every page load —
+means a Logto refresh grant *and* a session-token rotation on every page load;
 see [one token round trip per page load](/docs/how-it-works#one-token-round-trip-per-page-load-unless-you-opt-out).
 
-That's the whole frontend. No `@logto/react`, no callback component — the
+That's the whole frontend. No `@logto/react`, no callback component. The
 provider finishes the exchange on `/callback` and replace-navigates back into
 the app by itself. `useLogtoAuth()` from `convex-logto/react-session` extends
 the bridge hook with `signOutEverywhere`:
@@ -143,8 +143,8 @@ const {
   renameSession,
   revokeSession,
 } = useLogtoAuth();
-// signIn({ returnTo: "/dashboard" }) — same-origin path, lands there after sign-in
-// signOut() — clears tabs sharing this localStorage transport and ends this
+// signIn({ returnTo: "/dashboard" }): same-origin path, lands there after sign-in
+// signOut(): clears tabs sharing this localStorage transport and ends this
 // browser's Logto SSO session
 ```
 
@@ -220,7 +220,7 @@ revealing that it exists. A session already killed by a revocation watermark is
 invisible to the list and untouchable by the mutations, even while its row waits
 for a bounded cleanup batch.
 
-`listSessions()` is a snapshot, not a reactive query — the credential it
+`listSessions()` is a snapshot, not a reactive query. The credential it
 authenticates with rotates roughly every ID-token lifetime, and a subscription
 keyed on a rotating credential would resubscribe on every rotation. Call it again
 after a rename or revoke. It returns at most 16 live sessions, newest first, with
@@ -232,11 +232,11 @@ stops at that bound also reports `truncated`.
 `revokeSession()` on the **current** session revokes the server side but leaves
 this client's local credentials in place; call `signOut()` when you mean "sign
 this device out". The device proof requirement applies to the *caller's* session,
-not the target — requiring the target's key would make it impossible to revoke a
+not the target. Requiring the target's key would make it impossible to revoke a
 lost device, which is the main reason this exists.
 
 `renameSession()` and `revokeSession()` resolve with no value, or reject with the
-terminal `session_not_found` error — an id belonging to another subject, or one a
+terminal `session_not_found` error. An id belonging to another subject, or one a
 watermark already killed, is refused without confirming that it exists. Like
 `signOutEverywhere()`, revocation is an **RP-level boundary**: it deletes the
 session and its server-held refresh token, but cannot erase the Logto OP cookie in
@@ -261,7 +261,7 @@ so the user recognises their own devices:
 >
 ```
 
-The library never reads a User-Agent or an IP address — it stores exactly what
+The library never reads a User-Agent or an IP address. It stores exactly what
 you pass, trimmed and truncated to 32 code points per field. It is not
 authenticated: treat it as display text and never make a security decision with
 it. `deviceBound` on each summary, by contrast, is server-derived and does say
@@ -328,8 +328,8 @@ on the **same site**, the cookie transport puts that credential in a
 __Host-convex-logto-session=<encoded-token>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=16416000
 ```
 
-JavaScript never receives the credential—not in a response body and not in
-storage—and every successful `/token` rotation rolls the cookie and renews its
+JavaScript never receives the credential, not in a response body and not in
+storage, and every successful `/token` rotation rolls the cookie and renews its
 190-day maximum age. That sliding lifetime matches the component's idle-session
 garbage collection, so cookie transport persists across browser restarts just
 like the default localStorage credential while the server session remains live.
@@ -346,7 +346,7 @@ with six routes under `/api/logto-session` by default:
 | `callback` | Exchange the authorization code and set the first cookie. |
 | `token` | Rotate the cookie and return a fresh ID token. |
 | `sign-out` | Delete the component Session, expire the cookie, and optionally end SSO. |
-| `sessions` | List, rename, or revoke the caller's own sessions (`op` selects). Never expires the cookie — revoking another device must not sign this one out. |
+| `sessions` | List, rename, or revoke the caller's own sessions (`op` selects). Never expires the cookie; revoking another device must not sign this one out. |
 | `tokens` | Exchange an organization or resource token, or fetch the Logto profile (`op` selects). |
 
 Every application request has one fixed CSRF policy: `POST`, the
@@ -381,10 +381,10 @@ paths. Keep `CONVEX_URL` server-only.
 ### Next.js App Router
 
 <Callout>
-Per-framework wiring — where the provider goes, what stays a Server Component,
-and which SSR seeding is safe — is on the [Next.js](/docs/nextjs),
+Per-framework wiring is on the [Next.js](/docs/nextjs),
 [TanStack Start](/docs/tanstack-start), [TanStack Router](/docs/tanstack-router)
-and [Vite](/docs/vite) pages.
+and [Vite](/docs/vite) pages: where the provider goes, what stays a Server
+Component, and which SSR seeding is safe.
 </Callout>
 
 Mount the handler in a catch-all Route Handler:
@@ -434,7 +434,7 @@ Use the same provider configuration shown for Next.js.
 ### Convex HTTP action on a custom domain
 
 Convex can host the standard handler directly. Use a custom domain that shares
-the frontend's site—for example `app.example.com` and `api.example.com`. A
+the frontend's site, for example `app.example.com` and `api.example.com`. A
 default `*.convex.site` endpoint is cross-site to your app and is intentionally
 not a cookie-transport deployment.
 
@@ -473,7 +473,7 @@ only for an exact allowed origin.
 `handler.getInitialToken(request)` is the server-only SSR path. It reads the
 cookie, rotates it, and returns `{ initialToken, initialSessionId, headers }`.
 Call it at most once per incoming document request and always forward its
-`headers` to the page response—the `Set-Cookie` header carries the next token
+`headers` to the page response; the `Set-Cookie` header carries the next token
 generation. If your rendering hook cannot control response headers, let the
 browser use `/token` instead.
 The seed is best-effort under concurrent renders: every failed seed returns
@@ -527,9 +527,9 @@ reason for the exclusion, but the HttpOnly/signing conflict applies everywhere.
 ## Reactive revocation
 
 Every session's liveness is a Convex subscription. The moment a session is
-killed server-side — sign-out in another tab, token-theft detection, a webhook
-suspension — Convex pushes `false` and the app drops to signed-out **live**, not
-at token expiry.
+killed server-side, by a sign-out in another tab, token-theft detection, or a
+webhook suspension, Convex pushes `false` and the app drops to signed-out
+**live**, not at token expiry.
 
 For functions whose policy is subject-wide revocation, enforce it server-side
 too (an ID token stays cryptographically valid until it expires):
@@ -556,9 +556,9 @@ still being physically drained; retry rather than treating that as a definitive
 `session_revoked`. `assertUserHasActiveSession` remains as a deprecated
 compatibility alias.
 
-To wire Logto-side account events into revocation — deleting or suspending a
-user in Logto Console kills their sessions within seconds — register the
-[webhook](/docs/webhook-sync) with the component attached:
+To wire Logto-side account events into revocation, register the
+[webhook](/docs/webhook-sync) with the component attached. Deleting or suspending
+a user in Logto Console then kills their sessions within seconds:
 
 ```ts title="convex/http.ts"
 registerLogtoWebhook(http, internal.logto.sync, { sessions: components.logto });
@@ -582,16 +582,17 @@ is a 15-line version.
 ## Configuration faults never delete sessions
 
 A refresh has three possible failures, and the component keeps them apart. If
-Logto rejects the *grant* — the refresh token was revoked, reused, or the SSO
-session ended — that is terminal: the row is deleted and the user signs in again.
+Logto rejects the *grant*, because the refresh token was revoked, reused, or the
+SSO session ended, that is terminal. The row is deleted and the user signs in
+again.
 If the failure describes your **deployment** instead, the session is kept and the
 error is transient, so fixing the environment variable is all the recovery anyone
 needs. And if the component cannot tell what Logto did with the grant, the
 outcome is **unknown** and gets its own conservative handling, below.
 
 Deployment faults include a wrong `LOGTO_CLIENT_SECRET` (`invalid_client`), a
-`LOGTO_ENDPOINT` that no longer matches the `iss` Logto issues — after moving
-behind a custom domain or a reverse proxy, say — and a missing `openid` scope.
+`LOGTO_ENDPOINT` that no longer matches the `iss` Logto issues, say after moving
+behind a custom domain or a reverse proxy, and a missing `openid` scope.
 Any of these would otherwise destroy every session in the deployment, one refresh
 at a time.
 
@@ -602,52 +603,52 @@ Presenting a superseded refresh token again would trip Logto's reuse detection
 and destroy the whole grant, including the sibling sessions that share it.
 
 The unknown case is a response the component cannot parse as a token response at
-all — a proxy or WAF interstitial where JSON was expected, or a body too large to
+all: a proxy or WAF interstitial where JSON was expected, or a body too large to
 read. Whether Logto processed the grant is then genuinely unknown, so the refresh
 claim is left to expire and that session requires a fresh sign-in. Guessing there
 is what risks spending a rotated token twice. (During *sign-in* every one of
-these is terminal instead — including a wrong client secret. The component
+these is terminal instead, including a wrong client secret. The component
 consumes the sign-in transaction before it contacts Logto, so the attempt is
 unrepeatable either way and a retry could only report a stale callback, hiding
 what actually went wrong. A failure that never reached the deployment at all is
 retried once, since nothing was consumed.)
 
 A transient failure is not a sign-out, and the browser keeps retrying it. The
-session token stays in storage and the provider re-presents it on its own
-schedule — a second, then two, five, ten, then every thirty seconds — until the
-refresh succeeds, the session is signed out, or the tab closes. This matters
+session token stays in storage and the provider re-presents it on its
+own schedule until the refresh succeeds, the session is signed out, or the tab
+closes: a second, then two, five, ten, then every thirty seconds. This matters
 because Convex stops asking for a token after one failure: without the retry, a
 tab that hit a tunnel hiccup or woke from sleep before its network did would sit
 signed-out until the user reloaded.
 
 ## How the token dance works
 
-1. **Sign-in** — `signIn()` asks the component for an authorize URL. The OIDC
+1. **Sign-in.** `signIn()` asks the component for an authorize URL. The OIDC
    `state` and PKCE verifier stay server-side (a one-time, 10-minute
    transaction); the browser also pins the `state` to the signing-in tab, so a
    forged or replayed callback is refused before any exchange.
-2. **Exchange** — the callback action redeems the code (client secret + PKCE),
+2. **Exchange.** The callback action redeems the code (client secret + PKCE),
    stores the refresh token in the component, and hands the browser the ID token
    plus session token #1. With device binding enabled, it also stores the
    browser's public key; the private key never leaves IndexedDB.
-3. **Refresh** — when the ID token nears expiry, the browser presents session
+3. **Refresh.** When the ID token nears expiry, the browser presents session
    generation #1 (and, for a bound Session, its signature); the component
    verifies proof before refreshing against Logto and answers with a fresh ID
    token plus generation #2. A bounded set of superseded generation hashes is
    retained until each generation's reuse-window expiry so concurrent responses
    do not false-positive.
-4. **Reuse containment** — if a superseded generation appears after its window,
+4. **Reuse containment.** If a superseded generation appears after its window,
    the component abandons the Session and its associated server-held refresh
    token becomes unreachable; that client must reauthenticate without
    invalidating a still-live sibling that shares Logto grant state.
-5. **Sign-out** — clears local state first (other tabs sharing localStorage
+5. **Sign-out.** Clears local state first (other tabs sharing localStorage
    follow via the `storage` event), removes the component Session, then ends the
    current browser's SSO session unless federated sign-out is disabled.
 
-Concurrent refreshes are single-flighted at three layers — per tab (in-flight
-merge), per browser (Web Locks), per session (a server-side claim) — because a
-concurrent replay of the same Logto refresh token at its rotation boundary would
-destroy the grant. Server claims are ownership-fenced. If a claim exceeds its
+Concurrent refreshes are single-flighted at three layers: per tab (in-flight
+merge), per browser (Web Locks), per session (a server-side claim). A concurrent
+replay of the same Logto refresh token at its rotation boundary would destroy
+the grant. Server claims are ownership-fenced. If a claim exceeds its
 safety timeout, the remote outcome is unknown, so the local Session is abandoned
 instead of spending the stored refresh token again. Credentials are returned
 only after the matching claim commits; concurrent deletion or ownership loss
@@ -657,19 +658,19 @@ rejects the response and leaves uncommitted remote credentials unreachable.
 
 | Prop | Default | |
 |---|---|---|
-| `client` | — | Your `ConvexReactClient`. |
-| `sessionApi` | — | The module re-exporting `logtoSessionApi(...)`, e.g. `api.auth`. |
+| `client` | none | Your `ConvexReactClient`. |
+| `sessionApi` | none | The module re-exporting `logtoSessionApi(...)`, e.g. `api.auth`. |
 | `callbackPath` | `"/callback"` | Route that finishes the redirect (exact match; must match the registered Redirect URI's path). |
 | `afterSignIn` | `"/"` | Where to land after sign-in; `signIn({ returnTo })` overrides. |
 | `navigate` | hard replace | Your router's navigate for soft post-sign-in navigation. |
 | `tokenStorage` | `"session"` | Where the ID token persists: `"session"` (per-tab; a fresh token restores without refresh only while its paired component-session marker remains), `"memory"` (strictest), `"local"`. Orphan ID tokens are cleared. |
 | `deviceBinding` | `false` | Bind refresh and revocation operations to a non-extractable IndexedDB-held ECDSA key. Cannot be combined with `cookieTransport`. |
-| `cookieTransport` | — | `{ endpoint?, fetch?, deviceBinding? }`: move the rotating session token into a persistent same-site HttpOnly cookie whose 190-day lifetime renews on every rotation. The reserved `deviceBinding` flag only activates the shared incompatibility assertion. |
-| `initialToken` / `initialSessionId` | — | Paired values from `handler.getInitialToken(request)` for authenticated SSR/hydration. |
+| `cookieTransport` | none | `{ endpoint?, fetch?, deviceBinding? }`: move the rotating session token into a persistent same-site HttpOnly cookie whose 190-day lifetime renews on every rotation. The reserved `deviceBinding` flag only activates the shared incompatibility assertion. |
+| `initialToken` / `initialSessionId` | none | Paired values from `handler.getInitialToken(request)` for authenticated SSR/hydration. |
 | `reactiveRevocation` | `true` | Subscribe to session liveness and drop auth live on revocation. |
-| `onAuthError` | — | Sign-in initiation and callback failures, plus opted-in device-key storage failures. Initiation failures are reported before `signIn()` rejects, so `void signIn()` remains observable. |
+| `onAuthError` | none | Sign-in initiation and callback failures, plus opted-in device-key storage failures. Initiation failures are reported before `signIn()` rejects, so `void signIn()` remains observable. |
 
-`logtoSessionApi(component, opts?)` accepts `scopes` (server-set — the browser
+`logtoSessionApi(component, opts?)` accepts `scopes` (server-set; the browser
 can't request its own), `reuseWindowMs`, env overrides, and two options that
 belong to the token exchange below: `resources` (API resource indicators, which
 Logto requires *before* sign-in) and `exposeAccessTokens`.
@@ -678,11 +679,11 @@ Logto requires *before* sign-in) and `exposeAccessTokens`.
 
 Organization membership and roles need no token here. Request
 `ORGANIZATIONS_SCOPE` and `ORGANIZATION_ROLES_SCOPE` in `logtoSessionApi({
-scopes })` — two independent scopes, so ask for both — and Logto puts the
-matching claims in the ID token. `user.organizations` and
+scopes })`, and Logto puts the matching claims in the ID token. The two are
+independent scopes, so ask for both. `user.organizations` and
 `user.organization_roles` are then in every authenticated request, and
 [`assertOrganizationRole`](/docs/api-reference#organization-authorization)
-reads them server-side for free — as a snapshot taken when the token was issued,
+reads them server-side for free, as a snapshot taken when the token was issued,
 which is the one thing to know before authorizing on them. Without the scopes the
 claims are absent, and absent authorizes nothing.
 
@@ -697,7 +698,7 @@ const { scopes } = await getOrganizationTokenClaims("org-id");
 ```
 
 Set `exposeAccessTokens: true` on `logtoSessionApi()` if a caller genuinely
-needs the token *string* in the browser — `getOrganizationToken(id)` and
+needs the token *string* in the browser. `getOrganizationToken(id)` and
 `getAccessToken(resource)` then return it, and it becomes one more thing XSS can
 steal. The refresh token has no such option in either mode.
 
@@ -707,7 +708,7 @@ Two constraints worth knowing before you design around it:
   a resource the grant never mentioned, so `resources` is fixed at sign-in and
   widening it means signing the user in again.
 - **The exchange shares the refresh claim**, because it spends the same Logto
-  refresh token — so it can answer the transient `refresh_in_flight` while a
+  refresh token, so it can answer the transient `refresh_in_flight` while a
   refresh is in flight. Minted tokens are cached per session, audience and scope
   set, so a permission check on render is not a grant per render.
 
@@ -717,7 +718,7 @@ in your bundle, so call `getOrganizationToken` on it directly.</Callout>
 ## Choosing a mode
 
 Stay on **bridge mode** if you want zero server-side state or you're already
-running it — it remains fully supported. Pick **session mode** for the smallest
+running it; it remains fully supported. Pick **session mode** for the smallest
 browser attack surface, live revocation, and a bundle with no auth SDK. Both
 modes present the same ID token to Convex, so `ctx.auth.getUserIdentity()` and
 the [webhook user sync](/docs/webhook-sync) work identically, and migrating is a

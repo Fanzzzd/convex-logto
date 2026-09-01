@@ -1,19 +1,19 @@
 # Examples
 
 Working examples of [`convex-logto`](../packages/convex-logto) across frameworks.
-Each is a standalone app — see its README to run it.
+Each is a standalone app; see its README to run it.
 
 | Example | What it shows |
 | --- | --- |
 | [`vite-react`](./vite-react) | The minimal setup: `ConvexLogtoProvider` + declarative auth gating. |
-| [`vite-react-session`](./vite-react-session) | **Session mode**: server-held refresh token (Convex component), rotating application session tokens, live session revocation — no Logto SDK in the bundle. |
+| [`vite-react-session`](./vite-react-session) | **Session mode**: server-held refresh token (Convex component), rotating application session tokens, live session revocation, no Logto SDK in the bundle. |
 | [`tanstack-router-spa`](./tanstack-router-spa) | TanStack Router (SPA): declarative gating + `beforeLoad` route guards (auth outside render), **plus a webhook-synced users table with role-based access (RBAC)**. |
 | [`tanstack-start`](./tanstack-start) | TanStack Start (SSR): one SSR-safe provider + `beforeLoad` route guards. |
 | [`nextjs`](./nextjs) | Next.js App Router: client provider boundary + callback route. |
-| [`expo`](./expo) | Expo (React Native): native auth via `convex-logto/native` — deep-link sign-in, no callback route. |
-| [`expo-session`](./expo-session) | Expo (React Native) **session mode**: server-held refresh token, SecureStore-only credentials, and the "where am I signed in" session list — no Logto SDK on the device. |
+| [`expo`](./expo) | Expo (React Native): native auth via `convex-logto/native`: deep-link sign-in, no callback route. |
+| [`expo-session`](./expo-session) | Expo (React Native) **session mode**: server-held refresh token, SecureStore-only credentials, and the "where am I signed in" session list, no Logto SDK on the device. |
 
-> The webhook user-sync and RBAC shown in `tanstack-router-spa` are **framework-agnostic** —
+> The webhook user-sync and RBAC shown in `tanstack-router-spa` are **framework-agnostic**;
 > the `convex/` backend code is identical everywhere, so a Vite, Next.js, or Expo app wires them the same way.
 
 In this monorepo each example depends on the package via `convex-logto: workspace:*`.
@@ -21,5 +21,5 @@ Standalone, install it from npm with the Logto peer for your platform:
 
 - Web (Vite / Next.js / TanStack): `npm i convex-logto @logto/react`
 - Web, session mode: `npm i convex-logto` (no Logto package needed)
-- React Native / Expo: `npm i convex-logto @logto/rn` (plus the Expo modules — see the [`expo`](./expo) README)
+- React Native / Expo: `npm i convex-logto @logto/rn` (plus the Expo modules; see the [`expo`](./expo) README)
 - React Native / Expo, session mode: `npm i convex-logto` + `npx expo install expo-secure-store expo-web-browser`

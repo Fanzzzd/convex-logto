@@ -16,7 +16,7 @@ headers out in report-only mode, and remove every source you do not need.
 ## 1. Content Security Policy
 
 Serve CSP as an HTTP response header. A `<meta http-equiv>` policy cannot enforce
-every directive below—most importantly, `frame-ancestors` is header-only. Start with
+every directive below; most importantly, `frame-ancestors` is header-only. Start with
 this policy, replacing the Convex and Logto hosts with the exact production values:
 
 ```http
@@ -30,7 +30,7 @@ Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none';
   requests are not. Remove this source only when the browser makes no Logto requests.
 - If the [cookie transport](/docs/session-mode#httponly-cookie-transport-optional)
   is mounted at a same-origin path, `'self'` already covers it. If it uses another
-  origin on the same site, add that exact HTTPS origin to `connect-src`—the
+  origin on the same site, add that exact HTTPS origin to `connect-src`; the
   `https://api.example.com` source above represents that optional endpoint. Remove
   it when cookie transport is unused or same-origin.
 - Add narrow `img-src`, `font-src`, `style-src`, `worker-src`, and `frame-src`
@@ -73,7 +73,7 @@ Reporting-Endpoints: csp="https://app.example.com/csp-reports"
 After the reports are clean, append `require-trusted-types-for 'script'` to the
 enforced CSP. If the app genuinely needs an HTML-producing policy, also use the
 `trusted-types` directive to allow only named policies. Do not add a default policy
-that simply returns its input—that converts enforcement into an annotation without
+that returns its input unchanged; that converts enforcement into an annotation without
 sanitization.
 
 Ordinary React DOM rendering does not need raw HTML sinks, so much of a React app is

@@ -4,7 +4,7 @@
 [![CI](https://github.com/Fanzzzd/convex-logto/actions/workflows/ci.yml/badge.svg)](https://github.com/Fanzzzd/convex-logto/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/convex-logto.svg)](./LICENSE)
 
-Use [Logto](https://logto.io) — self-hosted or cloud — as the auth provider for a
+Use [Logto](https://logto.io), self-hosted or cloud, as the auth provider for a
 [Convex](https://convex.dev) app. React, React Native and Expo, on the web and on
 device.
 
@@ -22,21 +22,21 @@ something else)
 - **One provider on the frontend.** `<ConvexLogtoProvider>` wires Logto, Convex,
   and the sign-in callback. No hand-rolled `useAuth` bridge.
 - **One line on the backend.** `logtoAuthConfig()` reads your environment. No JWT
-  template, no signing algorithm, no JWKS URL — it validates Logto's **ID token**
+  template, no signing algorithm, no JWKS URL; it validates Logto's **ID token**
   over OIDC, so Convex discovers the key itself.
 - **One source of truth per environment.** The frontend can pull its Logto config
   from the Convex deployment, so you configure Logto in exactly one place.
 
 ## Two modes, one identity model
 
-**Bridge mode** — Logto's SDK signs in the browser and the package bridges its ID
+**Bridge mode.** Logto's SDK signs in the browser and the package bridges its ID
 token into Convex. Zero server-side state.
 
-**[Session mode](https://convex-logto-docs.vercel.app/docs/session-mode)** — a Convex
+**[Session mode](https://convex-logto-docs.vercel.app/docs/session-mode).** A Convex
 component holds the Logto refresh token in tables your app code cannot read, and
 rotates a short-lived application session token with the browser. Live
 revocation, a "where am I signed in" device list, and nothing long-lived in
-browser storage — including on a static CDN deploy, where no same-site HttpOnly
+browser storage, including on a static CDN deploy, where no same-site HttpOnly
 cookie is reachable at all. Optional same-site cookie transport and non-extractable
 device binding on top.
 
@@ -45,11 +45,11 @@ environment handling are identical and moving between them is an import change.
 
 ## Also included
 
-- **[Webhook user sync](https://convex-logto-docs.vercel.app/docs/webhook-sync)** —
+- **[Webhook user sync](https://convex-logto-docs.vercel.app/docs/webhook-sync)**:
   signature-verified Logto events into a queryable Convex `users` table.
-- **[Back-channel logout](https://convex-logto-docs.vercel.app/docs/backchannel-logout)**
-  — the OIDC endpoint, JWKS-verified, bounded and deduplicated.
-- **Organization authorization** — membership and organization roles read
+- **[Back-channel logout](https://convex-logto-docs.vercel.app/docs/backchannel-logout)**:
+  the OIDC endpoint, JWKS-verified, bounded and deduplicated.
+- **Organization authorization**: membership and organization roles read
   straight out of the ID token, so `assertOrganizationRole(ctx, orgId, "admin")`
   costs no extra round trip.
 
@@ -78,13 +78,13 @@ what is still missing.
 
 A pnpm + Turborepo monorepo.
 
-- **[`packages/convex-logto`](packages/convex-logto)** — the published library
+- **[`packages/convex-logto`](packages/convex-logto)**: the published library
   (the only published package). Its [README](packages/convex-logto/README.md) is
   the full reference.
-- **[`examples/`](examples)** — the apps in the table above.
-- **[`docs/`](docs)** — the documentation site (Fumadocs).
-- **[`CONTEXT.md`](CONTEXT.md)** — the vocabulary this codebase is written in.
-- **[`docs/adr/`](docs/adr)** — the decisions that are hard to reverse, and why.
+- **[`examples/`](examples)**: the apps in the table above.
+- **[`docs/`](docs)**: the documentation site (Fumadocs).
+- **[`CONTEXT.md`](CONTEXT.md)**: the vocabulary this codebase is written in.
+- **[`docs/adr/`](docs/adr)**: the decisions that are hard to reverse, and why.
 
 Contributor and agent guidance lives in [`AGENTS.md`](./AGENTS.md).
 

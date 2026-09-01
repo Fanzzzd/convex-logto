@@ -7,7 +7,7 @@ Finish [Quick start](/docs/quick-start) steps 1–3, then mount the provider. It
 hooks and `window`, so it lives in a `"use client"` component; `app/layout.tsx` stays
 a Server Component and just renders it.
 
-<Callout>Use `NEXT_PUBLIC_CONVEX_URL` — not `import.meta.env`.</Callout>
+<Callout>Use `NEXT_PUBLIC_CONVEX_URL`, not `import.meta.env`.</Callout>
 
 `configQuery` resolves the Logto endpoint and app id from the Convex deployment,
 so the frontend needs no Logto env vars. Add the query it reads:
@@ -45,7 +45,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
 ## Callback route
 
 ```tsx title="app/callback/page.tsx"
-// Server Component — the provider in app/providers.tsx finishes the exchange.
+// Server Component; the provider in app/providers.tsx finishes the exchange.
 export default function CallbackPage() {
   return <p>Finishing sign in…</p>;
 }
@@ -82,7 +82,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
 }
 ```
 
-`configQuery` is gone — session mode keeps every Logto value on the Convex
+`configQuery` is gone; session mode keeps every Logto value on the Convex
 deployment, so the bundle carries none of it. `app/callback/page.tsx` stays the
 Server Component shown above; the provider finishes the exchange under it and
 replace-navigates away.
@@ -105,7 +105,7 @@ handler module and its `allowedOrigins` are in
 
 <Callout type="warn">
 Do **not** call `getInitialToken()` from a layout or page. It rotates the session
-cookie, and a Server Component cannot set cookies — Next.js only allows that in
+cookie, and a Server Component cannot set cookies; Next.js only allows that in
 Route Handlers, Server Actions, and the proxy (`middleware` before Next 16). The
 rotated cookie would be dropped, leaving the browser holding a superseded token
 that is eventually presented outside the reuse window and read as token reuse,
@@ -149,13 +149,13 @@ export default async function Page() {
 ```
 
 `readLogtoIdTokenCookie` takes a `Request`, a raw `Cookie` header, or a store
-shaped like Next's `cookies()` — there is no `convex-logto/nextjs` entry to keep
+shaped like Next's `cookies()`; there is no `convex-logto/nextjs` entry to keep
 in step with Next's release train, and the same call works in TanStack Start or a
 bare handler.
 
 <Callout>
-A token read here proves nothing on its own — it is a bearer Convex validates,
-and `null` simply means "render the signed-out view and let the client take
+A token read here proves nothing on its own; it is a bearer Convex validates,
+and `null` means "render the signed-out view and let the client take
 over". **Revocation is enforced where it always is**: by
 `assertSubjectHasActiveSession` inside the function you call, not by this read.
 A cookie whose token has expired is gone with it, so the worst case is an
@@ -166,7 +166,7 @@ Two consequences worth knowing before you turn it on:
 
 - A cookie is attached to **every** same-origin request, so the ID token reaches
   access logs and proxies that an `Authorization` header does not. That is the
-  custody trade-off, and it is why this is opt-in — see
+  custody trade-off, and it is why this is opt-in; see
   [ADR 0002](https://github.com/Fanzzzd/convex-logto/blob/main/docs/adr/0002-token-custody.md).
 - The cookie is only as fresh as the last client-side refresh. If you want every
   server render to have a live token, refresh in the **proxy** (Next 16's rename
@@ -180,7 +180,7 @@ export default async function proxy(request: Request) {
   const response = NextResponse.next();
   // Documents only. Every call rotates the session token, and a matcher that
   // also catches favicons, images and RSC prefetches fires several rotations
-  // for one page view — after which the generation the browser keeps may be
+  // for one page view, after which the generation the browser keeps may be
   // older than the server's, and the next client refresh presents it outside
   // its reuse window and is correctly read as theft.
   if (request.headers.get("sec-fetch-dest") !== "document") return response;
@@ -203,12 +203,12 @@ export const config = { matcher: ["/((?!_next|api).*)"] };
 
   The provider's SSR seed does not apply here: it takes `initialToken` and
   `initialSessionId` as a pair, and only `getInitialToken()` produces the
-  session id — so a page render cannot obtain one. Render the identity on the
+  session id, so a page render cannot obtain one. Render the identity on the
   server with `preloadQuery` as above, and let the client establish its own auth
   on mount.
 
-Full app: [`examples/nextjs-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs-session)
-— the cookie transport mounted at `app/api/logto/[route]/route.ts`, the identity
+Full app: [`examples/nextjs-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs-session),
+the cookie transport mounted at `app/api/logto/[route]/route.ts`, the identity
 rendered on the server with `preloadQuery` in `app/page.tsx`, and the
 document-only refresh in `proxy.ts`, all wired together.
 

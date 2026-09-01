@@ -1,7 +1,7 @@
 # convex-logto session mode + Vite + React
 
 Session mode: your Convex deployment is the OAuth client (a Logto **Traditional
-Web** app). The Logto refresh token never reaches the browser — a Convex
+Web** app). The Logto refresh token never reaches the browser; a Convex
 component holds it, rotates a session token with the browser, and
 pushes session revocation reactively. No `@logto/react`, no Logto config in the
 bundle.
@@ -20,7 +20,7 @@ bundle.
    Also rotate the tenant's OIDC signing key to **RSA** (Tenant settings → OIDC
    configs → **Rotate private keys** → choose RSA). Convex rejects Logto's
    default ES384. Note the app's **endpoint**, **App ID**, and **App Secret**.
-4. Point the deployment at that app — all config lives server-side:
+4. Point the deployment at that app; all config lives server-side:
    ```bash
    npx convex env set LOGTO_ENDPOINT      https://your-logto.example.com
    npx convex env set LOGTO_APP_ID        your-traditional-web-app-id
@@ -32,14 +32,14 @@ bundle.
 
 ## What to look at
 
-- `convex/convex.config.ts` — installs the session component (`app.use(logto)`).
-- `convex/auth.ts` — the entire server surface: one `logtoSessionApi(...)` call.
-- `src/main.tsx` — `ConvexLogtoSessionProvider` pointed at `api.auth`, with the
+- `convex/convex.config.ts`: installs the session component (`app.use(logto)`).
+- `convex/auth.ts`: the entire server surface: one `logtoSessionApi(...)` call.
+- `src/main.tsx`: `ConvexLogtoSessionProvider` pointed at `api.auth`, with the
   optional advisory `clientDescriptor`.
-- `src/App.tsx` — the `Sessions` panel: `listSessions()` / `renameSession()` /
+- `src/App.tsx`: the `Sessions` panel: `listSessions()` / `renameSession()` /
   `revokeSession()`, plus `signOutEverywhere()`.
-- `convex/me.ts` — `assertSubjectHasActiveSession` for subject-level revocation
+- `convex/me.ts`: `assertSubjectHasActiveSession` for subject-level revocation
   enforcement on sensitive functions.
 
 > In this monorepo the dependency is `convex-logto: workspace:*`. Standalone,
-> run `npm i convex-logto` — session mode needs no other auth dependency.
+> run `npm i convex-logto`; session mode needs no other auth dependency.
