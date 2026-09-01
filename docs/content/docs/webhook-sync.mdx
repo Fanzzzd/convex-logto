@@ -139,8 +139,8 @@ import { components, internal } from "./_generated/api";
 registerLogtoWebhook(http, internal.logto.sync, { sessions: components.logto });
 ```
 
-That adds two things: **exactly-once handling** (deliveries are deduplicated by
-raw-body hash, so a retry whose `200` got lost doesn't re-run your handlers) and
+That adds two things. **Exactly-once handling**: deliveries are deduplicated by
+raw-body hash, so a retry whose `200` got lost doesn't re-run your handlers. And
 **session revocation**: `User.Deleted`, and a suspension flipping ON, kill all
 of that user's sessions before your sync handlers run, so reactive clients drop
 to signed-out live.
