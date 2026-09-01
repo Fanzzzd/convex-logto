@@ -1,15 +1,15 @@
 ---
 title: Vite + React
-description: Mount ConvexLogtoProvider in a Vite SPA — the Quick start, condensed to the Vite-specific pieces.
+description: Mount ConvexLogtoProvider in a Vite SPA. The Quick start, condensed to the Vite-specific pieces.
 ---
 
 The [Quick start](/docs/quick-start) is the full Vite walkthrough. This page is the
-condensed reference for the two Vite-specific pieces — where the provider mounts and
+condensed reference for the two Vite-specific pieces: where the provider mounts and
 the callback route.
 
 <Callout>
 Backend setup (Logto app + RSA key, Convex env, `auth.config.ts`) is identical for
-every framework — see [Quick start](/docs/quick-start) steps 1–3.
+every framework; see [Quick start](/docs/quick-start) steps 1–3.
 </Callout>
 
 `configQuery` resolves the Logto endpoint and app id from the Convex deployment,
@@ -22,7 +22,7 @@ export const config = logtoConfigQuery();
 
 ## Provider
 
-A plain SPA needs no `navigate` — the provider falls back to a hard redirect after
+A plain SPA needs no `navigate`; the provider falls back to a hard redirect after
 sign-in. (Add `navigate` once you have a router, as TanStack Router does below.)
 
 ```tsx title="src/main.tsx"
@@ -41,7 +41,7 @@ root.render(
 
 ## Callback route
 
-No router — render a callback view when the path matches:
+Without a router, render a callback view when the path matches:
 
 ```tsx title="src/App.tsx"
 if (window.location.pathname === "/callback") return <p>Finishing sign in…</p>;
@@ -67,9 +67,9 @@ root.render(
 
 There is no `configQuery`: session mode keeps every Logto value on the Convex
 deployment, so nothing needs to reach the bundle. `sessionApi` is the module
-re-exporting `logtoSessionApi(...)` — `api.auth` above.
+re-exporting `logtoSessionApi(...)`, `api.auth` above.
 
-The callback is still `/callback`, and the provider still owns it — but it now
+The callback is still `/callback`, and the provider still owns it, but it now
 POSTs the code to Convex and replace-navigates to `afterSignIn` itself, so the
 view you render there is only ever a flash:
 
@@ -81,7 +81,7 @@ if (window.location.pathname === "/callback") return <p>Finishing sign in…</p>
 A plain Vite SPA usually ships to a static host, which has no same-site server to
 mount the [cookie transport](/docs/session-mode#httponly-cookie-transport-optional)
 on. That is fine: the default localStorage transport is the supported
-static-hosting path — the session token there is one-time, rotates on every use,
+static-hosting path. The session token there is one-time, rotates on every use,
 and is stored server-side only as a hash. Add the cookie transport when you have a
 server on the same site, not before.
 </Callout>

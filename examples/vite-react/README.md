@@ -14,7 +14,7 @@ The smallest working setup: one provider, and Convex's `<Authenticated>` / `<Una
    - **Post sign-out redirect URI** → `http://localhost:5173`
 
    Also rotate the tenant's OIDC signing key to **RSA** (Tenant settings → OIDC configs → **Rotate private keys** → choose RSA). Convex rejects Logto's default ES384, so this is required; otherwise `getUserIdentity()` returns `null`. Note its **endpoint** and **App ID** for the next step.
-4. Point that deployment at your Logto app — the one place config lives:
+4. Point that deployment at your Logto app, the one place config lives:
    ```bash
    npx convex env set LOGTO_ENDPOINT https://your-logto.example.com
    npx convex env set LOGTO_APP_ID   your-spa-app-id

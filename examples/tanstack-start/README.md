@@ -19,7 +19,7 @@ reading auth from router context.
    - **Post sign-out redirect URI** → `http://localhost:3000`
 
    Also rotate the tenant's OIDC signing key to **RSA** (Tenant settings → OIDC configs → **Rotate private keys** → choose RSA). Convex rejects Logto's default ES384, so this is required; otherwise `getUserIdentity()` returns `null`. Note its **endpoint** and **App ID** for the next step.
-4. Point that deployment at your Logto app — the one place config lives:
+4. Point that deployment at your Logto app, the one place config lives:
    ```bash
    npx convex env set LOGTO_ENDPOINT https://your-logto.example.com
    npx convex env set LOGTO_APP_ID   your-spa-app-id
@@ -34,7 +34,7 @@ reading auth from router context.
 The provider is **SSR-safe**: `ConvexLogtoProvider` mounts the Logto + Convex tree
 from the first render using an inert loading client, so children render immediately
 under Convex's `<AuthLoading>` and nothing touches `window` on the server. So this
-example has **no hand-written client boundary, stub, or mount-gate** — the same
+example has **no hand-written client boundary, stub, or mount-gate**; the same
 `<ConvexLogtoProvider>` you'd write for a SPA works on the server too.
 
 - **`src/router.tsx`** is Convex's canonical Start setup; the router's `InnerWrap`
@@ -44,14 +44,14 @@ example has **no hand-written client boundary, stub, or mount-gate** — the sam
   `<AuthLoading>` shell renders; the client hydrates and auth settles. Server and
   first client render match, so there's no hydration mismatch.
 - The `<Authenticated>/<Unauthenticated>/<AuthLoading>` components and the
-  `useLogtoAuth()` buttons read the provider's context directly — no mount-gating,
+  `useLogtoAuth()` buttons read the provider's context directly: no mount-gating,
   the same component code as the SPA example.
 
 ## The two auth patterns
 
-1. **Declarative** (`src/DeclarativeGate.tsx`) — `<Authenticated>` /
+1. **Declarative** (`src/DeclarativeGate.tsx`): `<Authenticated>` /
    `<Unauthenticated>` / `<AuthLoading>` from `convex/react`, unchanged.
-2. **`beforeLoad` route guard** (`src/routes/_authed.tsx`) — protects `/dashboard`
+2. **`beforeLoad` route guard** (`src/routes/_authed.tsx`): protects `/dashboard`
    outside of render. Start builds the router context once, so auth is carried in
    a **mutable holder** on the context that `AuthBoundary`'s `RouterAuthBridge`
    keeps pointed at the live `useLogtoAuth()` result, calling `router.invalidate()` on every auth

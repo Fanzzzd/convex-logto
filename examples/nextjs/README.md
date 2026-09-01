@@ -1,7 +1,7 @@
 # convex-logto + Next.js (App Router)
 
 The smallest correct way to use `convex-logto` in the Next.js App Router. The
-frontend carries **no Logto config** — it pulls `{ endpoint, appId }` from the
+frontend carries **no Logto config**; it pulls `{ endpoint, appId }` from the
 Convex backend via `api.logto.config`.
 
 ## Run
@@ -33,11 +33,11 @@ Convex backend via `api.logto.config`.
   renders the client `app/providers.tsx`.
 - **The Convex client is created once at module scope** in the client component,
   never inside render.
-- **Use `process.env.NEXT_PUBLIC_CONVEX_URL`** — there is no `VITE_*` / `import.meta.env`.
+- **Use `process.env.NEXT_PUBLIC_CONVEX_URL`**; there is no `VITE_*` / `import.meta.env`.
 - **Soft navigation** after sign-in via `navigate={(to) => router.push(to)}` from
   `next/navigation`.
 - **The callback route** (`app/callback/page.tsx`) is a plain Server Component (no
   `"use client"` needed) that just renders; the provider finishes the OIDC exchange.
 
-> **Want webhook user-sync?** It's framework-agnostic — the `convex/` backend code is
+> **Want webhook user-sync?** It's framework-agnostic; the `convex/` backend code is
 > identical across examples. See the [`tanstack-router-spa`](../tanstack-router-spa) example.

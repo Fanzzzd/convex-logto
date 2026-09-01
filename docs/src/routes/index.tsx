@@ -24,7 +24,7 @@ function Home() {
         </h1>
 
         <p className="mt-6 max-w-2xl text-lg text-fd-muted-foreground">
-          Logto auth for Convex React apps — with the least setup. One provider
+          Logto auth for Convex React apps, with the least setup. One provider
           on the frontend, one line on the backend, one source of truth across
           environments.
         </p>

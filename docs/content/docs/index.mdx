@@ -1,10 +1,10 @@
 ---
 title: Overview
-description: Logto auth for a Convex React app — with the least setup possible.
+description: Logto auth for a Convex React app, with the least setup possible.
 ---
 
 Use [Logto](https://logto.io) (self-hosted or cloud) as the auth provider for a
-[Convex](https://convex.dev) React app — with the least setup possible.
+[Convex](https://convex.dev) React app, with the least setup possible.
 
 ## The three "one X" promises
 
@@ -14,10 +14,10 @@ Use [Logto](https://logto.io) (self-hosted or cloud) as the auth provider for a
   template, no algorithm, no JWKS URL to copy.
 - **One source of truth across environments.** The frontend can pull its Logto
   config from the backend, so you configure Logto in exactly one place per
-  environment — the Convex deployment.
+  environment: the Convex deployment.
 
 Not sure this is the right package for you? [Why this package](/docs/why) is the
-honest comparison — including the cases where `@convex-dev/auth`, Clerk, or
+honest comparison, including the cases where `@convex-dev/auth`, Clerk, or
 wiring Logto by hand is the better answer.
 
 ## Two modes
@@ -27,7 +27,7 @@ wiring Logto by hand is the better answer.
   state.
 - **[Session mode](/docs/session-mode)**: a Convex component holds the Logto
   refresh token server-side and rotates application session tokens with the
-  browser — smallest browser attack surface, live session revocation, and no
+  browser: smallest browser attack surface, live session revocation, and no
   Logto SDK in the bundle.
 
 Both present the same ID token to Convex, so everything else on this site
@@ -38,9 +38,9 @@ that shares the browser origin with authentication.
 ## ID token over OIDC
 
 It uses Logto's **ID token** over OIDC, so Convex auto-discovers the signing key
-and JWKS — no JWT template, no algorithm, no JWKS URL to configure. The one
+and JWKS: no JWT template, no algorithm, no JWKS URL to configure. The one
 Logto-side requirement: the OIDC signing key must be **RSA/RS256** (Convex
-rejects Logto's default ES384). It's a one-time tenant rotation — see
+rejects Logto's default ES384). It's a one-time tenant rotation; see
 [Quick start](/docs/quick-start).
 
 ## Install
@@ -55,9 +55,9 @@ pnpm add convex-logto @logto/react
 
 **Get started**
 
-- [Quick start](/docs/quick-start) — wire auth end to end (Vite) in six steps.
+- [Quick start](/docs/quick-start): wire auth end to end (Vite) in six steps.
 
-**Integrations** — the provider + callback lines for your framework:
+**Integrations**, the provider + callback lines for your framework:
 
 - [Vite](/docs/vite) · [TanStack Router](/docs/tanstack-router) ·
   [TanStack Start](/docs/tanstack-start) · [Next.js](/docs/nextjs) ·
@@ -65,27 +65,27 @@ pnpm add convex-logto @logto/react
 
 **Guides**
 
-- [SPA security baseline](/docs/security-baseline) — CSP, Trusted Types,
+- [SPA security baseline](/docs/security-baseline): CSP, Trusted Types,
   third-party script hygiene, and least-privilege scopes.
-- [Session mode](/docs/session-mode) — keep the refresh token out of the
+- [Session mode](/docs/session-mode): keep the refresh token out of the
   browser, with reactive revocation.
-- [Auth in your app](/docs/auth-in-your-app) — render and route on auth state.
-- [Webhook sync](/docs/webhook-sync) — mirror Logto users into a queryable
+- [Auth in your app](/docs/auth-in-your-app): render and route on auth state.
+- [Webhook sync](/docs/webhook-sync): mirror Logto users into a queryable
   Convex table.
-- [Multiple environments](/docs/multiple-environments) — dev / staging / prod
+- [Multiple environments](/docs/multiple-environments): dev / staging / prod
   with a single source of config.
 
 **Reference**
 
-- [API reference](/docs/api-reference) — every export and its signature.
-- [How it works](/docs/how-it-works) — why the ID token, and why there's no JWT
+- [API reference](/docs/api-reference): every export and its signature.
+- [How it works](/docs/how-it-works): why the ID token, and why there's no JWT
   config.
-- [Examples](https://github.com/Fanzzzd/convex-logto/tree/main/examples) — runnable
+- [Examples](https://github.com/Fanzzzd/convex-logto/tree/main/examples): runnable
   apps for Vite, TanStack Router / Start, Next.js, and Expo.
 
 ## Examples
 
-Runnable apps you can copy from — each wires the same package for a different
+Runnable apps you can copy from; each wires the same package for a different
 framework:
 
 <Cards>
@@ -105,7 +105,7 @@ framework:
     Client provider boundary + callback route.
   </Card>
   <Card title="Expo (React Native)" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo">
-    Native auth via convex-logto/native — no callback route, deep-link sign-in.
+    Native auth via convex-logto/native: no callback route, deep-link sign-in.
   </Card>
   <Card title="Expo, session mode" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo-session">
     Server-held refresh token, SecureStore credentials, device list.

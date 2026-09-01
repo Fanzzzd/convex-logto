@@ -1,6 +1,6 @@
 ---
 title: TanStack Router
-description: Mount ConvexLogtoProvider in a TanStack Router SPA — soft navigation, a callback route, and beforeLoad guards.
+description: Mount ConvexLogtoProvider in a TanStack Router SPA. Soft navigation, a callback route, and beforeLoad guards.
 ---
 
 Finish [Quick start](/docs/quick-start) steps 1–3 (the backend is framework-agnostic),
@@ -45,7 +45,7 @@ const callbackRoute = createRoute({
 ## Route guards
 
 For redirect-based protection you need auth **outside render**, in a route's
-`beforeLoad`. Lift `useLogtoAuth()` into the router `context` and guard there — the
+`beforeLoad`. Lift `useLogtoAuth()` into the router `context` and guard there; the
 full pattern (with the `isLoading`-first check that avoids bouncing a just-returned
 user) is in [Auth in your app → Route guards](/docs/auth-in-your-app#route-guards-tanstack-router).
 
@@ -71,7 +71,7 @@ root.render(
 ```
 
 Keep the `/callback` route. The provider completes the exchange and then calls
-your `navigate`, but the router still renders that path first — without a route
+your `navigate`, but the router still renders that path first; without a route
 for it the user sees a 404 for the length of one round-trip. `replace: true`
 keeps the code-bearing URL out of history.
 
@@ -81,7 +81,7 @@ Route guards work exactly as above: `useLogtoAuth()` from
 and it adds `signOutEverywhere()` plus the `listSessions()` /
 `renameSession()` / `revokeSession()` device list.
 
-A router-level guard is not an authorization boundary in either mode — it decides
+A router-level guard is not an authorization boundary in either mode; it decides
 what to render, and the Convex function still has to check the identity itself.
 Session mode adds `assertSubjectHasActiveSession(ctx, components.logto)` for
 functions that must also fail the moment a session is revoked, rather than when

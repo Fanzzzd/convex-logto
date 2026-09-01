@@ -296,9 +296,9 @@ Logto client 在 `signIn()` 时生成随机 state 与 PKCE verifier/challenge，
 
 ### 8.2 HMAC 不防重放
 
-同一份合法 raw body 和签名在未来仍然合法。当前签名 header 不含独立 timestamp/nonce；payload 中有签名覆盖的 `createdAt`，但当前代码没有检查它。Logto 会在 HTTP >=500 时自动重试，最多三次，因此重复交付是正常行为而不是边缘攻击。来源：[Logto Configure webhooks — Auto-retry](https://docs.logto.io/developers/webhooks/configure-webhooks#monitor-webhook-health-status)。
+同一份合法 raw body 和签名在未来仍然合法。当前签名 header 不含独立 timestamp/nonce；payload 中有签名覆盖的 `createdAt`，但当前代码没有检查它。Logto 会在 HTTP >=500 时自动重试，最多三次，因此重复交付是正常行为而不是边缘攻击。来源：[Logto Configure webhooks: Auto-retry](https://docs.logto.io/developers/webhooks/configure-webhooks#monitor-webhook-health-status)。
 
-此外，payload 的 `hookId` 是 webhook **配置**标识，不是事件或 delivery 唯一 ID。来源：[Logto Webhooks request — common fields](https://docs.logto.io/developers/webhooks/webhooks-request#common-fields)。
+此外，payload 的 `hookId` 是 webhook **配置**标识，不是事件或 delivery 唯一 ID。来源：[Logto Webhooks request: common fields](https://docs.logto.io/developers/webhooks/webhooks-request#common-fields)。
 
 ### 8.3 推荐默认行为
 

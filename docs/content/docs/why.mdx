@@ -11,7 +11,7 @@ this". It is written to be useful when the answer is no.
 **You have no auth provider yet, and no reason to want Logto.** Use
 [`@convex-dev/auth`](https://labs.convex.dev/auth). It lives in your Convex
 deployment, owns the users table, and does OAuth, magic links, OTP and passwords
-without a second system to run. This package assumes Logto already exists — it
+without a second system to run. This package assumes Logto already exists; it
 does not make a case for adopting Logto.
 
 **You want a hosted provider and don't need self-hosting.** Convex ships
@@ -34,11 +34,11 @@ Not that much, and it is worth being clear about it. Convex accepts any OIDC
 provider through `auth.config.ts`, so wiring Logto by hand is a real option. What
 you would write yourself:
 
-- A `useAuth` bridge from `@logto/react` to `ConvexProviderWithAuth` — including
+- A `useAuth` bridge from `@logto/react` to `ConvexProviderWithAuth`, including
   the force-refresh path, which has to clear the access token to make Logto
   rotate the **ID** token, and the one-render loading pulse that otherwise shows
   every user a logged-out flash right after sign-in.
-- `{ domain, applicationID }` in `auth.config.ts` — genuinely two lines.
+- `{ domain, applicationID }` in `auth.config.ts`, genuinely two lines.
 - The discovery that Logto's default OIDC signing algorithm is **ES384**, which
   Convex rejects. This costs an afternoon the first time; the package cannot fix
   it either, but it tells you up front (see [Quick start](/docs/quick-start)).
@@ -52,11 +52,11 @@ reasonable advice.
 component, in tables your own app code cannot read; the browser holds a
 short-lived ID token and a rotating application session token. That buys live
 revocation, a "where am I signed in" list, and a browser that holds nothing
-long-lived — on a static CDN deploy, where no same-site HttpOnly cookie is
+long-lived, on a static CDN deploy, where no same-site HttpOnly cookie is
 reachable at all.
 
 The reason this is not a weekend project is the failure modes, not the happy
-path. A Logto refresh token must never be presented twice — reuse detection
+path. A Logto refresh token must never be presented twice; reuse detection
 destroys the whole grant, including sibling sessions that share it. So a refresh
 whose outcome is *unknown* cannot be retried and cannot be discarded; a
 deployment misconfiguration must never be classified as a dead session, or one
@@ -72,7 +72,7 @@ to session liveness, so a revoked session drops the client live rather than up t
 an hour later.
 
 **[Webhook sync](/docs/webhook-sync)** and **[back-channel
-logout](/docs/backchannel-logout)** — signature verification, replay containment,
+logout](/docs/backchannel-logout)**: signature verification, replay containment,
 bounded bodies, and the specific decision to *tolerate* Logto payload drift
 rather than reject it, because Logto retries a 5xx and not a 4xx, so a strict
 validator turns a schema change into silent event loss.
@@ -81,11 +81,11 @@ validator turns a schema change into silent event loss.
 
 - **One provider on the frontend.** No hand-rolled `useAuth`.
 - **One line on the backend.** No JWT template, no algorithm, no JWKS URL.
-- **One source of truth per environment** — the Convex deployment serves its own
+- **One source of truth per environment.** The Convex deployment serves its own
   Logto config to the frontend.
-- **Bridge and session mode present the same ID token to Convex**, so everything
-  downstream — identity, webhook sync, environments — is identical, and moving
-  between them is an import change.
+- **Bridge and session mode present the same ID token to Convex**, so identity,
+  webhook sync, and environments are identical downstream, and moving between
+  them is an import change.
 
 ## Status
 
