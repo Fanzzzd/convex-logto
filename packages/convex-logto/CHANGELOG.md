@@ -1,5 +1,11 @@
 # convex-logto
 
+## 0.7.1
+
+### Patch Changes
+
+- [#234](https://github.com/Fanzzzd/convex-logto/pull/234) [`8599a46`](https://github.com/Fanzzzd/convex-logto/commit/8599a469464cb5f5623bc611b81a3af7b523b49d) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Prose-only release. The README is rewritten without em dashes and with tighter sentences, and the npm page picks up the organization-authorization section and the `initialAuthTokenReuse` quick-start line that landed after 0.7.0 was cut. No code changes.
+
 ## 0.7.0
 
 ### Minor Changes
