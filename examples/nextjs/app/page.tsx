@@ -41,7 +41,7 @@ export default function Home() {
           <p>You are signed out.</p>
         </Unauthenticated>
         <Authenticated>
-          <p>Signed in — your Convex identity:</p>
+          <p>Signed in. Your Convex identity:</p>
           <Me />
         </Authenticated>
       </div>

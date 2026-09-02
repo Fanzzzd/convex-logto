@@ -9,18 +9,18 @@
 //
 // Zero dependencies: `node e2e/provision.mjs`.
 //
-//   LOGTO_ENDPOINT         https://auth.example.com — also serves /api
+//   LOGTO_ENDPOINT         https://auth.example.com, which also serves /api
 //   LOGTO_M2M_APP_ID       a Machine-to-Machine app with the Management API role
 //   LOGTO_M2M_APP_SECRET
 //
 // Optional: LOGTO_ADMIN_ENDPOINT. A self-hosted Logto with the admin console
 // enabled runs *two* OIDC issuers: the tenant one at LOGTO_ENDPOINT, and the
 // admin console's own. The built-in `m-default` Management API client exists
-// only in the admin tenant, so its token has to be requested from the admin
-// issuer even though the Management API itself is served from LOGTO_ENDPOINT.
-// Asking the wrong issuer answers `invalid_client`, which reads like a wrong
-// secret and is not. Defaults to LOGTO_ENDPOINT, which is right for Logto Cloud
-// and for an M2M app you created yourself in the tenant.
+// only in the admin tenant, so you have to request its token from the admin
+// issuer even though LOGTO_ENDPOINT serves the Management API itself. Asking
+// the wrong issuer answers `invalid_client`, which reads like a wrong secret
+// and is not. Defaults to LOGTO_ENDPOINT, which is right for Logto Cloud and
+// for an M2M app you created yourself in the tenant.
 //
 // Optional: E2E_SPA_ORIGIN (default http://localhost:5173),
 //           E2E_WEB_ORIGIN (default http://localhost:5174).
@@ -48,9 +48,9 @@ const ORG_ROLE = "admin";
 const USER_EMAIL = "convex-logto-e2e@example.com";
 const USER_PASSWORD = required(
   "E2E_USER_PASSWORD",
-  "Choose a password for the throwaway test user. This script never invents one:\n" +
-    "a secret it generated would have to be printed to be useful, and a secret on\n" +
-    "a terminal is a secret in a scrollback buffer and a CI log.",
+  "Choose a password for the throwaway test user. This script never invents one.\n" +
+    "A generated secret is only useful printed, and a secret on a terminal is a\n" +
+    "secret in a scrollback buffer and a CI log.",
 );
 const outPath = argValue("--out") ?? new URL("./.env.e2e", import.meta.url).pathname;
 
@@ -124,10 +124,10 @@ function api(token) {
  * Walk a paginated Management API collection until `match` hits.
  *
  * Logto rejects `page_size` above 100 with `guard.invalid_pagination`, so a
- * single oversized page is not an option — and a single page of 100 would
- * silently miss an app in a tenant that has more, reporting "not found" and
- * then failing to create it because the name is taken. Paging until a short
- * page is the only answer that is right at both ends.
+ * single oversized page is not an option. A single page of 100 would miss an
+ * app in a tenant that has more, report "not found", and then fail to create
+ * it because the name is taken. Paging until a short page is the only answer
+ * that is right at both ends.
  */
 async function findPaged(call, path, match, { pageSize = 100, maxPages = 50 } = {}) {
   const separator = path.includes("?") ? "&" : "?";
@@ -144,8 +144,8 @@ async function findPaged(call, path, match, { pageSize = 100, maxPages = 50 } = 
 }
 
 /**
- * Find-or-create, and *repair*: an app that exists but has lost a redirect URI
- * is the failure mode that actually happens (a port changes, someone edits the
+ * Find-or-create, and *repair*. An app that exists but has lost a redirect URI
+ * is the failure that happens in practice (a port changes, someone edits the
  * console), and it presents as an opaque HTTP 400 from `/oidc/auth`.
  */
 async function ensureApplication(call, { name, type, origin }) {
@@ -199,7 +199,7 @@ async function ensureUser(call) {
     (user) => user.primaryEmail === USER_EMAIL,
   );
   if (existing) {
-    // Always reset: the password is the one thing a live run cannot discover,
+    // Always reset. The password is the one thing a live run cannot discover,
     // and a user whose password drifted is indistinguishable from a broken sign-in.
     await call(`/users/${existing.id}/password`, {
       method: "PATCH",
@@ -220,12 +220,13 @@ async function ensureUser(call) {
 /**
  * An organization the test user belongs to, holding {@link ORG_ROLE}.
  *
- * Find-or-create *and* repair, for the same reason `ensureApplication` is: the
- * failure that actually happens is an object that exists but has drifted — the
- * user dropped from the organization, or holding no role in it — and every one
- * of those presents as an authorization denial with nothing to point at.
+ * Find-or-create *and* repair, for the same reason `ensureApplication` is. The
+ * failure that happens in practice is an object that exists but has drifted,
+ * such as the user dropped from the organization or holding no role in it, and
+ * every one of those presents as an authorization denial with nothing to point
+ * at.
  *
- * The role assignment is a PUT: it *is* the desired state, so re-running it is
+ * The role assignment is a PUT. It *is* the desired state, so re-running it is
  * both the repair and the no-op.
  */
 async function ensureOrganization(call, userId) {
@@ -249,9 +250,9 @@ async function ensureOrganization(call, userId) {
       }),
     }));
 
-  // Paged, for the reason `findPaged`'s own comment gives: a single page of 100
-  // silently misses a member in a larger organization, and "not a member" here
-  // means a POST that adds someone who is already there.
+  // Paged, for the reason `findPaged`'s own comment gives. A single page of 100
+  // misses a member in a larger organization, and "not a member" here means a
+  // POST that adds someone who is already there.
   const member = await findPaged(
     call,
     `/organizations/${org.id}/users`,
@@ -275,16 +276,16 @@ async function ensureOrganization(call, userId) {
 /**
  * The client secret lives only on the application detail response.
  *
- * Fails rather than returning null: session mode's code exchange cannot run
+ * Fails rather than returning null. Session mode's code exchange cannot run
  * without it, so a "successful" run that emitted a placeholder would hand back
  * an environment file that fails much later, at the point where the cause is
  * least visible.
  */
 async function clientSecret(call, applicationId, name) {
-  // An override first, so the remediation the error below suggests actually
-  // works on a rerun. Some Logto versions do not return the secret on the
-  // application detail response at all.
-  // Validated on the trimmed value, returned untrimmed: a whitespace-only
+  // An override first, so the remediation the error below suggests works on a
+  // rerun. Some Logto versions do not return the secret on the application
+  // detail response at all.
+  // Validated on the trimmed value, returned untrimmed. A whitespace-only
   // secret is not a secret, and would otherwise both bypass the API fallback and
   // land in the environment file as something unusable.
   const override = process.env.LOGTO_APP_SECRET;
@@ -296,8 +297,8 @@ async function clientSecret(call, applicationId, name) {
       `Could not read the client secret for ${name} (${applicationId}). ` +
         "Session mode's authorization-code exchange needs it. Copy it from the " +
         "Logto console (Applications → " +
-        `${name} → App secret), export it as LOGTO_APP_SECRET, and rerun — ` +
-        "this script prefers that value when it is set.",
+        `${name} → App secret), export it as LOGTO_APP_SECRET, and rerun. ` +
+        "This script prefers that value when it is set.",
     );
   }
   return secret;
@@ -324,17 +325,18 @@ const user = await ensureUser(call);
 const { org, role } = await ensureOrganization(call, user.id);
 const secret = await clientSecret(call, web.id, WEB_NAME);
 
-// Secrets go to a 0600 file, never to stdout: a terminal is a scrollback buffer,
-// and in CI it is a log. Only the values that are safe to read aloud are printed.
-const env = `# Generated by e2e/provision.mjs. Contains secrets — do not commit.
-# Bridge mode — examples/tanstack-router-spa, examples/vite-react
+// Secrets go to a 0600 file, never to stdout. A terminal is a scrollback
+// buffer, and in CI it is a log. The script prints only the values that are
+// safe to read aloud.
+const env = `# Generated by e2e/provision.mjs. Contains secrets. Do not commit.
+# Bridge mode: examples/tanstack-router-spa, examples/vite-react
 LOGTO_ENDPOINT=${endpoint}
-# Not a secret, and probe-org-tokens.mjs needs it too: without it a self-hosted
+# Not a secret, and probe-org-tokens.mjs needs it too. Without it a self-hosted
 # deployment answers the same \`invalid_client\` this script exists to explain.
 LOGTO_ADMIN_ENDPOINT=${adminEndpoint}
 LOGTO_APP_ID=${spa.id}
 
-# Session mode — examples/vite-react-session
+# Session mode: examples/vite-react-session
 LOGTO_SESSION_APP_ID=${web.id}
 LOGTO_APP_SECRET=${secret}
 
@@ -349,7 +351,7 @@ E2E_ORG_ID=${org.id}
 E2E_ORG_ROLE=${role.name}
 
 # Management API client, written back so this file alone can rerun this script.
-# Dropping them is how the setup evaporates: the next run reads the file, finds
+# Dropping them is how the setup evaporates. The next run reads the file, finds
 # no credentials, and the only copy was in someone's shell history.
 LOGTO_M2M_APP_ID=${m2mId}
 LOGTO_M2M_APP_SECRET=${m2mSecret}

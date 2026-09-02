@@ -31,7 +31,7 @@ Convex backend via `api.logto.config`.
   and `ConvexReactClient` use React hooks and `window`, so they can't be imported
   into a Server Component. `app/layout.tsx` stays a Server Component and only
   renders the client `app/providers.tsx`.
-- **The Convex client is created once at module scope** in the client component,
+- **Create the Convex client once at module scope** in the client component,
   never inside render.
 - **Use `process.env.NEXT_PUBLIC_CONVEX_URL`**; there is no `VITE_*` / `import.meta.env`.
 - **Soft navigation** after sign-in via `navigate={(to) => router.push(to)}` from

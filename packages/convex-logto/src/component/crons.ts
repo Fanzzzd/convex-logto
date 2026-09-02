@@ -2,7 +2,7 @@ import { cronJobs } from "convex/server";
 import { internal } from "./_generated/api.js";
 
 // Daily sweep of expired sign-in transactions and dead sessions (idle past
-// Logto's 180-day grant cap). Zero app configuration — the cron ships with the
+// Logto's 180-day grant cap). Zero app configuration. The cron ships with the
 // component, following the official action-retrier/action-cache precedent.
 const crons = cronJobs();
 crons.interval(

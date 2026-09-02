@@ -3,10 +3,10 @@
 // Nothing here talks to Logto. `urn:logto:scope:organizations` and
 // `urn:logto:scope:organization_roles` (both requested in `auth.ts`) put an
 // `organizations` and an `organization_roles` claim in the ID token, and Convex
-// passes claims it does not recognise through to `getUserIdentity()` — so
+// passes claims it does not recognise through to `getUserIdentity()`, so
 // membership and roles are already inside the request, for free.
 //
-// The cost of "free" is that they are a *snapshot*: true when the token was
+// The cost of "free" is that they are a *snapshot*, true when the token was
 // issued and frozen until the next one is. A user removed from an organization
 // keeps these claims until then. When a membership change has to bite
 // immediately, keep membership in your own table and check that instead.
@@ -32,10 +32,10 @@ export const roles = query({
 });
 
 /**
- * The shape a real authorization check takes: the *function* names the role it
+ * The shape a real authorization check takes. The *function* names the role it
  * requires, and the caller only names the organization it is acting in.
  *
- * A role check matches on the organization **and** the role, so one
+ * A role check matches on both the organization and the role, so one
  * organization's `admin` cannot authorize another's.
  */
 export const adminOnly = query({

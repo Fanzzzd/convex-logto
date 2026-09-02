@@ -74,13 +74,13 @@ export type LogtoSessionCookieHandlerOptions = {
    * that cannot rotate the session cookie during render can still read an
    * identity. Off by default.
    *
-   * The trade-off is custody, the same one
-   * `docs/adr/0002-token-custody.md` describes: the ID token is already a
-   * request credential the browser holds, and an `HttpOnly` cookie is a *safer*
-   * place for it than script-reachable memory — but a cookie is attached to
-   * every same-origin request, so it reaches access logs and proxies that the
-   * `Authorization` header does not. Turn it on when you server-render
-   * authenticated content; leave it off otherwise.
+   * The trade-off is custody, the same one `docs/adr/0002-token-custody.md`
+   * describes. The ID token is already a request credential the browser holds,
+   * and an `HttpOnly` cookie is a *safer* place for it than script-reachable
+   * memory. But the browser attaches a cookie to every same-origin request, so
+   * it reaches access logs and proxies that the `Authorization` header does
+   * not. Turn it on when you server-render authenticated content; leave it off
+   * otherwise.
    */
   idTokenCookie?: boolean;
 };
@@ -214,23 +214,24 @@ function cookieHeader(sessionToken: string): string {
  * Companion cookie holding the ID token itself, for server-side rendering.
  *
  * `getInitialToken` is the full-fidelity SSR path, but it *rotates* the session
- * token, and a framework that forbids writing cookies during render — Next.js
- * App Router Server Components, notably — cannot persist that rotation. Dropping
- * it would leave the browser holding a superseded token that later reads as
- * reuse and kills the session, so the documented advice has been "do not seed
- * SSR there at all", which means no server-side identity at all.
+ * token, and a framework that forbids writing cookies during render cannot
+ * persist that rotation. Next.js App Router Server Components are the notable
+ * case. Dropping the rotation would leave the browser holding a superseded
+ * token that later reads as reuse and kills the session, so the documented
+ * advice has been "do not seed SSR there at all", which means no server-side
+ * identity at all.
  *
- * This cookie is written only from places that *can* set cookies (the route
- * handler), and read anywhere. It mints nothing and rotates nothing, so it costs
+ * Only places that *can* set cookies (the route handler) write this cookie,
+ * and anything can read it. It mints nothing and rotates nothing, so it costs
  * the rotation-based theft detection nothing either.
  */
 export const LOGTO_ID_TOKEN_COOKIE_NAME = "__Host-convex-logto-id-token";
 
 /**
- * Cookies are capped near 4 KB per the RFC 6265 recommendation, and a browser
- * that refuses an oversized one gives no signal. A token this large means a
- * tenant is putting an unusual amount into the ID token; degrade to no SSR seed
- * rather than emit a header that silently does nothing.
+ * RFC 6265 recommends a cap near 4 KB per cookie, and a browser that refuses an
+ * oversized one gives no signal. A token this large means a tenant is putting
+ * an unusual amount into the ID token; degrade to no SSR seed rather than emit
+ * a header that silently does nothing.
  */
 const MAX_ID_TOKEN_COOKIE_BYTES = 3 * 1024;
 
@@ -266,9 +267,9 @@ function decodeBase64Url(segment: string): Uint8Array {
 /**
  * `Set-Cookie` for the ID token, or `null` when it should not be written.
  *
- * The cookie expires with the token it holds, so a stale one is never read back:
- * an expired ID token would render a server page as signed in for a user Convex
- * would refuse.
+ * The cookie expires with the token it holds, so a stale one is never read
+ * back. An expired ID token would render a server page as signed in for a user
+ * Convex would refuse.
  */
 function idTokenCookieHeader(idToken: string): string | null {
   const maxAge = idTokenMaxAge(idToken);
@@ -296,17 +297,17 @@ function clearCookieHeader(): string {
 }
 
 /**
- * Expire *both* cookies — the only correct way to end a session over this
- * transport.
+ * Expire *both* cookies. That is the only correct way to end a session over
+ * this transport.
  *
- * Clearing the session cookie alone leaves the ID token behind, and neither
- * cookie can be reached from JavaScript, so nothing on the client can finish the
- * job: the browser goes on presenting a signed-in identity to every server
- * render until the token's own `Max-Age` runs out, which is up to its full
- * lifetime. On a shared computer that is the *previous* user's identity, served
- * into the next visitor's HTML.
+ * Clearing the session cookie alone leaves the ID token behind, and JavaScript
+ * can reach neither cookie, so nothing on the client can finish the job. The
+ * browser goes on presenting a signed-in identity to every server render until
+ * the token's own `Max-Age` runs out, which is up to its full lifetime. On a
+ * shared computer that is the *previous* user's identity, served into the next
+ * visitor's HTML.
  *
- * Both are cleared even when `idTokenCookie` was never enabled: expiring a
+ * This clears both even when `idTokenCookie` was never enabled. Expiring a
  * cookie that does not exist is inert, and turning the option off must not
  * strand a live token written while it was on.
  */
@@ -343,7 +344,7 @@ function readCookie(request: Request): string | null {
  * Anything a server framework hands you that can produce cookies: a `Request`,
  * a raw `Cookie` header, or a store shaped like Next.js's `cookies()`.
  *
- * Taking all three keeps this package free of any framework dependency — there
+ * Taking all three keeps this package free of any framework dependency. There
  * is no `convex-logto/nextjs` entry to keep in step with Next's release train,
  * and the same call works in TanStack Start, Remix, or a bare handler.
  */
@@ -360,14 +361,14 @@ export type LogtoCookieSource =
  * Convex's `preloadQuery` / `fetchQuery`:
  *
  * @example
- * // app/page.tsx — a Server Component, which cannot set cookies
+ * // app/page.tsx, a Server Component, which cannot set cookies
  * const token = readLogtoIdTokenCookie(await cookies());
  * const preloaded = await preloadQuery(api.me.me, {}, token ? { token } : {});
  *
- * The token is a bearer Convex validates, not a claim to trust here: a `null`
+ * The token is a bearer Convex validates, not a claim to trust here. A `null`
  * means render the signed-out view and let the client take over, and a non-null
  * one still proves nothing until Convex accepts it. Revocation is enforced the
- * same way it is everywhere else — by `assertSubjectHasActiveSession` inside the
+ * same way it is everywhere else, by `assertSubjectHasActiveSession` inside the
  * function you call, not by this read.
  */
 export function readLogtoIdTokenCookie(
@@ -392,7 +393,7 @@ function rawIdTokenCookie(source: LogtoCookieSource): string | null {
 
 /**
  * The cookie's `Max-Age` already comes from the token's own `exp`, so a browser
- * stops sending an expired one on its own — but that is the *browser's*
+ * stops sending an expired one on its own. But that is the *browser's*
  * guarantee, and this read does not always sit behind one. A `Cookie` header
  * replayed from a cache, a proxy, or a fixture arrives with whatever lifetime it
  * was captured with, and an expired token server-renders the page as signed in
@@ -470,7 +471,7 @@ class RequestValidationError extends Error {}
 
 /**
  * Same 409 shape `signOutEverywhere` uses, so a deployment whose app module
- * predates these actions gets actionable guidance instead of a bare failure.
+ * predates these actions gets the exact fix instead of a bare failure.
  */
 function sessionManagementUnavailable(name: string, origin: string): Response {
   return jsonResponse(
@@ -565,7 +566,7 @@ function optionalString(
 
 /**
  * Like `optionalString`, but blank means "not provided" instead of an error.
- * Use it for display fields the component itself treats that way — an emptied
+ * Use it for display fields the component itself treats that way. An emptied
  * rename box must clear a label, not fail the request in cookie mode only.
  */
 function optionalDisplayString(
@@ -582,8 +583,8 @@ function optionalDisplayString(
 }
 
 /**
- * A list of short strings — OIDC scopes. Bounded here as well as in the
- * component: this route is same-site and unauthenticated by anything but the
+ * A list of short strings, OIDC scopes. Bounded here as well as in the
+ * component. This route is same-site and unauthenticated by anything but the
  * cookie, so it should not be the one place a caller can post an unbounded
  * array.
  */
@@ -618,9 +619,9 @@ function optionalBoolean(
 }
 
 /**
- * The advisory, app-supplied client descriptor. Unknown keys are dropped rather
- * than rejected: it is display data, and the component normalizes and truncates
- * it again server-side.
+ * The advisory, app-supplied client descriptor. This drops unknown keys rather
+ * than rejecting them. It is display data, and the component normalizes and
+ * truncates it again server-side.
  */
 function optionalClientDescriptor(
   body: Record<string, unknown>,
@@ -660,7 +661,7 @@ function validateRedirectUri(value: string, requestOrigin: string): string {
 /**
  * Throw when cookie transport would combine with software device binding.
  * HttpOnly deliberately makes the token unavailable to the JavaScript key
- * that must sign it, so the guarantees cannot be composed without weakening
+ * that must sign it, so the two guarantees cannot combine without weakening
  * one. Exported so non-React adapters enforce the same rule.
  */
 export function assertLogtoSessionCookieCompatibility(options: {
@@ -695,7 +696,7 @@ export function createLogtoSessionCookieHandler(
    * Every `Set-Cookie` a successful exchange or refresh should emit.
    *
    * The session cookie always; the ID token only when asked for, and only when
-   * it fits and has time left — an ID token cookie that outlives its token would
+   * it fits and has time left. An ID token cookie that outlives its token would
    * server-render a page as signed in for a bearer Convex refuses.
    */
   const sessionCookieHeaders = (result: {
@@ -707,8 +708,8 @@ export function createLogtoSessionCookieHandler(
     if (options.idTokenCookie === true) {
       const header = idTokenCookieHeader(result.idToken);
       // A token too large to store, or already expired, leaves the previous
-      // cookie in place rather than clearing it: the old one expires on its own,
-      // and clearing would turn a size problem into a sign-out.
+      // cookie in place rather than clearing it. The old one expires on its
+      // own, and clearing would turn a size problem into a sign-out.
       if (header !== null) headers.append("Set-Cookie", header);
     }
     return headers;
@@ -813,9 +814,9 @@ export function createLogtoSessionCookieHandler(
           );
           const everywhere = optionalBoolean(body, "everywhere") ?? false;
           const sessionToken = readCookie(request);
-          // Nothing to sign out of, but the answer still has to match the call:
-          // the client validates `signOutEverywhere` responses on `count`, and
-          // a bare `{}` fails that check, retries twice and then throws — a
+          // Nothing to sign out of, but the answer still has to match the call.
+          // The client validates `signOutEverywhere` responses on `count`, and
+          // a bare `{}` fails that check, retries twice and then throws, a
           // hard error for what is a clean no-op.
           if (sessionToken === null)
             return jsonResponse(
@@ -963,7 +964,7 @@ export function createLogtoSessionCookieHandler(
                 renamed: await options.action(renameSession, {
                   sessionToken,
                   targetSessionId: requiredString(body, "targetSessionId"),
-                  // Absent means "clear it" — the op itself carries the intent.
+                  // Absent means "clear it"; the op itself carries the intent.
                   label: optionalDisplayString(body, "label"),
                 }),
               },
@@ -998,7 +999,7 @@ export function createLogtoSessionCookieHandler(
         return jsonResponse(
           {
             // Structured so the client can classify it instead of seeing a bare
-            // "responded 400" — that is how the signOutEverywhere upgrade hint
+            // "responded 400". That is how the signOutEverywhere upgrade hint
             // used to get lost.
             error: {
               kind: "terminal",
@@ -1127,14 +1128,14 @@ export function createLogtoSessionCookieHandler(
           headers,
         };
       } catch {
-        // Every failed seed returns empty without changing the cookie —
-        // including an error this transport cannot classify, which is what an
+        // Every failed seed returns empty without changing the cookie. That
+        // includes an error this transport cannot classify, which is what an
         // unreachable Logto looks like (the component rethrows a raw `fetch`
         // failure unclassified on purpose, so that an outage does not force a
         // reauthentication). Rethrowing would turn that outage into a 500
         // document for every signed-in visitor, while the browser `/token`
-        // route — the authoritative one — treats the same failure as transient
-        // and keeps the session. A genuine misconfiguration still surfaces
+        // route, the authoritative one, treats the same failure as transient
+        // and keeps the session. A genuine misconfiguration still shows up
         // there, loudly, on the first request after hydration.
         return {
           initialToken: null,
@@ -1436,8 +1437,9 @@ function readPostLogoutRedirectUri(args: unknown): string | undefined {
 }
 
 /**
- * Browser adapter for `SessionAuthEngine`. Session-token arguments are ignored:
- * the browser can only present the HttpOnly cookie through Fetch credentials.
+ * Browser adapter for `SessionAuthEngine`. It ignores session-token arguments,
+ * because the browser can only present the HttpOnly cookie through Fetch
+ * credentials.
  */
 export function createLogtoSessionCookieTransport(
   sessionApi: LogtoSessionApi,

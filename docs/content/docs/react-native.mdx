@@ -44,10 +44,10 @@ these use your app's URL scheme, not `http(s)`:
 - **Redirect URIs** → `io.logto://callback`
 - **Post sign-out redirect URIs** → `io.logto://callback`
 
-**Required: use an RSA signing key.** Convex only accepts ID tokens signed with
-**RS256** (or EdDSA). Logto signs with **ES384** by default, which Convex silently
-rejects: sign-in looks like it works, but `ctx.auth.getUserIdentity()` returns
-`null`. Rotate the key once per tenant. In the Logto Console, open **Tenant
+**Rotate the signing key to RSA first.** Convex only accepts ID tokens signed with
+**RS256** (or EdDSA). Logto signs with **ES384** by default, which Convex rejects
+without an error. Sign-in looks like it works, but `ctx.auth.getUserIdentity()`
+returns `null`. Rotate the key once per tenant. In the Logto Console, open **Tenant
 settings → OIDC configs**, click **Rotate private keys**, and choose **RSA**. Logto
 keeps the old key during a transition, so existing sessions stay signed in.
 
@@ -60,7 +60,7 @@ npx convex env set LOGTO_APP_ID   your-app-id
 
 ## 3. Wire Convex
 
-Exactly the same as the web setup; the backend is framework-agnostic:
+The same as the web setup; the backend is framework-agnostic:
 
 ```ts title="convex/auth.config.ts"
 import { logtoAuthConfig } from "convex-logto";
@@ -85,8 +85,8 @@ The native redirect URI is your `app.json` `scheme` plus a path:
 }
 ```
 
-On Android the scheme **must** be set here; on iOS it's listened to regardless.
-It must match the redirect URI you registered in step 1.
+On Android you **must** set the scheme here; iOS listens for it regardless. It
+must match the redirect URI you registered in step 1.
 
 ## 5. Wrap your app
 
@@ -167,7 +167,7 @@ Full runnable app: [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tre
 | Sign-in callback | a `/callback` route you add | none; `signIn` resolves in place |
 | `signIn()` default | `${origin}/callback` | the provider's `redirectUri` |
 | Sign-out | federated redirect to origin | revokes tokens + clears storage (no browser) |
-| Loading | SSR-safe, renders children immediately | `fallback` covers the one-time config fetch |
+| Loading | SSR-safe, renders children with no fallback | `fallback` covers the one-time config fetch |
 
 Everything else is shared: `logtoAuthConfig`, `logtoConfigQuery`, the webhook
 [user-sync](/docs/webhook-sync), and reading `ctx.auth.getUserIdentity()`.
@@ -270,8 +270,8 @@ Logto has the browser, routine on a low-memory Android device, the promise dies
 with the process and the redirect arrives as a cold-start deep link instead. Hand
 it to `completeSignIn(url)` and the exchange finishes as normal; without it the
 user comes back signed in at Logto and signed out in the app, with no error.
-(Web needs no equivalent: the callback is in the URL, so the provider re-reads it
-on the next mount.)
+Web needs no equivalent, because the callback is in the URL and the provider
+re-reads it on the next mount.
 
 ```tsx title="Main.tsx"
 import * as Linking from "expo-linking";
@@ -288,19 +288,19 @@ useEffect(() => {
 }, [completeSignIn]);
 ```
 
-Pass every deep link through. Anything that is not this app's `redirectUri`, or
-that carries no OIDC response, is ignored without disturbing a sign-in already in
-progress, and delivering the same URL twice (both entry points fire on some
-Android returns) completes it once. A user who *cancelled* in the browser is deliberately not recoverable
-this way: cancelling discards the OIDC state so a later deep link cannot replay
-it. Tapping Sign in again is instant, since Logto's browser SSO session is still
-there.
+Pass every deep link through. `completeSignIn` ignores anything that is not
+this app's `redirectUri`, or that carries no OIDC response, without disturbing a
+sign-in already in progress, and delivering the same URL twice (both entry
+points fire on some Android returns) completes it once. A user who *cancelled*
+in the browser is not recoverable this way, on purpose. Cancelling discards the
+OIDC state, so a later deep link cannot replay it. Tapping Sign in again is
+instant, since Logto's browser SSO session is still there.
 
 Native session mode keeps the rotating session token, OAuth state stash, and
 **short-lived ID token** in deployment-namespaced SecureStore. Persisting the ID
-token is a deliberate cold-start choice: while it remains fresh, the app can
-authenticate immediately without refresh only while the paired component
-Session marker remains. An orphan ID token is cleared. Unlike AsyncStorage, the
+token is a cold-start choice. While the token is fresh and its paired component
+Session marker is still present, the app authenticates on launch without a
+refresh. The provider clears an orphan ID token. Unlike AsyncStorage, the
 bearer remains under the iOS Keychain / Android encrypted keystore. A stale ID
 token causes the normal server refresh and rolls the SecureStore session token
 before Convex receives the new ID token.
@@ -308,7 +308,7 @@ before Convex receives the new ID token.
 Reactive revocation is on by default and uses the same `sessionValid`
 subscription as the web provider. `signOut()` clears SecureStore, revokes the
 server session, and opens Logto's end-session URL in the system browser unless
-`federated: false` is passed.
+you pass `federated: false`.
 `signOutEverywhere({ postLogoutRedirectUri? })` instead records subject-wide
 logical revocation, removes physical Session rows in bounded batches, lets the
 same subscription sign out other live devices, and always ends this device's
@@ -324,7 +324,7 @@ Logto browser session.
 | ID token default | sessionStorage | Expo SecureStore for fast cold starts |
 | Cross-context coordination | storage events + Web Locks | one installed app / SecureStore |
 | Cookie transport | optional, same-site only | unavailable |
-| Software device binding | optional on web | intentionally absent; SecureStore uses the OS keystore |
+| Software device binding | optional on web | none, on purpose; SecureStore uses the OS keystore |
 
 Full runnable app: [`examples/expo-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo-session),
 the native counterpart of `vite-react-session`, with the same eleven-function
@@ -333,12 +333,12 @@ bridge-mode [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/
 
 Native session mode therefore has no `tokenStorage`, `cookieTransport`, or
 `deviceBinding` provider props. If SecureStore is unavailable or fails, auth
-fails loudly through `onAuthError`; a sign-in action or system-browser
-initiation failure is likewise reported before `signIn()` rejects. It never
-falls back to AsyncStorage or an unbound plaintext credential.
+reports the failure through `onAuthError`; the provider likewise reports a
+sign-in action or system-browser initiation failure before `signIn()` rejects.
+It never falls back to AsyncStorage or an unbound plaintext credential.
 
 ## Expo SDK and `@logto/rn` versions
 
 This repository tests `@logto/rn@1.2` with Expo SDK 56. Keep the Logto adapter
-and Expo modules within their declared peer ranges when upgrading; no SDK 53
-downgrade is required for the versions shown in this guide.
+and Expo modules within their declared peer ranges when upgrading; the versions
+in this guide need no SDK 53 downgrade.

@@ -166,8 +166,9 @@ function makeHarness(options?: {
     navigate,
     onAuthError,
     sleep: () => Promise.resolve(), // skip retry backoff in tests
-    // Off unless a test asks for it: the recovery loop only ends when a refresh
-    // succeeds, so a no-wait default would spin in every transient-failure test.
+    // Off unless a test asks for it. The recovery loop only ends when a
+    // refresh succeeds, so a no-wait default would spin in every
+    // transient-failure test.
     recoverySleep:
       options?.recoverySleep ?? (() => new Promise<void>(() => {})),
   });
@@ -391,7 +392,7 @@ describe("SessionStorageArea", () => {
 
     expect(store.readSession()).toBeNull();
     expect(removeAttempts).toBe(1);
-    // The barrier stays clean — only sign-out may fail over a survivor.
+    // The barrier stays clean; only sign-out may fail over a survivor.
     await expect(store.flush()).resolves.toBeUndefined();
     await expect(store.assertCredentialsRemoved()).rejects.toThrow(
       /durably remove/,
@@ -447,7 +448,7 @@ describe("SessionStorageArea", () => {
   });
 
   it("does not report durable removal for an area that never accepted a write", async () => {
-    // "Block all cookies", a sandboxed iframe, or blocked site data: every
+    // With "block all cookies", a sandboxed iframe, or blocked site data, every
     // access throws, so the credential only ever lived in memory. Reporting its
     // removal would wedge sign-in, sign-out and refresh for the whole page.
     const blocked = () => {
@@ -483,7 +484,8 @@ describe("SessionStorageArea", () => {
 
     store.clearAll();
 
-    // The stash holds the OIDC `state`, not a bearer — not a credential leak.
+    // The stash holds the OIDC `state`, not a bearer, so this is not a
+    // credential leak.
     await expect(store.flush()).resolves.toBeUndefined();
   });
 
@@ -718,7 +720,7 @@ describe("mount", () => {
     engine.start();
     expect((await settled(engine)).status).toBe("unauthenticated");
     expect(storage.readSession()).toBeNull();
-    expect(handlers.refresh).toHaveBeenCalledTimes(1); // terminal: no retries
+    expect(handlers.refresh).toHaveBeenCalledTimes(1); // terminal, no retries
   });
 
   it("transient refresh on restore → unauthenticated but the session token SURVIVES", async () => {
@@ -890,8 +892,8 @@ describe("callback", () => {
 
   it("waits for the superseded revoke before navigating away", async () => {
     // With no `navigate` prop the navigation is `location.replace`, which tears
-    // down the in-flight request — so a fire-and-forget revoke would be lost in
-    // exactly the default configuration.
+    // down the in-flight request, so the default configuration would drop a
+    // fire-and-forget revoke.
     const { engine, storage, handlers, navigate } = makeHarness({
       storedSession: { token: "old-token", sessionId: "old-session" },
     });
@@ -912,7 +914,7 @@ describe("callback", () => {
 
   it("never revokes the superseded session in cookie mode", async () => {
     // The stored value there is a marker, not a credential, and the same-origin
-    // sign-out route reads the *cookie* — which the callback just replaced. A
+    // sign-out route reads the *cookie*, which the callback just replaced. A
     // revoke by marker would sign the user straight back out.
     const { engine, storage, handlers } = makeHarness({
       storedSession: { token: "legacy-session-secret", sessionId: "old" },
@@ -958,8 +960,8 @@ describe("callback", () => {
 
     engine.start();
     await vi.waitFor(() => expect(handlers.callback).toHaveBeenCalled());
-    // The exchange is in flight, so no session is stored yet: sign-out has
-    // nothing local to revoke and must not be undone by the response.
+    // The exchange is in flight, so no session is stored yet. Sign-out has
+    // nothing local to revoke, and the response must not undo it.
     await engine.signOut();
     exchange.resolve(sessionResult(7));
     await vi.waitFor(() =>
@@ -997,8 +999,8 @@ describe("callback", () => {
 
   it("a sign-out during the storage flush does not flip back to authenticated", async () => {
     // The credentials are already written at this point, so sign-out finds and
-    // revokes the session properly — but the callback must not then re-assert
-    // an authenticated snapshot on top of it.
+    // revokes the session. The callback must not then re-assert an
+    // authenticated snapshot on top of it.
     const { engine, storage, handlers, onAuthError } = makeHarness();
     setURL("http://localhost:5173/callback?code=c1&state=s1");
     storage.stashTransaction({ state: "s1" });
@@ -1085,7 +1087,7 @@ describe("callback", () => {
 
   it("does not retry a transient exchange failure", async () => {
     // The component consumes the transaction row before it contacts Logto, so a
-    // second attempt can only report `transaction_not_found` — replacing the
+    // second attempt can only report `transaction_not_found`, replacing the
     // diagnosis Logto just gave with a stale-callback one.
     const { engine, storage, handlers, onAuthError } = makeHarness();
     setURL("http://localhost:5173/callback?code=c1&state=s1");
@@ -1102,9 +1104,9 @@ describe("callback", () => {
   });
 
   it("retries an exchange that never reached the deployment", async () => {
-    // A dropped connection or the transport deadline means the request may never
-    // have arrived, so nothing was consumed. Losing a sign-in to one bad packet
-    // is worse than an attempt that finds nothing.
+    // A dropped connection or the transport deadline means the request may
+    // never have arrived, so the component consumed nothing. Losing a sign-in
+    // to one bad packet is worse than an attempt that finds nothing.
     const { engine, storage, handlers } = makeHarness();
     setURL("http://localhost:5173/callback?code=c1&state=s1");
     storage.stashTransaction({ state: "s1" });
@@ -1118,8 +1120,9 @@ describe("callback", () => {
   });
 
   it("reports the first error when the retry finds the transaction gone", async () => {
-    // The retry proves the first attempt landed after all. `transaction_not_found`
-    // is the stale-callback diagnosis that would bury what actually went wrong.
+    // The retry proves the first attempt landed after all.
+    // `transaction_not_found` is the stale-callback diagnosis that would bury
+    // what went wrong.
     const { engine, storage, handlers, onAuthError } = makeHarness();
     setURL("http://localhost:5173/callback?code=c1&state=s1");
     storage.stashTransaction({ state: "s1" });
@@ -1212,7 +1215,8 @@ describe("fetchAccessToken", () => {
     storage.writeSession({ token: "t1", sessionId: "s1" });
     storage.writeIdToken(tokenA);
     expect(await engine.fetchAccessToken(false)).toBe(tokenA);
-    // Another tab rotated: new session token + new ID token landed in storage.
+    // Another tab rotated, so a new session token and a new ID token landed in
+    // storage.
     const tokenB = freshToken("b");
     storage.writeSession({ token: "t2", sessionId: "s1" });
     storage.writeIdToken(tokenB);
@@ -1466,9 +1470,9 @@ describe("signOut", () => {
 
   it("lets the user sign in again after a durable removal failure", async () => {
     // Signing in is how a user recovers from a storage fault. Before the
-    // barrier was split, the sign-out-era failure rejected sign-in's own flush
-    // forever: the authorize URL was minted, a server transaction row was
-    // spent, and the browser never left for Logto.
+    // barrier split, the sign-out-era failure rejected sign-in's own flush
+    // forever. The component minted the authorize URL and spent a server
+    // transaction row, and the browser never left for Logto.
     const sessionKey = "convex-logto:test:session";
     const local = persistentStorageStub(
       [[sessionKey, JSON.stringify({ token: "t1", sessionId: "s1" })]],
@@ -1494,9 +1498,9 @@ describe("signOut", () => {
   });
 
   it("keeps a completed refresh completed when a removal failed earlier", async () => {
-    // The rotation was consumed and the new credentials are stored. Reporting
-    // that as a failure would leave the tab unauthenticated while holding live
-    // credentials — on every refresh, for the life of the page.
+    // The refresh consumed the rotation and stored the new credentials.
+    // Reporting that as a failure would leave the tab unauthenticated while
+    // holding live credentials, on every refresh, for the life of the page.
     const sessionKey = "convex-logto:test:session";
     const local = persistentStorageStub(
       [[sessionKey, JSON.stringify({ token: "t1", sessionId: "s1" })]],
@@ -1510,7 +1514,7 @@ describe("signOut", () => {
     await expect(engine.signOut({ federated: false })).rejects.toMatchObject({
       name: "SessionSignOutError",
     });
-    // Same engine, same poisoned storage area: sign in again and refresh.
+    // Same engine, same poisoned storage area. Sign in again and refresh.
     storage.writeSession({ token: "t2", sessionId: "s1" });
     const rotated = freshToken();
     handlers.refresh.mockResolvedValue({
@@ -1683,7 +1687,7 @@ describe("signOut", () => {
 
 describe("server-held credential sign-out", () => {
   it("rejects and reports when the server revoke fails", async () => {
-    // Cookie mode: the credential is an HttpOnly cookie only the server can
+    // In cookie mode the credential is an HttpOnly cookie only the server can
     // expire. Reporting success would leave the user signed in.
     const { engine, storage, handlers, onAuthError } = makeHarness({
       serverHeldCredential: true,
@@ -1700,8 +1704,8 @@ describe("server-held credential sign-out", () => {
   });
 
   it("still resolves for a local credential, but never silently", async () => {
-    // A local session token is destroyed without the server, so a dead Logto
-    // must not block sign-out — the failure still has to surface.
+    // The client destroys a local session token without the server, so a dead
+    // Logto must not block sign-out. The failure still has to reach the app.
     const { engine, handlers, onAuthError } = makeHarness({
       storedSession: { token: "local-session", sessionId: "session-id-1" },
     });
@@ -1895,10 +1899,10 @@ describe("external events", () => {
   });
 
   it("handleRevoked adopts a credential another tab wrote instead of deleting it", async () => {
-    // The credential is shared by every tab on the origin, but the session id
-    // this engine watches is its own. Another tab signing in replaces that
-    // credential without telling us; revoking the session we *used* to hold must
-    // not delete the one that took its place.
+    // Every tab on the origin shares the credential, but the session id this
+    // engine watches is its own. Another tab signing in replaces that
+    // credential without telling us; revoking the session we *used* to hold
+    // must not delete the one that took its place.
     const { engine, storage } = makeHarness();
     storage.writeSession({ token: "t1", sessionId: "s1" });
     storage.writeIdToken(freshToken());
@@ -1987,7 +1991,7 @@ describe("session management", () => {
 
   it("rejects an over-long label locally instead of as a session death", async () => {
     // The component classifies an over-long label as a *terminal* session
-    // error, and terminal means "this session is gone" — so an app following
+    // error, and terminal means "this session is gone", so an app following
     // that taxonomy would sign the user out over a long device name.
     const { engine, storage, handlers } = makeHarness();
     storage.writeSession({ token: "t1", sessionId: "s1" });
@@ -2006,8 +2010,8 @@ describe("session management", () => {
       engine.renameSession("s2", "🔐".repeat(64)),
     ).resolves.toBeUndefined();
     // The local check measures what the component would store, not the raw
-    // input: whitespace collapses and invisible characters drop out first, so
-    // a label the component accepts is never refused here.
+    // input. Whitespace collapses and invisible characters drop out first, so
+    // this never refuses a label the component accepts.
     await expect(
       engine.renameSession("s2", "x  ".repeat(32)),
     ).resolves.toBeUndefined();
@@ -2107,7 +2111,7 @@ describe("session management", () => {
     );
   });
 
-  it("surfaces an ordinary failure unchanged", async () => {
+  it("passes an ordinary failure through unchanged", async () => {
     const failure = transientError();
     const { engine, storage, handlers } = makeHarness();
     storage.writeSession({ token: "t1", sessionId: "s1" });
@@ -2176,7 +2180,7 @@ describe("auth phase events", () => {
   const phasesOf = (events: LogtoAuthEvent[]) =>
     events.map((event) => event.phase);
 
-  /** Resolves once the mount's one settle phase has been reported. */
+  /** Resolves once the engine has reported the mount's one settle phase. */
   async function settleEvent(events: LogtoAuthEvent[]): Promise<void> {
     for (let i = 0; i < 50; i += 1) {
       if (
@@ -2370,8 +2374,9 @@ describe("auth phase events", () => {
   });
 
   it("closes the refresh span when a sign-out lands mid-refresh", async () => {
-    // A consumer pairing refresh_started with an end phase must never be left
-    // holding an open span because the generation fence discarded the result.
+    // The engine must never leave a consumer pairing refresh_started with an
+    // end phase holding an open span because the generation fence discarded
+    // the result.
     const refresh = deferred<{
       idToken: string;
       sessionToken: string;
@@ -2452,9 +2457,9 @@ describe("token exchange", () => {
   });
 
   it("forwards forceRefresh, and omits it entirely when unasked", async () => {
-    // Omitted rather than sent as `false`: the arg is optional on the action,
-    // and a client that always sent it would make every existing call look
-    // like a deliberate cache decision in the deployment's logs.
+    // Omitted rather than sent as `false`, because the arg is optional on the
+    // action, and a client that always sent it would make every existing call
+    // look like a deliberate cache decision in the deployment's logs.
     const harness = makeHarness({
       storedSession: { token: "session-token", sessionId: "session-1" },
       storedIdToken: freshToken(),
@@ -2600,7 +2605,7 @@ describe("token exchange", () => {
 });
 
 describe("getIdToken", () => {
-  it("returns the stored Short bearer while it is still fresh", async () => {
+  it("returns the stored short bearer while it is still fresh", async () => {
     const token = freshToken();
     const harness = makeHarness({
       storedSession: { token: "session-token", sessionId: "session-1" },

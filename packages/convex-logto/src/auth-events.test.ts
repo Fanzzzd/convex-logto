@@ -53,7 +53,7 @@ describe("auth event emitter", () => {
       () => clock,
     );
 
-    // No bootstrap_start at all (an engine already past it): the only honest
+    // No bootstrap_start at all (an engine already past it), so the only honest
     // baseline is the first event.
     clock = 900;
     emit("refresh_started");

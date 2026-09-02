@@ -4,17 +4,19 @@ const DEVICE_KEY_DATABASE_VERSION = 1;
 const DEVICE_KEY_STORE = "keys";
 const DEVICE_KEY_ID = "ecdsa-p256";
 
-/** Browser-side capability consumed by the framework-free session engine. */
+/** Browser-side capability the framework-free session engine consumes. */
 export type SessionDeviceBinding = {
   /** Open persistent storage and create the non-extractable key if needed. */
   prepare(): Promise<void>;
-  /** Public half captured by the component when the session is created. */
+  /** Public half the component captures when it creates the session. */
   getPublicKey(): Promise<LogtoSessionDevicePublicKey>;
   /** Sign the rotating session token without exposing the private key. */
   sign(sessionToken: string): Promise<string>;
 };
 
-/** Minimal persistence seam: IndexedDB in production, in-memory in unit tests. */
+/**
+ * Minimal persistence seam. IndexedDB in production, in-memory in unit tests.
+ */
 export type SessionDeviceKeyRepository = {
   read(): Promise<unknown>;
   /** Returns false when another tab won the first-write race. */
@@ -27,7 +29,7 @@ function unavailable(cause?: unknown): SessionDeviceBindingError {
   return new SessionDeviceBindingError(
     "convex-logto: device binding requires working IndexedDB to persist its " +
       "non-extractable key. Disable deviceBinding or make IndexedDB available; " +
-      "silent fallback to an unbound session is not allowed.",
+      "the library never falls back to an unbound session.",
     cause === undefined ? undefined : { cause },
   );
 }
@@ -184,20 +186,20 @@ class IndexedDbDeviceKeyRepository implements SessionDeviceKeyRepository {
           .add(keyPair, DEVICE_KEY_ID);
         let alreadyStored = false;
         request.onerror = (event) => {
-          // A key is already stored — another tab won the race. Swallow the
+          // A key is already stored, so another tab won the race. Swallow the
           // error so the transaction still commits, and report the loss;
-          // anything else must abort and be raised.
+          // anything else must abort and reach the caller.
           if (request.error?.name !== "ConstraintError") return;
           event.preventDefault();
           event.stopPropagation();
           alreadyStored = true;
         };
-        // Settle on the *transaction*, not the request: a successful `add` is
-        // still undone by a commit-time abort (`QuotaExceededError`), which
-        // IndexedDB reports here and not on the request. Reporting the key as
-        // persisted when it is not degrades the binding to this tab's memory —
-        // the next reload generates a different key, every proof is rejected,
-        // and the component deletes the session on sight. Failing instead
+        // Settle on the *transaction*, not the request. A commit-time abort
+        // (`QuotaExceededError`) still undoes a successful `add`, and IndexedDB
+        // reports it here and not on the request. Reporting the key as
+        // persisted when it is not degrades the binding to this tab's memory.
+        // The next reload generates a different key, the component rejects
+        // every proof, and it deletes the session on sight. Failing instead
         // reaches the module's stated contract: no silent fallback.
         transaction.oncomplete = () => resolve(!alreadyStored);
         transaction.onabort = () => reject(transaction.error ?? unavailable());

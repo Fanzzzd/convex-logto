@@ -26,7 +26,7 @@ All three ways to use auth: declarative `<Authenticated>` gating, the `useLogtoA
 
 ## Users table + roles (RBAC)
 
-The opt-in **webhook-synced `users` table** pattern: a table you own, with a
+The opt-in webhook-synced `users` table pattern is a table you own, with a
 per-app `role`. (Full write-up: [Webhook sync](../../docs/content/docs/webhook-sync.mdx).)
 
 **Try it:**
@@ -56,20 +56,20 @@ per-app `role`. (Full write-up: [Webhook sync](../../docs/content/docs/webhook-s
 - **The webhook writes only Logto-owned fields (email, name, status), never
   `role`.** Otherwise a Logto profile edit (`User.Data.Updated`) would reset
   everyone's role to the default.
-- **The webhook never creates rows; it only syncs existing ones.** Rows are created
-  by the onboarding mutation, from the logged-in state. `User.Created` does **not**
+- **The webhook never creates rows; it only syncs existing ones.** The onboarding
+  mutation creates rows, from the logged-in state. `User.Created` does **not**
   fire for a user who already existed in Logto (or who arrived via another app on the
   same Logto), so a webhook-only approach would leave them permanently row-less.
   (That's the bug that bites component-owned auth tables.)
-- **Deletion is a tombstone**, not a row removal: PII is scrubbed, but the row stays
-  so authz fails closed and nothing referencing the user by id dangles.
+- **Deletion is a tombstone**, not a row removal. The handler scrubs PII, but the
+  row stays so authz fails closed and nothing referencing the user by id dangles.
 
-**Demo vs production:** a real app creates everyone as `user` and grants admin out
+**Demo vs production.** A real app creates everyone as `user` and grants admin out
 of band, by a Convex dashboard mutation, an internal mutation, or an allowlist,
 never self-service. The "become admin" button exists only so you can try the gate
 from both sides.
 
-**Prove the gate:** `pnpm test` (after `npx convex dev` has generated types) runs
+**Prove the gate.** `pnpm test` (after `npx convex dev` has generated types) runs
 `convex/rbac.test.ts`, which checks that a pre-existing Logto user still gets a row
-on first sign-in, non-admins are denied `adminStats`, a profile edit can't reset a
+on first sign-in, `adminStats` denies non-admins, a profile edit can't reset a
 role, and a deleted user fails closed.

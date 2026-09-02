@@ -4,19 +4,19 @@ description: Reduce the XSS and supply-chain paths that can expose browser-held 
 ---
 
 Both [bridge mode](/docs/quick-start) and [session mode](/docs/session-mode)
-ultimately give JavaScript a bearer ID token so Convex can authenticate requests.
-The modes limit the consequences of token theft differently; neither makes arbitrary
+give JavaScript a bearer ID token so Convex can authenticate requests. The modes
+limit the consequences of token theft differently; neither makes arbitrary
 same-origin JavaScript safe. Treat every script allowed to run in your application as
 part of the authentication boundary.
 
 This is a starting baseline, not a policy you can deploy without testing. Replace the
-example origins, inventory what your production build actually loads, roll restrictive
+example origins, inventory what your production build loads, roll restrictive
 headers out in report-only mode, and remove every source you do not need.
 
 ## 1. Content Security Policy
 
 Serve CSP as an HTTP response header. A `<meta http-equiv>` policy cannot enforce
-every directive below; most importantly, `frame-ancestors` is header-only. Start with
+every directive below; `frame-ancestors` in particular is header-only. Start with
 this policy, replacing the Convex and Logto hosts with the exact production values:
 
 ```http
@@ -24,20 +24,20 @@ Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none';
 ```
 
 - Keep both the `https://` and `wss://` forms of the Convex deployment URL.
-  `connect-src 'self'` does not cover WebSockets consistently across browsers.
+  Some browsers do not treat `connect-src 'self'` as covering WebSockets.
 - Bridge mode calls the Logto endpoint from the browser, so include its exact origin.
   Top-level OAuth navigation is separate from `connect-src`, but discovery and token
   requests are not. Remove this source only when the browser makes no Logto requests.
-- If the [cookie transport](/docs/session-mode#httponly-cookie-transport-optional)
-  is mounted at a same-origin path, `'self'` already covers it. If it uses another
+- If you mount the [cookie transport](/docs/session-mode#httponly-cookie-transport-optional)
+  at a same-origin path, `'self'` already covers it. If it uses another
   origin on the same site, add that exact HTTPS origin to `connect-src`; the
   `https://api.example.com` source above represents that optional endpoint. Remove
-  it when cookie transport is unused or same-origin.
+  it when you do not use cookie transport or it is same-origin.
 - Add narrow `img-src`, `font-src`, `style-src`, `worker-src`, and `frame-src`
   sources only when the production application needs them. Do not replace the policy
   with broad `https:` or wildcard sources just to silence a violation.
 
-`script-src 'self'` deliberately omits `'unsafe-inline'` and `'unsafe-eval'`. A
+`script-src 'self'` omits `'unsafe-inline'` and `'unsafe-eval'` on purpose. A
 production SPA build should load scripts from files. If SSR or a framework emits an
 inline bootstrap script, authorize that script with a per-response nonce or a stable
 hash; do not enable all inline script. Development HMR may require a looser policy,
@@ -52,9 +52,9 @@ CSP reduces the ways an attacker can introduce or execute code. It does **not**
 sandbox code that the policy already allows. A compromised same-origin bundle, an
 allowed analytics tag, or script injected through an already-permitted source runs
 with the application's authority. At that point every JavaScript-readable token is
-available, and even an HttpOnly cookie can be used for same-origin actions while the
-page is open. CSP is a boundary on what may execute, not a repair for trusted code
-that has become malicious.
+available, and that script can use even an HttpOnly cookie for same-origin actions
+while the page is open. CSP is a boundary on what may execute, not a repair for
+trusted code that has become malicious.
 
 See the [MDN CSP guide](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP)
 for directive and deployment details.
@@ -63,7 +63,7 @@ for directive and deployment details.
 
 Trusted Types turn DOM injection sinks such as `innerHTML` from string-taking APIs
 into typed boundaries. Begin in report-only mode so violations identify the code and
-widgets that must be removed or put behind a reviewed sanitizer:
+widgets you must remove or put behind a reviewed sanitizer:
 
 ```http
 Content-Security-Policy-Report-Only: require-trusted-types-for 'script'; report-to csp
@@ -71,7 +71,7 @@ Reporting-Endpoints: csp="https://app.example.com/csp-reports"
 ```
 
 After the reports are clean, append `require-trusted-types-for 'script'` to the
-enforced CSP. If the app genuinely needs an HTML-producing policy, also use the
+enforced CSP. If the app needs an HTML-producing policy, also use the
 `trusted-types` directive to allow only named policies. Do not add a default policy
 that returns its input unchanged; that converts enforcement into an annotation without
 sanitization.
@@ -94,7 +94,7 @@ cover the two sides of this boundary.
 
 ## 3. Third-party scripts and dependencies
 
-Third-party JavaScript is the dominant practical token-theft vector in an otherwise
+Third-party JavaScript is the most common way tokens get stolen from an otherwise
 well-maintained SPA. Code loaded from a tag manager, analytics vendor, support widget,
 or compromised npm dependency receives the same origin privileges as application
 code. CSP cannot distinguish its intended behavior from theft after it starts.
@@ -113,7 +113,7 @@ code. CSP cannot distinguish its intended behavior from theft after it starts.
   ```
 
   SRI pins exact bytes. It works for versioned, immutable resources; it does not
-  protect a tag-manager URL whose contents are expected to change.
+  protect a tag-manager URL whose contents change by design.
 - Commit the package-manager lockfile, review dependency and lockfile changes, and
   prefer releases with verifiable registry provenance. A lockfile makes installs
   repeatable; it does not prove the pinned package is trustworthy.
@@ -129,20 +129,20 @@ for hash generation and cross-origin requirements.
 ## 4. Minimize scopes and resources
 
 Request only the identity fields and API permissions the application consumes. A
-stolen token cannot exercise a permission it was never granted.
+stolen token cannot exercise a permission Logto never granted it.
 
 The package always includes the OIDC scopes it needs: `openid`, `profile`,
 `offline_access`, and `email`. Treat every value you add beyond those as a reviewed
 permission:
 
-- In session mode, `scopes` and `resources` have been configured on
-  `logtoSessionApi(...)` since 0.4.0. They are server-controlled; the browser cannot
+- In session mode, you configure `scopes` and `resources` on
+  `logtoSessionApi(...)` (since 0.4.0). They are server-controlled; the browser cannot
   elevate them for an individual sign-in.
-- In bridge mode, pass only necessary extra `scopes` and `resources` to
-  `ConvexLogtoProvider`, and keep the corresponding Logto API resource and
-  organization permissions equally narrow.
+- In bridge mode, pass only the extra `scopes` and `resources` you need to
+  `ConvexLogtoProvider`, and keep the matching Logto API resource and
+  organization permissions as narrow.
 
-Review scopes when a feature is removed as well as when one is added. Separating
+Review scopes when you remove a feature as well as when you add one. Separating
 Logto applications by environment also prevents a development token from acquiring
 production authority.
 
@@ -171,12 +171,12 @@ Choose one step-up when off-device exfiltration is in scope:
   Convex client, and same-origin malicious script can still act through the app.
 - [Device binding](/docs/session-mode#device-binding-optional) keeps the token in
   JavaScript but requires proof from a non-extractable IndexedDB P-256 key on every
-  refresh and revocation operation. Prefer it for a static SPA when preventing a
-  copied token from working on another device is the goal. It does not stop script
+  refresh and revocation operation. Prefer it for a static SPA when the goal is to
+  stop a copied token from working on another device. It does not stop script
   already executing on the original origin from using the key.
 
 Cookie transport and device binding are mutually exclusive. Proof generation must
-sign the exact rotating token, while HttpOnly deliberately makes that token
+sign the exact rotating token, while HttpOnly exists to make that token
 unavailable to JavaScript; cookie transport also removes the off-device token-copy
 path that device binding addresses. Safari's storage eviction behavior is an
 additional reason not to combine them. The session-mode guide documents the loud

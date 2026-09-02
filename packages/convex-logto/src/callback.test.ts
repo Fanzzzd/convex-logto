@@ -9,7 +9,8 @@ describe("classifySignInSearch", () => {
   it("ignores URLs without a `state` param (not a sign-in redirect)", () => {
     expect(classifySignInSearch("")).toEqual({ kind: "none" });
     expect(classifySignInSearch("?foo=bar")).toEqual({ kind: "none" });
-    // A stray ?error= on an ordinary app route must NOT be read as a sign-in failure.
+    // A stray ?error= on an ordinary app route must NOT read as a sign-in
+    // failure.
     expect(classifySignInSearch("?error=invalid_scope")).toEqual({
       kind: "none",
     });
@@ -37,7 +38,7 @@ describe("classifySignInSearch", () => {
     }
   });
 
-  it("surfaces a setup error with its description and a hint", () => {
+  it("reports a setup error with its description and a hint", () => {
     const outcome = classifySignInSearch(
       "?error=invalid_scope&error_description=bad%20scope&state=xyz",
     );
@@ -49,7 +50,7 @@ describe("classifySignInSearch", () => {
     }
   });
 
-  it("surfaces an unknown error without inventing a hint", () => {
+  it("reports an unknown error without inventing a hint", () => {
     const outcome = classifySignInSearch("?error=server_error&state=xyz");
     expect(outcome.kind).toBe("error");
     if (outcome.kind === "error") {
@@ -79,7 +80,7 @@ describe("classifySignInSearch", () => {
 
 describe("callbackResolved (#14: a /callback URL must never wait forever)", () => {
   it("keeps waiting only while not authenticated, not timed out, and not errored", () => {
-    // The genuine in-flight exchange: hold the page until one signal arrives.
+    // The genuine in-flight exchange. Hold the page until one signal arrives.
     expect(
       callbackResolved({
         isAuthenticated: false,
@@ -92,7 +93,7 @@ describe("callbackResolved (#14: a /callback URL must never wait forever)", () =
   it("resolves as soon as the client is authenticated", () => {
     // Covers BOTH a successful first-time exchange (SDK flips this true as it
     // finishes) AND a stale/replayed callback URL where the user is already
-    // authenticated and no exchange — hence no SDK callback — will ever run.
+    // authenticated and no exchange, and so no SDK callback, will ever run.
     expect(
       callbackResolved({
         isAuthenticated: true,
@@ -103,7 +104,7 @@ describe("callbackResolved (#14: a /callback URL must never wait forever)", () =
   });
 
   it("resolves on the timeout safety net even if never authenticated", () => {
-    // The rare lost-session case: no exchange, no error, no auth — leave anyway.
+    // The rare lost-session case. No exchange, no error, no auth. Leave anyway.
     expect(
       callbackResolved({
         isAuthenticated: false,
@@ -114,10 +115,10 @@ describe("callbackResolved (#14: a /callback URL must never wait forever)", () =
   });
 
   it("resolves (returns to the app) on a failed exchange instead of crashing", () => {
-    // A stale/replayed callback: the SDK ran the exchange and it failed (state
-    // mismatch / spent code / lost sign-in session). Must resolve, not throw —
-    // matching react-oidc-context / @auth0/auth0-react, which never crash the app
-    // on a callback failure. The provider logs it and returns to the app.
+    // A stale/replayed callback. The SDK ran the exchange and it failed (state
+    // mismatch / spent code / lost sign-in session). Must resolve, not throw,
+    // matching react-oidc-context / @auth0/auth0-react, which never crash the
+    // app on a callback failure. The provider logs it and returns to the app.
     expect(
       callbackResolved({
         isAuthenticated: false,
@@ -136,11 +137,11 @@ describe("isSafeReturnTo (open-redirect guard)", () => {
   });
 
   it("rejects anything that could leave the origin", () => {
-    // Protocol-relative: the classic open-redirect vector.
+    // Protocol-relative, the classic open-redirect attack.
     expect(isSafeReturnTo("//evil.example.com")).toBe(false);
     // Absolute URLs.
     expect(isSafeReturnTo("https://evil.example.com")).toBe(false);
-    // Backslash variants: some parsers fold `\` into `/`, so `/\evil.com`
+    // Backslash variants. Some parsers fold `\` into `/`, so `/\evil.com`
     // becomes `//evil.com`.
     expect(isSafeReturnTo("/\\evil.example.com")).toBe(false);
     expect(isSafeReturnTo("/ok\\..\\evil")).toBe(false);

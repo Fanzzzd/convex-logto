@@ -3,12 +3,12 @@
  *
  * One type for all four entries. Bridge mode used to return the Logto SDK's
  * `IdTokenClaims` and session mode a bare `Record<string, unknown>`, so the same
- * token produced two different types — `user?.email` compiled in one mode and
- * not the other — while the whole point of session mode is that you can move to
+ * token produced two different types. `user?.email` compiled in one mode and
+ * not the other, while the whole point of session mode is that you can move to
  * it by changing an import.
  *
- * Display only. Nothing here is verified in the browser; Convex validates the
- * token, and a Convex function reads the same claims through
+ * Display only. The browser verifies nothing here; Convex validates the token,
+ * and a Convex function reads the same claims through
  * `ctx.auth.getUserIdentity()`, which is the only place they are trustworthy.
  *
  * The named claims are the ones Logto maps from a standard scope. The index
@@ -47,7 +47,7 @@ export type LogtoUserClaims = {
    * Scope {@link ORGANIZATION_ROLES_SCOPE}. Roles held within organizations,
    * each formatted `{organizationId}:{roleName}`.
    *
-   * Roles, not permissions: Logto puts fine-grained organization permissions
+   * Roles, not permissions. Logto puts fine-grained organization permissions
    * only in an organization token, which Convex cannot accept.
    */
   organization_roles?: string[];
@@ -65,11 +65,11 @@ export const ORGANIZATIONS_SCOPE = "urn:logto:scope:organizations";
  * Request the `organization_roles` claim in the ID token.
  *
  * Independent of {@link ORGANIZATIONS_SCOPE}, not implied by it and not implying
- * it: Logto advertises the two separately in `scopes_supported` and maps each to
- * its own claim, and a grant carries exactly the scopes that were requested. Ask
- * for both if you read both claims — a deployment that requests only this one
- * has no `organizations` claim, and every `assertOrganizationMember` check then
- * denies.
+ * it. Logto advertises the two separately in `scopes_supported` and maps each
+ * to its own claim, and a grant carries exactly the scopes the app requested.
+ * Ask for both if you read both claims. A deployment that requests only this
+ * one has no `organizations` claim, and every `assertOrganizationMember` check
+ * then denies.
  */
 export const ORGANIZATION_ROLES_SCOPE = "urn:logto:scope:organization_roles";
 
@@ -77,7 +77,7 @@ export const ORGANIZATION_ROLES_SCOPE = "urn:logto:scope:organization_roles";
  * Read a decoded payload as claims.
  *
  * A JWT payload is `Record<string, unknown>` as far as any decoder knows; this
- * is the single place that shape is narrowed, so the assumption is stated once
+ * is the single place that narrows the shape, so the assumption is stated once
  * rather than cast at four call sites. `sub` is the one claim an ID token cannot
  * omit, so a payload without it is not one.
  */
@@ -86,7 +86,7 @@ export function asUserClaims(
 ): LogtoUserClaims | undefined {
   if (payload === null || payload === undefined) return undefined;
   const { sub } = payload;
-  // Rebuilt rather than asserted: `sub` is the only claim the type promises, so
+  // Rebuilt rather than asserted. `sub` is the only claim the type promises, so
   // proving it is the whole narrowing. The copy is shallow and happens once per
   // token, not per render.
   return typeof sub === "string" ? { ...payload, sub } : undefined;

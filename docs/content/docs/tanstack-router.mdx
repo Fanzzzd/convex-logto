@@ -3,7 +3,7 @@ title: TanStack Router
 description: Mount ConvexLogtoProvider in a TanStack Router SPA. Soft navigation, a callback route, and beforeLoad guards.
 ---
 
-Finish [Quick start](/docs/quick-start) steps 1–3 (the backend is framework-agnostic),
+Finish [Quick start](/docs/quick-start) steps 1 to 3 (the backend is framework-agnostic),
 then wire the provider and callback the TanStack Router way.
 
 `configQuery` resolves the Logto endpoint and app id from the Convex deployment,
@@ -75,7 +75,7 @@ your `navigate`, but the router still renders that path first; without a route
 for it the user sees a 404 for the length of one round-trip. `replace: true`
 keeps the code-bearing URL out of history.
 
-Route guards work exactly as above: `useLogtoAuth()` from
+Route guards work as above. `useLogtoAuth()` from
 `convex-logto/react-session` has the same `isAuthenticated` / `isLoading` pair
 (both come from Convex, so they flip only once Convex has accepted the token),
 and it adds `signOutEverywhere()` plus the `listSessions()` /

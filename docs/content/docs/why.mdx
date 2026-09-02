@@ -4,7 +4,7 @@ description: What it does that hand-rolling doesn't, and when you should use som
 ---
 
 If you already run Logto, this page is the honest version of "should I install
-this". It is written to be useful when the answer is no.
+this". It should still be useful when the answer is no.
 
 ## When you should use something else
 
@@ -21,7 +21,7 @@ maintainer publishes. Logto's argument against them is that you can run it
 yourself, on your own data; if that is not an argument you need, take the
 first-party path.
 
-**You need organization *permissions*, not just roles.** Logto issues
+**You need organization *permissions*, and organization roles are not enough.** Logto issues
 fine-grained organization permissions only in an organization token, audienced
 `urn:logto:organization:{id}`, which Convex will not accept as a request
 credential. Membership and organization roles work here (they ride in the ID
@@ -38,7 +38,7 @@ you would write yourself:
   the force-refresh path, which has to clear the access token to make Logto
   rotate the **ID** token, and the one-render loading pulse that otherwise shows
   every user a logged-out flash right after sign-in.
-- `{ domain, applicationID }` in `auth.config.ts`, genuinely two lines.
+- `{ domain, applicationID }` in `auth.config.ts`, which is two lines.
 - The discovery that Logto's default OIDC signing algorithm is **ES384**, which
   Convex rejects. This costs an afternoon the first time; the package cannot fix
   it either, but it tells you up front (see [Quick start](/docs/quick-start)).
@@ -58,11 +58,11 @@ reachable at all.
 The reason this is not a weekend project is the failure modes, not the happy
 path. A Logto refresh token must never be presented twice; reuse detection
 destroys the whole grant, including sibling sessions that share it. So a refresh
-whose outcome is *unknown* cannot be retried and cannot be discarded; a
-deployment misconfiguration must never be classified as a dead session, or one
-wrong environment variable deletes every session in the deployment, one refresh
-at a time; and a token that was rotated has to be persisted before the failure
-that reported it is raised. Those rules are written down as
+whose outcome is *unknown* cannot be retried and cannot be discarded. The
+component must never classify a deployment misconfiguration as a dead session,
+or one wrong environment variable deletes every session in the deployment, one
+refresh at a time. And the component has to persist a rotated token before it
+raises the failure that reported it. Those rules are written down as
 [invariants](https://github.com/Fanzzzd/convex-logto/blob/main/AGENTS.md#conventions),
 each with a regression test.
 
@@ -72,10 +72,11 @@ to session liveness, so a revoked session drops the client live rather than up t
 an hour later.
 
 **[Webhook sync](/docs/webhook-sync)** and **[back-channel
-logout](/docs/backchannel-logout)**: signature verification, replay containment,
-bounded bodies, and the specific decision to *tolerate* Logto payload drift
-rather than reject it, because Logto retries a 5xx and not a 4xx, so a strict
-validator turns a schema change into silent event loss.
+logout](/docs/backchannel-logout)** need signature verification, replay
+containment, and bounded bodies. They also carry the specific decision to
+*tolerate* Logto payload drift rather than reject it, because Logto retries a
+5xx and not a 4xx, so a strict validator turns a schema change into silent event
+loss.
 
 ## The shape of the promise
 
@@ -89,6 +90,6 @@ validator turns a schema change into silent event loss.
 
 ## Status
 
-Pre-1.0 and honest about it: breaking changes land in minor versions until 1.0.
+Pre-1.0, so breaking changes land in minor versions until 1.0.
 The [roadmap issue](https://github.com/Fanzzzd/convex-logto/issues/35) tracks
 what "1.0" means and what is still missing.

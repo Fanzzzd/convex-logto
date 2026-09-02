@@ -2,7 +2,7 @@
 // convex-logto uses ConvexProviderWithAuth internally, so these work unchanged.
 // The `me` query runs only inside <Authenticated>, so it never flashes null first.
 // The provider is SSR-safe and reports "loading" on the server, so SSR renders the
-// <AuthLoading> branch — these need no special handling.
+// <AuthLoading> branch. These need no special handling.
 import {
   Authenticated,
   AuthLoading,
@@ -26,7 +26,7 @@ export function DeclarativeGate() {
         <p>You are signed out.</p>
       </Unauthenticated>
       <Authenticated>
-        <p>Signed in — your Convex identity:</p>
+        <p>Signed in. Your Convex identity:</p>
         <Me />
       </Authenticated>
     </>

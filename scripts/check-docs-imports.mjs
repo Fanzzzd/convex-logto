@@ -1,15 +1,15 @@
 // Every name the docs import from `convex-logto` has to exist.
 //
-// This is the drift that keeps happening, and it is silent in both directions:
-// nothing compiles an `.mdx` code fence, and the exports map has no idea the
+// This is the drift that keeps happening, and it is silent in both directions.
+// Nothing compiles an `.mdx` code fence, and the exports map has no idea the
 // docs exist. A renamed export leaves the docs telling readers to import
-// something that is gone — which they discover as a build error in *their*
+// something that is gone, which they discover as a build error in *their*
 // project, on the version they just installed.
 //
-// Deliberately only the import lines. Making every fenced snippet typecheck
+// Only the import lines, on purpose. Making every fenced snippet typecheck
 // would mean giving each one a preamble it does not need to be read, and the
 // churn would make the docs worse to serve a gate. An import line is the part a
-// reader copies verbatim and the part a rename actually breaks.
+// reader copies verbatim and the part a rename breaks.
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +18,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const docsDir = resolve(repoRoot, "docs/content/docs");
 const distDir = resolve(repoRoot, "packages/convex-logto/dist");
 
-/** Entry subpath -> the declaration file that states its public surface. */
+/** Entry subpath -> the declaration file that lists its public exports. */
 const ENTRIES = {
   "convex-logto": "index.d.ts",
   "convex-logto/react": "react.d.ts",
@@ -31,7 +31,7 @@ const ENTRIES = {
  * The emitted `export { ... }` list, not every declaration in the file.
  *
  * tsup emits a `declare class` for anything an exported type mentions, so
- * scanning declarations would accept names no consumer can import — passing on
+ * scanning declarations would accept names no consumer can import, and pass on
  * exactly the drift this exists to catch.
  */
 function exportedNames(declarationFile) {
@@ -74,7 +74,7 @@ const problems = [];
 for (const file of readdirSync(docsDir).filter((n) => n.endsWith(".mdx"))) {
   const text = readFileSync(join(docsDir, file), "utf8");
   for (const [, , bindings, specifier] of text.matchAll(IMPORT)) {
-    // Subpaths with no importable surface of their own — `convex.config` is a
+    // Subpaths with no named exports of their own. `convex.config` is a
     // default export the Convex CLI consumes, never a named import.
     if (!surface.has(specifier)) {
       problems.push(`${file}: imports from unknown entry "${specifier}"`);

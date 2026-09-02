@@ -38,10 +38,10 @@ A time-bounded authorization attempt that correlates sign-in initiation with cal
 _Avoid_: sign-in session
 
 **Reuse window**:
-The grace period in which a recently superseded Session-token generation is treated as an honest concurrent presentation.
+The grace period in which the component treats a recently superseded Session-token generation as an honest concurrent presentation.
 
 **Reuse handling**:
-The containment policy applied when a superseded Session-token generation is presented after its Reuse window.
+The containment policy the component applies when a client presents a superseded Session-token generation after its Reuse window.
 _Avoid_: family kill
 
 **Reactive revocation**:
@@ -56,7 +56,7 @@ A check that an authenticated bearer's subject has at least one active Session. 
 ### Organization concepts
 
 **Organization**:
-A Logto grouping that a Subject may belong to many of, each carrying its own roles and permissions. Orthogonal to Session: one Session can act in any Organization its Subject belongs to, and Organization membership neither creates nor ends a Session.
+A Logto grouping that a Subject may belong to many of, each carrying its own roles and permissions. Orthogonal to Session. One Session can act in any Organization its Subject belongs to, and Organization membership neither creates nor ends a Session.
 _Avoid_: tenant, workspace, team (those are the *application's* words for whatever it maps an Organization onto)
 
 **Organization membership**:
@@ -66,7 +66,7 @@ The list of Organizations a Subject belongs to. It travels in the Short bearer a
 A named role a Subject holds within one Organization. Like membership it travels in the Short bearer, as an `organization_roles` claim. Distinct from an Organization permission, which travels only in an Organization token.
 
 **Claim snapshot**:
-A value that was true when the Short bearer was issued and stays frozen until the next one is. Organization membership and Organization roles are claim snapshots: a Subject removed from an Organization keeps the claim until a fresh Short bearer is issued. Distinct from Reactive revocation, which is delivered *before* the Short bearer expires; nothing reactive exists for Organization membership.
+A value that was true when Logto issued the Short bearer and stays frozen until it issues the next one. Organization membership and Organization roles are claim snapshots. A Subject removed from an Organization keeps the claim until Logto issues a fresh Short bearer. Distinct from Reactive revocation, which arrives *before* the Short bearer expires; nothing reactive exists for Organization membership.
 _Avoid_: cached, stale (both suggest a copy that could have been refreshed; this one could not)
 
 **Organization permission**:
@@ -74,7 +74,7 @@ A fine-grained capability within one Organization. The only part of Logto's orga
 _Avoid_: organization scope (that is the OIDC-level word for how it is requested, not for the thing)
 
 **Organization token**:
-A resource-scoped access token for one Organization, audienced to that Organization rather than to the application. Convex cannot accept it: it is not the Short bearer. Distinct from Organization membership, which needs no token at all.
+A resource-scoped access token for one Organization, audienced to that Organization rather than to the application. Convex cannot accept it, because it is not the Short bearer. Distinct from Organization membership, which needs no token at all.
 _Avoid_: org JWT, organization credential
 
 **Resource token**:

@@ -35,7 +35,7 @@ description: Every export from convex-logto and its web, native, and session-mod
 | `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `config` / `configQuery` model; no callback route. |
 | `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signIn({ redirectUri? })` / `signOut({ postLogoutRedirectUri? })`. |
 | `ConvexLogtoSessionProvider` | `convex-logto/native-session` | React Native / Expo session provider using SecureStore + the system browser. |
-| `useLogtoAuth()` | `convex-logto/native-session` | Native session `{ isAuthenticated, isLoading, user, signIn, completeSignIn, signOut, signOutEverywhere, listSessions, renameSession, revokeSession }` plus the same token-exchange methods; no device-binding surface. |
+| `useLogtoAuth()` | `convex-logto/native-session` | Native session `{ isAuthenticated, isLoading, user, signIn, completeSignIn, signOut, signOutEverywhere, listSessions, renameSession, revokeSession }` plus the same token-exchange methods; no device-binding option. |
 
 ## Backend
 
@@ -43,9 +43,9 @@ description: Every export from convex-logto and its web, native, and session-mod
 
 Provider entry for `convex/auth.config.ts`. Reads `LOGTO_ENDPOINT` and
 `LOGTO_APP_ID` from the deployment env. Endpoints must be absolute HTTPS URLs
-without credentials, a query, or a fragment. Loopback HTTP is allowed for local
-development; a non-loopback self-hosted HTTP deployment must explicitly pass
-`allowInsecureHttp: true` (and accepts the resulting transport risk).
+without credentials, a query, or a fragment. Loopback HTTP works for local
+development; a non-loopback self-hosted HTTP deployment must pass
+`allowInsecureHttp: true` and accept the transport risk that comes with it.
 
 ```ts title="convex/auth.config.ts"
 import { logtoAuthConfig } from "convex-logto";
@@ -64,8 +64,8 @@ import { logtoConfigQuery } from "convex-logto";
 export const config = logtoConfigQuery();
 ```
 
-It applies the same endpoint policy as `logtoAuthConfig`. If you explicitly opt
-an HTTP-only self-hosted deployment in with `allowInsecureHttp: true`, pass the
+It applies the same endpoint policy as `logtoAuthConfig`. If you opt an
+HTTP-only self-hosted deployment in with `allowInsecureHttp: true`, pass the
 same option here so runtime-loaded browser/native config carries that policy.
 
 ### `logtoSync<DataModel>(handlers)`
@@ -79,8 +79,8 @@ Returns `{ sync }`, an internal mutation that maps Logto user events
 Registers the verified webhook route (serves `POST /logto/webhook`). Reads
 `LOGTO_WEBHOOK_SIGNING_KEY`. Enforces a freshness window on `createdAt` and a
 1 MB body cap. With `sessions: components.logto` ([session
-mode](/docs/session-mode)), deliveries are deduplicated by raw-body hash and
-user deletion/suspension revokes the user's sessions.
+mode](/docs/session-mode)), the route deduplicates deliveries by raw-body hash,
+and user deletion or suspension revokes the user's sessions.
 
 ```ts title="convex/http.ts"
 registerLogtoWebhook(http, internal.logto.sync, { sessions: components.logto });
@@ -95,13 +95,13 @@ webhook yourself instead of using `registerLogtoWebhook`.
 
 Registers `POST /logto/backchannel-logout` for [OIDC back-channel
 logout](/docs/backchannel-logout). Pass `sessions: components.logto`; the route
-reads `LOGTO_ENDPOINT` / `LOGTO_APP_ID` unless `endpoint` / `appId` overrides are
-provided. A custom `path` changes the registered URI.
+reads `LOGTO_ENDPOINT` / `LOGTO_APP_ID` unless you pass `endpoint` / `appId`
+overrides. A custom `path` changes the registered URI.
 
 The handler verifies `RS256` / `PS256` Logout Tokens against Logto's cached
 JWKS, enforces issuer, audience, time, event, subject/session, `jti`, and
 no-`nonce` rules, then revokes by `sid` or falls back to all sessions for `sub`.
-Verified `jti` values are deduplicated for 24 hours. Success (including no
+It deduplicates verified `jti` values for 24 hours. Success (including no
 matching session or a replay) is `200`; invalid requests are `400`, and bodies
 over 1 MB are `413`. Every response is `Cache-Control: no-store`.
 
@@ -117,15 +117,15 @@ enforces POST and form encoding. Options are `sessions`, optional `endpoint` /
 
 ### `verifyLogtoLogoutToken(token, opts?)`
 
-Low-level verifier used by the registered handler. Returns
+The low-level verifier the registered handler uses. Returns
 `{ issuer, subject?, sid?, jti }` after Web Crypto signature and OIDC claim
 validation; rejects invalid, encrypted, unsigned, or symmetrically signed
 tokens. It does not mutate or deduplicate sessions.
 
 ### `logtoSessionApi(component, opts?)`
 
-[Session mode](/docs/session-mode)'s server surface: pass `components.logto`
-(after `app.use(logto)`), re-export the eleven functions it returns. Reads
+[Session mode](/docs/session-mode)'s server half. Pass `components.logto`
+(after `app.use(logto)`) and re-export the eleven functions it returns. Reads
 `LOGTO_ENDPOINT`, `LOGTO_APP_ID`, and `LOGTO_CLIENT_SECRET`.
 
 ```ts title="convex/auth.ts"
@@ -149,11 +149,11 @@ export const {
 
 Options: `scopes` (server-configured; the browser can't request its own),
 `reuseWindowMs` (default 10s), `endpoint` / `appId` / `clientSecret` env
-overrides, and the same narrowly scoped `allowInsecureHttp` compatibility escape
-hatch described above.
+overrides, and the same `allowInsecureHttp` compatibility escape hatch
+described above.
 
 `resources` is the input to
-[the token exchange](#organization-and-api-resource-tokens): Logto refuses to
+[the token exchange](#organization-and-api-resource-tokens). Logto refuses to
 issue a token for a resource the grant never named, so the set is fixed before
 sign-in and every indicator must be registered. An unregistered one breaks
 sign-in outright. The scopes you want *from* those resources go in `scopes`;
@@ -161,37 +161,38 @@ naming the resource alone yields a token with none. `exposeAccessTokens` lets
 the token string reach the browser at all, and is off by default.
 
 `signOutEverywhere({ sessionToken, postLogoutRedirectUri? })` derives the subject
-inside the component and atomically records subject-wide logical revocation.
-Physical rows are removed in bounded batches and the action returns
+inside the component and records subject-wide logical revocation in one
+transaction. The action removes physical rows in bounded batches and returns
 `{ count, endSessionUrl }` after cleanup completes. The subject is never a
-public argument. Current and bounded recent token generations are accepted
-during their reuse windows; presenting a known superseded generation later
-contains only that stale Session and raises the normal terminal reuse error.
-If an action exceeds its bounded cleanup budget, the marker remains effective
-and retrying continues deletion. `count` is the number of physical rows removed
-by a completed cleanup, not the point when revocation became effective.
+public argument. The component accepts the current generation and a bounded set
+of recent ones during their reuse windows; presenting a known superseded
+generation later contains only that stale Session and raises the normal
+terminal reuse error. If an action exceeds its bounded cleanup budget, the
+marker remains effective and retrying continues deletion. `count` is the number
+of physical rows a completed cleanup removed, not the point when revocation
+became effective.
 
 `listSessions({ sessionToken, deviceProof? })` returns
 `{ sessions, truncated }`: at most 16 of the caller's own *live* sessions,
 newest first, each `{ sessionId, current, createdAt, lastRefreshedAt, label?,
-client?, deviceBound }`. Sessions killed by a revocation watermark are skipped
-without consuming a page slot (a bounded scan walks past them), so pending
-cleanup can never hide a live device; `truncated` reports both "more sessions
-exist" and "the scan stopped at its bound". `renameSession({ sessionToken, targetSessionId, label? })` and
+client?, deviceBound }`. The scan skips sessions killed by a revocation
+watermark without consuming a page slot (it is bounded and walks past them), so
+pending cleanup can never hide a live device; `truncated` reports both "more
+sessions exist" and "the scan stopped at its bound".
+`renameSession({ sessionToken, targetSessionId, label? })` and
 `revokeSession({ sessionToken, targetSessionId })` succeed or raise terminal
 `session_not_found`. They never report failure by returning; the `useLogtoAuth`
-wrappers resolve to `void`. All three
-derive the subject from the presented token exactly as `signOutEverywhere` does,
-so a `targetSessionId` owned by another subject, or already killed by a
-revocation watermark, raises the normal terminal `session_not_found` instead of
-revealing that it exists. `label` is normalized (whitespace collapsed, control
-characters and bidi overrides stripped) and rejected past 64 code points rather
-than truncated; the advisory `client` descriptor is truncated to 32 code points
-per field.
+wrappers resolve to `void`. All three derive the subject from the presented
+token as `signOutEverywhere` does, so a `targetSessionId` owned by another
+subject, or already killed by a revocation watermark, raises the normal
+terminal `session_not_found` instead of revealing that it exists. The component
+normalizes `label` (collapses whitespace, strips control characters and bidi
+overrides) and rejects it past 64 code points rather than truncating; it
+truncates the advisory `client` descriptor to 32 code points per field.
 
 The generated `callback`, `refresh`, `signOut`, and `signOutEverywhere` actions
-also accept optional device-binding fields used internally by
-`ConvexLogtoSessionProvider` (`devicePublicKey` and `deviceProof`). A bound
+also accept optional device-binding fields that `ConvexLogtoSessionProvider`
+sends (`devicePublicKey` and `deviceProof`). A bound
 Session verifies proof before refresh or revocation state changes. Existing
 callers and unbound Sessions do not send them and retain the unbound behavior.
 
@@ -213,9 +214,10 @@ as a standard `(Request) => Promise<Response>` handler. Options are:
 
 The six final path segments are `sign-in`, `callback`, `token`, `sign-out`,
 `sessions`, and `tokens`.
-Actual calls require POST, `x-convex-logto-csrf: 1`, and an allowed `Origin`;
-approved preflights receive credentialed CORS headers. Bodies are streamed
-through a 64 KiB limit; oversized requests return `413`. `signOutEverywhere` uses
+Calls require POST, `x-convex-logto-csrf: 1`, and an allowed `Origin`;
+approved preflights receive credentialed CORS headers. The handler streams
+bodies through a 64 KiB limit and returns `413` for an oversized request.
+`signOutEverywhere` uses
 an internal selector on the existing `sign-out` route rather than a route of its
 own; `sessions` multiplexes `list` / `rename` / `revoke`, and `tokens`
 multiplexes `exchange` / `userinfo`, on an `op` field the same
@@ -229,9 +231,9 @@ The returned handler also has `getInitialToken(request)`. It returns
 `{ initialToken, initialSessionId, headers }`; call it at most once per incoming
 document request and always forward `headers` to the SSR response so the rotated
 `Set-Cookie` is not lost, then pass the two initial values to
-`ConvexLogtoSessionProvider`. Concurrent requests are best-effort: every failed
-seed returns empty without changing the cookie, while the browser `/token` route
-authoritatively clears a genuinely dead session.
+`ConvexLogtoSessionProvider`. Concurrent requests are best-effort. Every failed
+seed returns empty without changing the cookie, and the browser `/token` route
+is what clears a dead session.
 
 ### `readLogtoIdTokenCookie(source)`
 
@@ -254,22 +256,21 @@ that outlived its cookie would server-render a page as signed in for a bearer
 Convex refuses.
 
 This mints nothing and rotates nothing, so it costs the session token's
-rotation-based theft detection nothing. What it does cost is custody: a cookie
+rotation-based theft detection nothing. What it does cost is custody. A cookie
 rides on every same-origin request, reaching access logs and proxies that an
 `Authorization` header does not, which is why it is opt-in. A token read here
-is a bearer Convex validates, not a claim to trust; revocation is enforced by
-`assertSubjectHasActiveSession` inside the function you call, exactly as it is
-everywhere else.
+is a bearer Convex validates, not a claim to trust; `assertSubjectHasActiveSession`
+inside the function you call enforces revocation, as it does everywhere else.
 
-An ID token that is already expired, is not a JWT, or is too large for a cookie
-(over 3 KiB encoded) is **skipped rather than cleared**. The previous cookie
-expires on its own instead of a size problem becoming a sign-out. Every exit that
+The handler **skips rather than clears** an ID token that is already expired,
+is not a JWT, or is too large for a cookie (over 3 KiB encoded). The previous
+cookie expires on its own instead of a size problem becoming a sign-out. Every exit that
 expires the session cookie expires this one with it: sign-out on success *and* on
 failure, and a terminal `/token` refresh. That holds even when `idTokenCookie` is
 off, so turning it off never strands a live token. Neither cookie is reachable
 from JavaScript, so a half-cleared pair is one nothing on the client can finish.
 
-Cookie transport and device binding cannot be combined: HttpOnly makes the
+Cookie transport and device binding cannot be combined. HttpOnly makes the
 session token unavailable to the JavaScript-held signing key, and cookie
 transport already removes the off-device token-exfiltration path. The
 compatibility error applies on every browser; Safari ITP key eviction is an
@@ -308,27 +309,28 @@ export const deleteInvoice = mutation({
 - `parseOrganizationRole(entry)`: splits Logto's `{organizationId}:{roleName}`
   on the first colon, so a role name may contain one.
 
-A **missing scope authorizes nothing**, not everything: absent and empty are the
+A **missing scope authorizes nothing**, not everything. Absent and empty are the
 same answer, because a deployment that never requested the scope is
 indistinguishable from a user who belongs to nothing, and only one reading is
 safe. The failure names the scope so a configuration gap does not read as a
 denial. The two scopes are independent. Logto advertises them separately and a
-grant carries exactly what was requested, so request **both** if you read both
-claims. A deployment that requests only `urn:logto:scope:organization_roles` has
-no `organizations` claim, and every `assertOrganizationMember` call then denies.
+grant carries only the scopes you requested, so request **both** if you read
+both claims. A deployment that requests only `urn:logto:scope:organization_roles`
+has no `organizations` claim, and every `assertOrganizationMember` call then
+denies.
 
 <Callout type="warn">
-**These claims are a snapshot, not a lookup.** They were true when the ID token
-was issued and stay frozen until the next one is, at most the token's own
-lifetime, which Logto defaults to an hour. Removing someone from an organization,
-or taking a role away, does not take effect at once. Nothing re-reads Logto here,
-by design: not re-reading it is what makes the check free.
+**These claims are a snapshot, not a lookup.** They were true when Logto issued
+the ID token and stay frozen until it issues the next one, at most the token's
+own lifetime, which Logto defaults to an hour. Removing someone from an
+organization, or taking a role away, does not take effect at once. Nothing
+re-reads Logto here, by design; not re-reading it is what makes the check free.
 
 Deleting or suspending the *user* is different. The
-[webhook](/docs/webhook-sync) revokes their sessions, and that is immediate.
+[webhook](/docs/webhook-sync) revokes their sessions within seconds.
 
-When a membership change has to bite immediately, do not use these helpers for
-it: keep membership in your own table and check that, so the authorization reads
+When a membership change has to bite at once, do not use these helpers for it.
+Keep membership in your own table and check that, so the authorization reads
 current state rather than past state. Shortening the ID token's lifetime in Logto
 narrows the window; it never closes it.
 </Callout>
@@ -341,7 +343,7 @@ see [Organization and API-resource tokens](#organization-and-api-resource-tokens
 ### Organization and API-resource tokens
 
 <Callout type="info">Session mode only. In bridge mode the Logto SDK is already
-in the bundle: use `useLogto().getOrganizationToken(...)` directly.</Callout>
+in the bundle; call `useLogto().getOrganizationToken(...)` on it.</Callout>
 
 Reach for this for a non-Convex API you registered with Logto, or to hand an
 organization-audienced token to something that checks permissions itself.
@@ -356,7 +358,7 @@ const {
   getIdToken,
 } = useLogtoAuth();
 
-// A Resource token's scopes are the ones this grant was signed for.
+// A Resource token's scopes are the ones this grant holds.
 const { scopes } = await getAccessTokenClaims("https://api.example.com");
 if (scopes.includes("invoice:delete")) {
   /* ... */
@@ -364,21 +366,21 @@ if (scopes.includes("invoice:delete")) {
 ```
 
 <Callout type="warn">
-**An organization token's `scopes` is empty.** Measured against a real Logto,
-three ways: Logto issues `availableScopes ∩ requestedScopes`, where
+**An organization token's `scopes` is empty.** Measured three ways against a
+real Logto. Logto issues `availableScopes ∩ requestedScopes`, where
 `availableScopes` is the user's organization permissions and `requestedScopes`
 defaults to the grant's own scopes. Organization permissions are not OIDC scopes.
 They are absent from `scopes_supported`, so the authorize request drops them
 and they can never be in a grant. The intersection is therefore always empty,
-and asking for one explicitly is refused (`invalid_scope`, "a refresh grant can
-only request scopes it already holds").
+and Logto refuses an explicit request for one (`invalid_scope`, "a refresh grant
+can only request scopes it already holds").
 
 So do not authorize on `getOrganizationTokenClaims(...).scopes`. It would deny
-everyone. Use `organization_roles` from the ID token, which is free and actually
-populated: `assertOrganizationRole(ctx, orgId, ["admin"])` above, as of the
-token's issuance, per the note there. The organization token is still the right
-thing to *send* to a service that validates the `urn:logto:organization:<id>`
-audience itself.
+everyone. Use `organization_roles` from the ID token, which is free and
+populated. `assertOrganizationRole(ctx, orgId, ["admin"])` above reads it, as of
+the token's issuance, per the note there. The organization token is still the
+right thing to *send* to a service that validates the
+`urn:logto:organization:<id>` audience itself.
 </Callout>
 
 The component mints the token from the Session's Logto refresh token and hands
@@ -402,13 +404,13 @@ export const { /* ... */ exchangeToken, fetchUserInfo } = logtoSessionApi(
   for a resource the grant never named (`invalid_target`), so `resources` on
   `logtoSessionApi()` is the input, and widening it means signing the user in
   again. Organizations need nothing there.
-- **Minted tokens are cached** per session, audience and requested scope set, so
-  a permission check on render does not cost a grant. A revoked session's cache
-  is invisible immediately and deleted with it.
+- **The component caches minted tokens** per session, audience and requested
+  scope set, so a permission check on render does not cost a grant. A revoked
+  session's cache is invisible at once and deleted with it.
 - **When the API you called rejects the token, ask for a new one.** Every method
   takes a final `{ forceRefresh: true }`, which skips the cache and replaces
-  what was there. Without it a token the resource server has stopped accepting
-  would go on being served for the rest of its lifetime, with no way to say
+  what was there. Without it the cache would go on serving a token the resource
+  server has stopped accepting for the rest of its lifetime, with no way to say
   "not that one". It costs a grant, so it belongs on the failure path:
 
   ```ts
@@ -425,7 +427,7 @@ export const { /* ... */ exchangeToken, fetchUserInfo } = logtoSessionApi(
   token, so it takes the same claim and can answer the transient
   `refresh_in_flight`; retry it.
 - `fetchUserInfo()` is Logto's live `/oidc/me`, unlike `user`, which is the copy
-  the last ID token froze. `getIdToken()` returns that Short bearer itself.
+  the last ID token froze. `getIdToken()` returns that short-lived bearer itself.
   `fetchUserInfo` does the retry above for you; it is the one caller inside the
   library that consumes a minted token, so when Logto answers `401`/`403` for a
   *cached* one it mints once and tries again. A rejection of a token it just
@@ -443,11 +445,10 @@ caller is authenticated **and** that identity's subject has at least one active
 Session in the component. This is a subject-wide revocation policy check. It
 does not prove that the current bearer came from one particular Session. To
 keep every query below Convex's transaction limits, it examines at most eight
-candidate Sessions; if additional candidates remain while bounded revocation
-cleanup is progressing, it throws the transient
-`session_liveness_scan_incomplete` error instead of guessing. Callers may retry
-that error.
-`assertUserHasActiveSession` is retained as a deprecated compatibility alias.
+candidate Sessions; if more candidates remain while bounded revocation cleanup
+is in progress, it throws the transient `session_liveness_scan_incomplete`
+error instead of guessing. Callers may retry that error.
+`assertUserHasActiveSession` remains as a deprecated compatibility alias.
 
 ## Frontend (`convex-logto/react`)
 
@@ -478,14 +479,14 @@ to resolve it from the backend at runtime. Exactly one of the two.
 | `callbackPath` | no | The route that finishes the OIDC redirect. Default `/callback`. Must match a registered Redirect URI's path; only this exact path runs callback handling. |
 | `afterSignIn` | no | Where to go once sign-in completes. Default `/`. `signIn({ returnTo })` overrides it. |
 | `navigate` | no | Soft navigation (your router's `navigate`). Optional for plain Vite; **recommended for any router** (TanStack / Next) so post-sign-in is a soft navigation rather than a full-page reload that drops router state. Prefer a replace-style navigate. Falls back to a hard `location.replace`. |
-| `onAuthError` | no | Called on sign-in initiation failures (Logto unreachable, blocked storage, in-app browser restrictions), recoverable callback failures (stale/replayed callback, setup errors like `invalid_scope`), and **sign-out failures**; `@logto/react` catches those into its own state and resolves the promise, leaving the user signed in with the tokens still in place. Errors are also logged to the console. |
+| `onAuthError` | no | Called on sign-in initiation failures (Logto unreachable, blocked storage, in-app browser restrictions), recoverable callback failures (stale/replayed callback, setup errors like `invalid_scope`), and **sign-out failures**; `@logto/react` catches those into its own state and resolves the promise, leaving the user signed in with the tokens still in place. The provider also logs errors to the console. |
 | `discoveryCache` | no | Cache OIDC discovery + JWKS in sessionStorage. Default `true`. |
 | `onAuthEvent` | no | Opt-in phase timings (see [Auth phase events](#auth-phase-events)). Bridge mode emits `bootstrap_start` and `convex_authenticated`, plus `config_loaded` in `configQuery` mode only. Absent means nothing is measured. |
 | `scopes` / `resources` | no | Extra OIDC scopes / API resources. `openid`, `profile`, `offline_access`, and `email` are always included. |
 
-Safe to render on the server. Nothing touches `window` during render, no stub
-or mount-gate. (In the Next.js App Router, mark the component that imports it
-`"use client"`, as with any hook.)
+Safe to render on the server. Nothing touches `window` during render, so you
+need no stub or mount gate. In the Next.js App Router, mark the component that
+imports it `"use client"`, as with any hook.
 
 The sign-in redirect lands on `callbackPath` (default `/callback`); add a route
 there that just renders.
@@ -499,18 +500,17 @@ const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
 ```
 
 `signIn({ returnTo })` starts sign-in and lands the user on `returnTo` after it
-completes. `returnTo` must be a same-origin path starting with `/` (anything
-else is rejected, to
-prevent open redirects). Without `returnTo`, the provider's `afterSignIn` is
-used. (The 0.5.x `signIn(redirectUri: string)` overload is **gone** in 0.6: a
-redirect URI whose path was not `callbackPath` produced a sign-in nothing
-handled. Set `callbackPath` on the provider instead.) Failures reach
-`onAuthError` and the console either way, including the ones `@logto/react`
-catches into SDK state and never rejects with. The ones it does reject with are
-reported first and then rethrown, so a fire-and-forget call wants a handler:
-`void signOut().catch(() => {})`. A failed sign-out is worth acting on; the SDK
-reaches OIDC discovery before it clears tokens, so an unreachable Logto leaves
-the user signed in.
+completes. `returnTo` must be a same-origin path starting with `/` (the
+provider rejects anything else, to prevent open redirects). Without `returnTo`,
+the provider uses `afterSignIn`. The 0.5.x `signIn(redirectUri: string)`
+overload is **gone** in 0.6. A redirect URI whose path was not `callbackPath`
+produced a sign-in nothing handled; set `callbackPath` on the provider instead.
+Failures reach `onAuthError` and the console either way, including the ones
+`@logto/react` catches into SDK state and never rejects with. The ones it does
+reject with, the provider reports first and then rethrows, so a fire-and-forget
+call wants a handler: `void signOut().catch(() => {})`. A failed sign-out is
+worth acting on; the SDK reaches OIDC discovery before it clears tokens, so an
+unreachable Logto leaves the user signed in.
 
 ## Session mode (`convex-logto/react-session`)
 
@@ -532,20 +532,20 @@ in the bundle. It talks to the functions from `logtoSessionApi(...)`.
 | `callbackPath` | no | Route that finishes the redirect. Default `/callback`; exact match against the registered Redirect URI's path. |
 | `afterSignIn` | no | Where to land after sign-in. Default `/`. `signIn({ returnTo })` overrides it. |
 | `navigate` | no | Your router's navigate (prefer replace-style) for soft post-sign-in navigation. Falls back to a hard `location.replace`. |
-| `tokenStorage` | no | Where the ID token persists: `"session"` (default, per-tab; reload without refresh only with its paired component-session marker), `"memory"` (strictest), `"local"`. Orphan ID tokens are cleared. |
+| `tokenStorage` | no | Where the ID token persists: `"session"` (default, per-tab; reload without refresh only with its paired component-session marker), `"memory"` (strictest), `"local"`. The provider clears orphan ID tokens. |
 | `deviceBinding` | no | Opt into ECDSA P-256 proof of possession for refresh and revocation, backed by a non-extractable IndexedDB-held key. Default `false`; cannot be combined with `cookieTransport`. |
 | `cookieTransport` | no | `{ endpoint?, fetch?, deviceBinding? }`; use the same-site handler instead of exposing the rotating session token to JavaScript. Its reserved `deviceBinding` flag only activates the shared incompatibility assertion. |
 | `clientDescriptor` | no | `{ platform?, os?, browser? }` self-reported client description stamped on the session at sign-in for `listSessions()`. Advisory display data only; the library never reads a User-Agent or IP, and it is never authenticated. Safe as an inline object literal. |
 | `initialToken` / `initialSessionId` | no | Paired SSR seed returned by `handler.getInitialToken(request)`. |
 | `reactiveRevocation` | no | Subscribe to session liveness; drop auth live on revocation. Default `true`. |
-| `onAuthError` | no | Sign-in initiation failures, recoverable callback failures, or opted-in device-key storage failures. Initiation failures are reported before `signIn()` rejects; all are logged to the console. |
+| `onAuthError` | no | Sign-in initiation failures, recoverable callback failures, or opted-in device-key storage failures. The provider reports initiation failures before `signIn()` rejects and logs all of them to the console. |
 | `onAuthEvent` | no | Opt-in phase timings (see [Auth phase events](#auth-phase-events)). Absent means nothing is measured. |
 
 There is no callback component to add; the provider completes the exchange on
 `callbackPath` and replace-navigates into the app itself.
 
-With `deviceBinding`, the provider fails loudly if IndexedDB is unavailable,
-sends only the public key during callback, and signs each rotating session token
+With `deviceBinding`, the provider fails with an error if IndexedDB is
+unavailable, sends only the public key during callback, and signs each rotating session token
 before refresh or revocation. Key eviction makes the next protected operation
 terminal and causes a clean re-authentication; unbound Sessions remain the
 default and are unaffected. See
@@ -559,9 +559,8 @@ signOutEverywhere, listSessions, renameSession, revokeSession }`.
 - `signIn({ returnTo? })`: one round-trip to mint the sign-in URL, then a
   full-page redirect. `returnTo` must be a same-origin path, at most 2048
   characters (sign-in is unauthenticated, so what it stores server-side is
-  bounded). A failed action is
-  delivered to `onAuthError` before the promise rejects, so `void signIn()`
-  remains observable.
+  bounded). The provider delivers a failed action to `onAuthError` before the
+  promise rejects, so `void signIn()` remains observable.
 - `signOut({ postLogoutRedirectUri?, federated? })`: ends the component
   Session, clears tabs sharing the same localStorage transport, then (unless
   `federated: false`) ends the Logto SSO session and returns to
@@ -570,7 +569,7 @@ signOutEverywhere, listSessions, renameSession, revokeSession }`.
 - `signOutEverywhere({ postLogoutRedirectUri? })`: derives the caller subject
   from its session token, records logical revocation before bounded row cleanup,
   and always completes federated sign-out for this device. Older app modules that
-  have not re-exported the action fail with an explicit deployment fix.
+  have not re-exported the action fail with a message naming the deployment fix.
 
 <Callout type="warn">
 A federated sign-out resolves once the browser has been **told** to leave for
@@ -579,7 +578,7 @@ point, so the UI reads "signed out" while the request that ends the *Logto*
 session is still in flight. Issuing a **hard** navigation of your own after
 `await signOut()` supersedes it: `window.location.assign(...)`,
 `location.href = ...`, a full page load. The SSO session then survives a sign-out that looked
-like it worked. The next visitor to that browser is signed straight back in.
+like it worked. Logto signs the next visitor to that browser straight back in.
 
 A router `push`/`replace` is a soft, same-document navigation and is safe. If
 you need a hard one, pass the destination as `postLogoutRedirectUri` and let the
@@ -587,9 +586,9 @@ sign-out land there itself.
 </Callout>
 
 `signOut()` rejects with **`SessionSignOutError`** when local credential cleanup
-fails twice. The class is exported from `convex-logto/react-session` and
-`convex-logto/native-session`, so it is `instanceof`-checkable rather than
-matched on a message. Two fields say what state the user is actually in:
+fails twice. `convex-logto/react-session` and `convex-logto/native-session` both
+export the class, so it is `instanceof`-checkable rather than matched on a
+message. Two fields say what state the user is in:
 
 ```ts
 import { SessionSignOutError } from "convex-logto/react-session";
@@ -610,8 +609,8 @@ try {
 `local_cleanup_and_server_revocation_failed`.
 
 **Take the rejection seriously.** The engine clears its in-memory auth state
-first, so the tab reads "signed out" either way, but this error is thrown
-precisely because the *durable* wipe failed twice, so credentials may still be in
+first, so the tab reads "signed out" either way, but it throws this error
+because the *durable* wipe failed twice, so credentials may still be in
 browser storage. With `revocation_failed` the server session is live as well, and
 a reload can sign the user straight back in. On a shared device that is worth
 saying out loud rather than swallowing.
@@ -619,15 +618,15 @@ saying out loud rather than swallowing.
   authenticates with rotates) of the caller's own sessions, `{ sessions,
   truncated }`, newest first. Call it again after a rename or revoke.
 - `renameSession(sessionId, label)`: name one of the caller's own sessions;
-  `undefined` (or a blank string) clears it. A label over 64 characters is
-  rejected locally, before any round-trip. Rejects with terminal
+  `undefined` (or a blank string) clears it. The hook rejects a label over 64
+  characters locally, before any round trip. Rejects with terminal
   `session_not_found` for an id that is not the caller's or is already revoked;
   the component will not confirm that another subject's session exists.
 - `revokeSession(sessionId)`: sign that device out; rejects the same way for an
   unknown id. Revoking the **current** session does not clear this browser's
   credentials; use `signOut()` for that. Like `signOutEverywhere`, this is an
-  RP-level boundary: the other device's Logto SSO cookie survives, so it can
-  start a new sign-in. A missing re-export fails with the same explicit fix.
+  RP-level boundary. The other device's Logto SSO cookie survives, so it can
+  start a new sign-in. A missing re-export fails with the same named fix.
 
 ## Auth phase events
 
@@ -648,7 +647,7 @@ no clock is read.
 
 An event is `{ phase, elapsedMs, source?, errorKind? }`. `elapsedMs` counts from
 `bootstrap_start` on a monotonic clock where the platform has one. Events carry
-**no token, no user identity, and no URL**, so one can be forwarded to an
+**no token, no user identity, and no URL**, so you can forward one to an
 analytics backend as-is.
 
 | Phase | When |
@@ -666,15 +665,15 @@ analytics backend as-is.
 
 Only the first settle reports `session_restored` / `unauthenticated`; later
 transitions have their own phases, so a long-lived tab never looks like it
-re-mounted. A handler that throws is caught and logged; telemetry can never fail
-an authentication.
+re-mounted. The provider catches and logs a handler that throws; telemetry can
+never fail an authentication.
 
 Bridge mode emits `bootstrap_start` and `convex_authenticated`, plus
 `config_loaded` only in `configQuery` mode, the one mode with a fetch to time.
 The Logto SDK owns the credential lifecycle there, so the settle and refresh
-phases are session mode's. Passing the handler on a later render is fine. It is
-read per event, so nothing is rebuilt, and it then reports from that point on
-rather than replaying phases it missed.
+phases are session mode's. Passing the handler on a later render is fine. The
+provider reads it per event, so nothing is rebuilt, and it then reports from
+that point on rather than replaying phases it missed.
 
 ## Native session mode (`convex-logto/native-session`)
 
@@ -700,8 +699,8 @@ device-binding option.
 | `client` | yes | Your `ConvexReactClient`. |
 | `sessionApi` | yes | The module re-exporting all eleven `logtoSessionApi(...)` functions. |
 | `redirectUri` | yes | Custom-scheme or universal-link callback registered as both a Redirect URI and Post sign-out redirect URI in Logto. |
-| `reactiveRevocation` | no | Subscribe to `sessionValid` and clear SecureStore immediately when revoked. Default `true`. |
-| `onAuthError` | no | Receives sign-in initiation failures plus recoverable OAuth, SecureStore, and system-browser failures; initiation failures are reported before `signIn()` rejects and all errors are logged. |
+| `reactiveRevocation` | no | Subscribe to `sessionValid` and clear SecureStore as soon as the session is revoked. Default `true`. |
+| `onAuthError` | no | Receives sign-in initiation failures plus recoverable OAuth, SecureStore, and system-browser failures; the provider reports initiation failures before `signIn()` rejects and logs every error. |
 | `onAuthEvent` | no | Opt-in phase timings (see [Auth phase events](#auth-phase-events)). Absent means nothing is measured. |
 
 `useLogtoAuth()` returns `{ isAuthenticated, isLoading, user, signIn,
@@ -718,9 +717,9 @@ the server session, then ends Logto browser SSO unless `federated: false`.
 component session for the caller subject, and ends this device's Logto browser
 SSO session.
 
-The ID token is persisted in SecureStore to make a fresh cold start a
-zero-refresh authenticate while its paired component-session marker remains.
-An orphan bearer is cleared. This is the native equivalent of choosing web
+The provider persists the ID token in SecureStore so a cold start authenticates
+with no refresh while its paired component-session marker remains. It clears an
+orphan bearer. This is the native equivalent of choosing web
 `tokenStorage="local"`, but the bearer stays inside the OS encrypted keystore.
 See [Expo (React Native)](/docs/react-native#native-session-mode) for setup and
 the web/native differences.
@@ -728,7 +727,7 @@ the web/native differences.
 ## Native (`convex-logto/native`)
 
 For React Native / Expo, built on [`@logto/rn`](https://github.com/logto-io/react-native).
-The backend exports above are identical; only the frontend provider differs. Full
+The backend exports above are the same; only the frontend provider differs. Full
 walkthrough in [React Native (Expo)](/docs/react-native).
 
 ### `ConvexLogtoProvider` (native)

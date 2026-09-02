@@ -71,8 +71,9 @@ describe("decideExchange", () => {
   });
 
   it("lets a superseded generation inside its reuse window exchange", () => {
-    // Nothing rotates, so nothing can be orphaned by it — the reason this is
-    // not `decideRefresh`, which would have to choose between cache and rotate.
+    // Nothing rotates, so nothing can be orphaned by it. That is the reason
+    // this is not `decideRefresh`, which would have to choose between cache
+    // and rotate.
     expect(
       decideExchange({
         presentedHash: "previous",
@@ -155,8 +156,8 @@ describe("tokenScopeKey", () => {
 
   it("bounds the ask, because the key is stored in a row deletion has to read", () => {
     // Unbounded, a signed-in caller can park near-document-limit rows on its
-    // own session until a revocation batch can no longer read them — a session
-    // that can never be revoked.
+    // own session until a revocation batch can no longer read them. That is a
+    // session that can never be revoked.
     expect(() =>
       tokenScopeKey(
         Array.from({ length: TOKEN_SCOPE_MAX_COUNT + 1 }, (_, i) => `s${i}`),
@@ -433,8 +434,9 @@ describe("beginTokenExchange", () => {
   });
 
   it("does not rotate the session token", async () => {
-    // The distinguishing property against `beginRefresh`: an exchange has no
-    // candidate, so a caller mid-exchange keeps presenting the same token.
+    // The distinguishing property against `beginRefresh` is that an exchange
+    // has no candidate, so a caller mid-exchange keeps presenting the same
+    // token.
     const harness = exchangeHarness(sessionFixture());
     await beginHandler(
       { db: harness.db },
@@ -668,8 +670,8 @@ describe("completeTokenExchange", () => {
   });
 
   it("returns an oversized token without caching it, and drops any stale row", async () => {
-    // The per-session row bound has to be a byte bound too: session deletion
-    // reads these rows for eight sessions in one transaction.
+    // The per-session row bound has to be a byte bound too, because session
+    // deletion reads these rows for eight sessions in one transaction.
     const harness = exchangeHarness(claimed(), [
       {
         _id: "resourceTokens-0",
@@ -753,7 +755,7 @@ describe("cachedResourceToken", () => {
 
   it("is blind to a logically revoked session's cache", async () => {
     // The row may still be waiting for a bounded cleanup batch. Until it is
-    // gone it must retain no authority — the same rule every other read follows.
+    // gone it must retain no authority, the same rule every other read follows.
     const harness = exchangeHarness(sessionFixture(), [row], {
       subject: { subject: "user-1", revokedAt: 600_000 },
     });
@@ -788,7 +790,7 @@ describe("cachedResourceToken", () => {
   it("refuses a rotated-away token instead of handing it a live token", async () => {
     // The whole point of the reuse window is that a generation past it is
     // treated as theft. A cache read is a query and cannot kill the session, so
-    // it answers null and lets `beginTokenExchange` — a mutation — do that.
+    // it answers null and lets `beginTokenExchange`, a mutation, do that.
     // Serving it here would be the one read in the component that keeps a
     // stolen session usable without ever tripping reuse detection.
     const harness = exchangeHarness(
@@ -829,10 +831,10 @@ describe("cachedResourceToken", () => {
 
 describe("exchangeToken", () => {
   it("refuses a call that names no target rather than falling through to `default`", async () => {
-    // `default` is the opaque token Logto's userinfo endpoint accepts — the one
+    // `default` is the opaque token Logto's userinfo endpoint accepts, the one
     // credential here carrying the user's whole profile scope. `fetchUserInfo`
     // reaches it internally and never returns it; letting an argument-free call
-    // reach it would put a target on the public surface that no client method
+    // reach it would put a target in the public API that no client method
     // can name and `exposeAccessTokens` was never written about.
     const handler = handlerOf<Record<string, unknown>, unknown>(exchangeToken);
     await expect(
@@ -855,7 +857,7 @@ describe("exchangeToken", () => {
 
 /**
  * A minimal action ctx plus a `fetch` that answers by URL. Enough to drive the
- * exchange end to end without a deployment: the mutations are the only state,
+ * exchange end to end without a deployment. The mutations are the only state,
  * and what this asserts is which calls were made, not what they stored.
  */
 function actionHarness(options: {
@@ -964,9 +966,10 @@ describe("forceRefresh", () => {
   });
 
   it("skips the cache and mints when asked, so a rejected token can be replaced", async () => {
-    // The whole point: the component caches a minted token until it expires,
-    // so without this a token the resource server has stopped accepting keeps
-    // being served and the caller has no way to say "not that one".
+    // The whole point is that the component caches a minted token until it
+    // expires, so without this a token the resource server has stopped
+    // accepting keeps being served and the caller has no way to say "not that
+    // one".
     const harness = actionHarness({ cached: { accessToken: "cached-1" } });
     const handler = handlerOf<Record<string, unknown>, { minted: boolean }>(
       exchangeToken,
@@ -1021,8 +1024,9 @@ describe("fetchUserInfo", () => {
   });
 
   it("does not retry a rejection of a token it just minted", async () => {
-    // A freshly minted token Logto refuses is a deployment fault — a wrong
-    // client, a disabled user. Minting again would spend grants on it forever.
+    // A freshly minted token Logto refuses is a deployment fault, such as a
+    // wrong client or a disabled user. Minting again would spend grants on it
+    // forever.
     const harness = actionHarness({
       cached: null,
       userInfoStatuses: [401, 200],

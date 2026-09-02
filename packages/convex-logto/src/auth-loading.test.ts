@@ -2,13 +2,15 @@ import { describe, expect, it } from "vitest";
 import { nativeAuthState, nextAuthLoading } from "./auth-loading";
 import { classifySignInSearch } from "./callback";
 
-// The whole point of both helpers: the bridge must never report
-// `{ isLoading:false, isAuthenticated:false }` (a settled logged-out state) during
-// the window between "IdP authenticated" and "Convex validated" — that frame is
-// what Convex turns into the transient tick that bounced route guards (issue #11).
+// The whole point of both helpers is that the bridge must never report
+// `{ isLoading:false, isAuthenticated:false }` (a settled logged-out state)
+// during the window between "IdP authenticated" and "Convex validated". That
+// frame is what Convex turns into the transient tick that bounced route guards
+// (issue #11).
 
-describe("nextAuthLoading — web latch (issue #11)", () => {
-  // Drive a scripted @logto/react sequence through the latch; track reported loading.
+describe("nextAuthLoading, the web latch (issue #11)", () => {
+  // Drive a scripted @logto/react sequence through the latch; track reported
+  // loading.
   function reportLoading(
     steps: Array<{ providerLoading: boolean; authFlowPending: boolean }>,
   ): boolean[] {
@@ -52,8 +54,9 @@ describe("nextAuthLoading — web latch (issue #11)", () => {
   });
 
   it("does not flicker once settled (post-login provider-loading churn)", () => {
-    // Authenticated and settled; @logto/react blips providerLoading true. The latch
-    // holds — we keep reporting not-loading instead of dropping back to loading.
+    // Authenticated and settled; @logto/react blips providerLoading true. The
+    // latch holds, so we keep reporting not-loading instead of dropping back to
+    // loading.
     expect(nextAuthLoading(true, true, false)).toEqual({
       settled: true,
       isLoading: false,
@@ -61,7 +64,7 @@ describe("nextAuthLoading — web latch (issue #11)", () => {
   });
 });
 
-describe("nativeAuthState — native transition pulse (issue #11)", () => {
+describe("nativeAuthState, the native transition pulse (issue #11)", () => {
   // [isInitialized, isAuthenticated, seenAuthenticated] over a sign-in.
   const seq: Array<[boolean, boolean, boolean]> = [
     [false, false, false], // booting (!isInitialized)
@@ -80,8 +83,9 @@ describe("nativeAuthState — native transition pulse (issue #11)", () => {
       { isLoading: true, isAuthenticated: false }, // pulse: loading, NOT yet authed
       { isLoading: false, isAuthenticated: true }, // settled authed
     ]);
-    // The auth-flip frame (index 2) reports loading, not a logged-out tick: a guard
-    // sees loading and waits instead of bouncing the just-signed-in user.
+    // The auth-flip frame (index 2) reports loading, not a logged-out tick, so
+    // a guard sees loading and waits instead of bouncing the just-signed-in
+    // user.
     expect(frames[2]).toEqual({ isLoading: true, isAuthenticated: false });
   });
 
@@ -97,12 +101,12 @@ describe("nativeAuthState — native transition pulse (issue #11)", () => {
   });
 
   it("re-arms after logout so the next login pulses again", () => {
-    // signed out from an authed state: isAuthenticated false, seen still true.
+    // Signed out from an authed state. isAuthenticated false, seen still true.
     expect(nativeAuthState(true, false, true)).toEqual({
       isLoading: false,
       isAuthenticated: false,
     });
-    // next login flip: seen back to false → pulses loading again.
+    // Next login flip. seen is back to false, so it pulses loading again.
     expect(nativeAuthState(true, true, false)).toEqual({
       isLoading: true,
       isAuthenticated: false,

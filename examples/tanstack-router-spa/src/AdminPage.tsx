@@ -5,7 +5,7 @@ import { api } from "../convex/_generated/api";
 // Two layers of protection here:
 //   - The `_authed` route guard already required a signed-in user (authn).
 //   - This component mirrors the server's authz for a friendly screen, AND the
-//     server enforces it independently: `adminStats` calls `requireRole`, so a
+//     server enforces it on its own. `adminStats` calls `requireRole`, so a
 //     non-admin can't read the data even by calling the query directly.
 export function AdminPage() {
   const profile = useQuery(api.users.myProfile);
@@ -36,7 +36,7 @@ export function AdminPage() {
   if (profile.role !== "admin")
     return (
       <section>
-        <h1>🚫 403 — Admins only</h1>
+        <h1>403: admins only</h1>
         <p>
           Your role is <code>{profile.role}</code>. This page requires{" "}
           <code>admin</code>.
@@ -56,7 +56,7 @@ function AdminContent() {
   const stats = useQuery(api.users.adminStats);
   return (
     <section>
-      <h1>Admin area ✅</h1>
+      <h1>Admin area</h1>
       <p>You're an active admin, so the server let `adminStats` through.</p>
       <pre>{stats ? JSON.stringify(stats, null, 2) : "loading…"}</pre>
     </section>

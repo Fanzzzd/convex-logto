@@ -41,16 +41,16 @@ export type LogtoUserEvent = (typeof LOGTO_USER_EVENTS)[number];
 /** Shape of a Logto data-mutation webhook delivery (User family). */
 export type LogtoWebhookPayload = {
   /**
-   * Identifies the webhook **configuration** in Logto, not this delivery —
-   * every delivery from the same hook carries the same `hookId`, so it is NOT
-   * an idempotency key. Deliveries are deduplicated by raw-body hash instead
-   * (the `sessions` option of {@link registerLogtoWebhook}). Optional because
-   * nothing here reads it: a delivery is never refused over a field the
-   * library does not consume.
+   * Identifies the webhook **configuration** in Logto, not this delivery.
+   * Every delivery from the same hook carries the same `hookId`, so it is NOT
+   * an idempotency key. The route deduplicates deliveries by raw-body hash
+   * instead (the `sessions` option of {@link registerLogtoWebhook}). Optional
+   * because nothing here reads it. A delivery is never refused over a field
+   * the library does not consume.
    */
   hookId?: string;
   event: LogtoUserEvent;
-  /** ISO 8601 creation time of the event — bounds the accepted delivery age. */
+  /** ISO 8601 creation time of the event. Bounds the accepted delivery age. */
   createdAt: string;
   userAgent?: string;
   ip?: string;
@@ -94,11 +94,11 @@ function isNullableFiniteNumber(value: unknown): boolean {
  *
  * A delivery is never *refused* over one of these. Logto retries a 5xx and not
  * a 4xx, so rejecting a signature-verified delivery turns one drifted field
- * into permanent, first-attempt event loss — and because the same handler
+ * into permanent, first-attempt event loss. And because the same handler
  * revokes sessions for deleted and suspended users, it would silently disable
- * that too. A drifted field is dropped from the entity handed to sync handlers
- * instead, which keeps the declared type honest while the raw value stays
- * reachable on the payload those handlers also receive.
+ * that too. The library drops a drifted field from the entity handed to sync
+ * handlers instead, which keeps the declared type honest while the raw value
+ * stays reachable on the payload those handlers also receive.
  */
 const ADVISORY_PAYLOAD_FIELDS: Record<string, (value: unknown) => boolean> = {
   hookId: (value) => typeof value === "string",
@@ -111,7 +111,7 @@ const ADVISORY_PAYLOAD_FIELDS: Record<string, (value: unknown) => boolean> = {
   matchedRoute: (value) => typeof value === "string",
 };
 
-/** See {@link ADVISORY_PAYLOAD_FIELDS} — the same rule for the User entity. */
+/** See {@link ADVISORY_PAYLOAD_FIELDS}. The same rule for the User entity. */
 const ADVISORY_ENTITY_FIELDS: Record<string, (value: unknown) => boolean> = {
   username: isNullableString,
   primaryEmail: isNullableString,
@@ -122,7 +122,7 @@ const ADVISORY_ENTITY_FIELDS: Record<string, (value: unknown) => boolean> = {
   customData: isRecord,
   identities: isRecord,
   isSuspended: (value) => typeof value === "boolean",
-  // `users.last_sign_in_at` is nullable in Logto: a user who has never signed
+  // `users.last_sign_in_at` is nullable in Logto. A user who has never signed
   // in serialises as `null`.
   lastSignInAt: isNullableFiniteNumber,
   createdAt: isNullableFiniteNumber,
@@ -130,8 +130,8 @@ const ADVISORY_ENTITY_FIELDS: Record<string, (value: unknown) => boolean> = {
 
 /**
  * Copy `raw` without the declared fields whose value drifted out of its type.
- * Fields absent from `declared` — including ones Logto adds later — pass
- * through untouched, and an undrifted payload is returned as-is.
+ * Fields absent from `declared`, including ones Logto adds later, pass through
+ * untouched, and an undrifted payload comes back as-is.
  */
 function withoutDriftedFields<Shape extends Record<string, unknown>>(
   raw: Shape,
@@ -205,10 +205,10 @@ function entityId(payload: Record<string, unknown>): string | undefined {
 
 /**
  * Did the entity bring an `id` this library cannot read? Distinct from "no
- * entity": a `User.Deleted` naming no user in `data` is the documented 204
+ * entity". A `User.Deleted` naming no user in `data` is the documented 204
  * shape and the route params are authoritative, but one whose id is present and
  * unreadable could be naming a *different* user than the route params, and a
- * destructive event must not be executed on a guess.
+ * destructive event must not run on a guess.
  */
 function hasUnreadableEntityId(payload: Record<string, unknown>): boolean {
   const data = payload.data;
@@ -229,7 +229,7 @@ function paramsUserId(payload: Record<string, unknown>): string | undefined {
 /**
  * Accept a delivery on exactly the fields this library consumes: the event it
  * dispatches on, the `createdAt` it bounds the delivery age with, and the user
- * id it revokes sessions by. Everything else is advisory — see
+ * id it revokes sessions by. Everything else is advisory. See
  * {@link ADVISORY_PAYLOAD_FIELDS} for why widening this predicate is how schema
  * drift becomes silent event loss.
  */
@@ -266,7 +266,7 @@ function isLogtoWebhookPayload(value: unknown): value is LogtoWebhookPayload {
 /**
  * A per-event sync handler. Runs in a Convex mutation, so `ctx.db` is available.
  *
- * `user` is normalized: a field whose type drifted out of the declared
+ * `user` is normalized. A field whose type drifted out of the declared
  * {@link LogtoUserEntity} shape is absent rather than surprising, and the raw
  * delivery is still reachable on `payload`. See
  * {@link ADVISORY_PAYLOAD_FIELDS}.
@@ -301,7 +301,8 @@ export type LogtoSyncReference = FunctionReference<
  * rules (which fields the webhook may write, and which are app-owned).
  *
  * @example
- * // convex/logto.ts — keep an existing user's profile in sync (never create here)
+ * // convex/logto.ts
+ * // Keep an existing user's profile in sync. Never create rows here.
  * import { logtoSync } from "convex-logto";
  * import type { DataModel } from "./_generated/dataModel";
  *
@@ -329,7 +330,8 @@ export function logtoSync<
       returns: v.null(),
       handler: async (ctx, args) => {
         // registerLogtoWebhook validates before calling, but this is an exported
-        // internal mutation — reject anything that isn't a known User.* event.
+        // internal mutation, so reject anything that isn't a known User.*
+        // event.
         if (!isLogtoWebhookPayload(args.payload)) {
           throw new Error(
             "convex-logto: logtoSync received a payload that isn't a known Logto User.* event.",
@@ -373,10 +375,10 @@ export type RegisterLogtoWebhookOptions = {
    * The session component (`components.logto`), if you use
    * [session mode](https://convex-logto-docs.vercel.app/docs/session-mode). Enables:
    *
-   * - **exactly-once handling** — deliveries are deduplicated by raw-body
+   * - **Exactly-once handling.** The route deduplicates deliveries by raw-body
    *   SHA-256, so a Logto retry whose 200 got lost doesn't re-run your sync
-   *   handlers;
-   * - **session revocation** — `User.Deleted`, and
+   *   handlers.
+   * - **Session revocation.** `User.Deleted`, and
    *   `User.SuspensionStatus.Updated` with `isSuspended: true`, kill all of
    *   that user's sessions immediately (reactive clients drop live).
    */
@@ -391,8 +393,8 @@ const SIGNATURE_HEADER = "logto-signature-sha-256";
  */
 const MAX_BODY_BYTES = 1024 * 1024;
 
-// Freshness bounds on `createdAt`: Logto's own delivery retries land within
-// seconds, so minutes of allowance covers them plus clock drift — while a
+// Freshness bounds on `createdAt`. Logto's own delivery retries land within
+// seconds, so minutes of allowance covers them plus clock drift, while a
 // captured delivery can't be replayed indefinitely (the signature scheme has
 // no timestamp binding of its own).
 const MAX_DELIVERY_AGE_MS = 5 * 60 * 1000;
@@ -410,8 +412,8 @@ function isFreshDelivery(createdAt: unknown, now: number): boolean {
 
 /**
  * The subject whose sessions a delivery revokes, if any: a deleted user (id in
- * `data` or, for an older/documented `data: null` deletion, in route params), or a
- * user whose suspension just flipped ON. Un-suspension revokes nothing.
+ * `data` or, for an older/documented `data: null` deletion, in route params),
+ * or a user whose suspension just flipped ON. Un-suspension revokes nothing.
  */
 function subjectToRevoke(payload: LogtoWebhookPayload): string | undefined {
   if (payload.event === "User.Deleted") {
@@ -432,9 +434,9 @@ function subjectToRevoke(payload: LogtoWebhookPayload): string | undefined {
  * Responds 401 on a bad signature, 400 on a malformed/stale body, 413 on an
  * oversized body, 500 if the signing key is unset, else 200.
  *
- * With the `sessions` option (session mode), deliveries are additionally
- * deduplicated by raw-body hash, and user deletion/suspension revokes the
- * user's sessions before your sync handlers run.
+ * With the `sessions` option (session mode), the route also deduplicates
+ * deliveries by raw-body hash, and user deletion/suspension revokes the user's
+ * sessions before your sync handlers run.
  *
  * @example
  * // convex/http.ts
@@ -488,16 +490,16 @@ export function registerLogtoWebhook(
           status: 400,
         });
       }
-      // An authentic but old delivery is a replay: the signature scheme has no
+      // An authentic but old delivery is a replay. The signature scheme has no
       // timestamp binding, so bounded freshness is what retires captured
       // deliveries. (Logto's own retries land within seconds.)
       if (!isFreshDelivery(parsed.createdAt, Date.now())) {
         return new Response("Stale webhook delivery", { status: 400 });
       }
 
-      // Exactly-once: claim the delivery by its raw-body hash. Logto retries a
-      // delivery (same signed bytes) when it doesn't see the 200 — without
-      // this, a lost 200 would re-run the sync handlers.
+      // Exactly-once handling. Claim the delivery by its raw-body hash. Logto
+      // retries a delivery (same signed bytes) when it doesn't see the 200.
+      // Without this, a lost 200 would re-run the sync handlers.
       let bodyHash: string | undefined;
       if (sessions) {
         bodyHash = toHex(await crypto.subtle.digest("SHA-256", rawBody));
@@ -506,7 +508,7 @@ export function registerLogtoWebhook(
           { bodyHash, now: Date.now() },
         );
         // Unlike back-channel logout, this route deliberately answers a claimed
-        // delivery without redoing anything, finished or not: an app's sync
+        // delivery without redoing anything, finished or not. An app's sync
         // handlers write to its own tables and are not idempotent, so running
         // them twice is worse than answering slightly early for one still in
         // flight. A delivery whose work failed releases its claim below.
@@ -514,8 +516,8 @@ export function registerLogtoWebhook(
       }
 
       try {
-        // Revocation before sync: a deleted/suspended user's sessions die even
-        // if the app's own sync handler goes on to fail.
+        // Revocation before sync, so a deleted/suspended user's sessions die
+        // even if the app's own sync handler goes on to fail.
         const subject = sessions && subjectToRevoke(parsed);
         if (sessions && subject !== undefined) {
           await ctx.runAction(sessions.lib.killSubjectSessions, { subject });
@@ -523,7 +525,7 @@ export function registerLogtoWebhook(
         await ctx.runMutation(sync, { payload: parsed });
       } catch (error) {
         // Release the dedupe claim so Logto's retry re-runs the failed work
-        // instead of being swallowed as a duplicate.
+        // instead of this route swallowing it as a duplicate.
         if (sessions && bodyHash !== undefined) {
           await ctx
             .runMutation(sessions.lib.forgetWebhookDelivery, { bodyHash })

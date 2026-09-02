@@ -27,8 +27,8 @@ wiring Logto by hand is the better answer.
   state.
 - **[Session mode](/docs/session-mode)**: a Convex component holds the Logto
   refresh token server-side and rotates application session tokens with the
-  browser: smallest browser attack surface, live session revocation, and no
-  Logto SDK in the bundle.
+  browser. The browser holds nothing long-lived, revocation lands live, and
+  there is no Logto SDK in the bundle.
 
 Both present the same ID token to Convex, so everything else on this site
 (identity, webhook sync, environments) applies to both. Whichever mode you
@@ -39,7 +39,7 @@ that shares the browser origin with authentication.
 
 It uses Logto's **ID token** over OIDC, so Convex auto-discovers the signing key
 and JWKS: no JWT template, no algorithm, no JWKS URL to configure. The one
-Logto-side requirement: the OIDC signing key must be **RSA/RS256** (Convex
+Logto-side requirement is that the OIDC signing key be **RSA/RS256** (Convex
 rejects Logto's default ES384). It's a one-time tenant rotation; see
 [Quick start](/docs/quick-start).
 

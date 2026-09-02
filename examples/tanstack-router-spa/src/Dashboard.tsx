@@ -14,7 +14,7 @@ export function Dashboard() {
   // We're inside the `_authed` guard, so signed-out is unreachable in practice.
   if (profile === null) return <p>You are signed out.</p>;
 
-  // First login: the row doesn't exist yet. The form creates it with the chosen role.
+  // First login. The row doesn't exist yet. The form creates it with the chosen role.
   if (!profile.onboarded)
     return <Onboarding onSubmit={(role) => completeOnboarding({ role })} />;
 
@@ -26,7 +26,7 @@ export function Dashboard() {
       <h1>Dashboard (protected)</h1>
       <p>
         Signed in as{" "}
-        <strong>{profile.name ?? profile.email ?? "your account"}</strong> — role{" "}
+        <strong>{profile.name ?? profile.email ?? "your account"}</strong>, role{" "}
         <RoleBadge role={profile.role} />, status <code>{profile.status}</code>.
       </p>
       <p>
@@ -52,7 +52,7 @@ function Onboarding({
 
   return (
     <section>
-      <h1>Welcome 👋</h1>
+      <h1>Welcome</h1>
       <p>Pick a role to finish setting up your account:</p>
       <form
         onSubmit={async (e) => {
@@ -61,7 +61,7 @@ function Onboarding({
           setError(null);
           try {
             await onSubmit(role);
-            // On success the query swaps this component out — nothing to reset.
+            // On success the query swaps this component out, so nothing to reset.
           } catch (err) {
             setError(err instanceof Error ? err.message : String(err));
             setSaving(false);
@@ -95,7 +95,7 @@ function Onboarding({
         )}
       </form>
       <p style={{ color: "#888", fontSize: 13, marginTop: 12 }}>
-        Demo only — real apps create everyone as <code>user</code> and grant admin
+        Demo only. Real apps create everyone as <code>user</code> and grant admin
         server-side.
       </p>
     </section>

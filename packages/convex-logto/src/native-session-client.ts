@@ -31,7 +31,7 @@ export class NativeSessionStorageError extends Error {}
 function storageError(cause?: unknown): NativeSessionStorageError {
   return new NativeSessionStorageError(
     "convex-logto: native session mode requires working expo-secure-store; " +
-      "session credentials are never downgraded to unencrypted storage.",
+      "the library never downgrades session credentials to unencrypted storage.",
     cause === undefined ? undefined : { cause },
   );
 }
@@ -60,10 +60,10 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
   private pendingWrites: Promise<void> = Promise.resolve();
   private pendingWriteError: unknown;
   /**
-   * Credential deletes SecureStore refused, kept until one actually lands.
+   * Credential deletes SecureStore refused, kept until one lands.
    *
-   * A write fault is consumed by the flush that reports it — the engine reacts
-   * once and moves on. A *removal* fault is a different thing: the credential is
+   * The flush that reports a write fault consumes it; the engine reacts once
+   * and moves on. A *removal* fault is a different thing. The credential is
    * still on the device, so sign-out has not happened, and forgetting it after
    * one report would let every later flush claim success.
    */
@@ -95,9 +95,9 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
     await this.pendingWrites;
     if (this.pendingRemovals.size > 0) {
       // Fold any write fault into the same report and consume it. Reporting the
-      // removals first is right — a credential still on the device is the worse
-      // failure — but leaving the write error queued behind them would surface
-      // it much later, long after the flush it belonged to.
+      // removals first is right, because a credential still on the device is
+      // the worse failure, but leaving the write error queued behind them would
+      // report it much later, long after the flush it belonged to.
       const causes: unknown[] = [...this.pendingRemovals.values()];
       if (this.pendingWriteError !== undefined) {
         causes.push(this.pendingWriteError);
@@ -181,9 +181,10 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
         } catch {
           // One unreadable key is not a broken store. A locked device, or an
           // entry written under a stricter keychain accessibility class, fails
-          // only its own read. Treat it as absent for now and leave it in place:
-          // failing the whole load, or deleting the key, would cost the user a
-          // session over a condition that clears by itself on the next unlock.
+          // only its own read. Treat it as absent for now and leave it in
+          // place. Failing the whole load, or deleting the key, would cost the
+          // user a session over a condition that clears by itself on the next
+          // unlock.
           return null;
         }
       }),
@@ -210,10 +211,11 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
 
   private write(name: StoredName, value: unknown): void {
     const raw = JSON.stringify(value);
-    // Deliberately keep the synchronous cache ahead if the durable write later
+    // Keep the synchronous cache ahead on purpose if the durable write later
     // fails. Rolling it back would make this live process reuse the superseded
     // rotating token (and trigger reuse-kill after the grace window); only a
-    // cold start sees the older durable value, which cleanly re-authenticates.
+    // cold start sees the older durable value, and it re-authenticates from
+    // that.
     this.values.set(name, raw);
     this.enqueue(() => this.secureStore.setItemAsync(this.key(name), raw));
   }
@@ -225,9 +227,9 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
         await this.secureStore.deleteItemAsync(this.key(name));
         this.pendingRemovals.delete(name);
       } catch (error) {
-        // A spent `txn` stash holds the OIDC `state` string, not a bearer, so it
-        // stays on the ordinary write-fault path. A credential that survived its
-        // delete is the case that has to keep being reported.
+        // A spent `txn` stash holds the OIDC `state` string, not a bearer, so
+        // it stays on the ordinary write-fault path. A credential that survived
+        // its delete is the case the flush has to keep reporting.
         if (!CREDENTIAL_NAMES.has(name)) throw error;
         this.pendingRemovals.set(name, error);
       }

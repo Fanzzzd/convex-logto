@@ -1,8 +1,8 @@
-// Organization authorization reads the ID token Convex already validated:
+// Organization authorization reads the ID token Convex already validated.
 // Logto maps `urn:logto:scope:organizations` to an `organizations` claim and
 // `urn:logto:scope:organization_roles` to an `organization_roles` claim, both in
 // the ID token, and Convex's `UserIdentity` passes unrecognised claims through.
-// These cover the two ways that goes wrong — a missing scope, and a role entry
+// These cover the two ways that goes wrong, a missing scope and a role entry
 // whose organization half does not match.
 import { ConvexError } from "convex/values";
 import { describe, expect, it } from "vitest";
@@ -32,9 +32,9 @@ describe("organization membership", () => {
   });
 
   it("a missing scope authorizes nothing rather than everything", async () => {
-    // Absent and empty are deliberately the same answer: a deployment that never
-    // requested the scope looks exactly like a user who belongs to nothing, and
-    // only one of the two readings is safe.
+    // Absent and empty are deliberately the same answer. A deployment that
+    // never requested the scope looks exactly like a user who belongs to
+    // nothing, and only one of the two readings is safe.
     const ctx = signedIn();
     expect(await logtoOrganizations(ctx)).toEqual([]);
     await expect(assertOrganizationMember(ctx, "org-a")).rejects.toBeInstanceOf(
@@ -75,7 +75,7 @@ describe("organization roles", () => {
   });
 
   it("does not let one organization's role authorize another", async () => {
-    // The failure this exists to prevent: matching on the role name alone would
+    // The failure this exists to prevent. Matching on the role name alone would
     // make `org-b:viewer` satisfy a viewer check in `org-a`.
     await expect(
       assertOrganizationRole(ctx, "org-a", "viewer"),

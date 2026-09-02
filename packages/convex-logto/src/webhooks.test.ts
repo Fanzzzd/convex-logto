@@ -99,11 +99,12 @@ describe("verifyLogtoSignature", () => {
 });
 
 // `registerLogtoWebhook` calls `http.route` with an `httpActionGeneric` wrapper.
-// We register it on a real `httpRouter()` and resolve it back with `http.lookup`
-// — the same path + method matching Convex's runtime uses — so a route registered
-// at the wrong path or method fails these tests, not just a status-code regression.
-// Convex attaches the raw `(ctx, request) => Response` as `._handler`, which lets
-// us drive the handler directly without a Convex runtime.
+// We register it on a real `httpRouter()` and resolve it back with
+// `http.lookup`, the same path + method matching Convex's runtime uses, so a
+// route registered at the wrong path or method fails these tests, not only a
+// status-code regression. Convex attaches the raw `(ctx, request) => Response`
+// as `._handler`, which lets us drive the handler directly without a Convex
+// runtime.
 type RouteHandler = (
   ctx: {
     runMutation: (ref: unknown, args: unknown) => Promise<unknown>;
@@ -121,7 +122,8 @@ function captureWebhookRoute(
   const path = options?.path ?? "/logto/webhook";
   const match = http.lookup(path, "POST");
   if (!match) throw new Error(`no POST route registered at ${path}`);
-  // Bracket access: `_handler` is convex's internal, not part of its public type.
+  // Bracket access, because `_handler` is convex's internal, not part of its
+  // public type.
   const handler = (match[0] as unknown as Record<string, RouteHandler>)[
     "_handler"
   ];
@@ -461,9 +463,9 @@ describe("registerLogtoWebhook with sessions", () => {
   ])(
     "still revokes a deleted user's sessions despite %s",
     async (_name, patch) => {
-      // The regression this guards: revocation used to hinge on the type of
-      // every advisory field. One drift and the delivery 400s — which Logto
-      // does not retry — so a deleted user's sessions stayed alive.
+      // The regression this guards against. Revocation used to hinge on the
+      // type of every advisory field. One drift and the delivery 400s, which
+      // Logto does not retry, so a deleted user's sessions stayed alive.
       const { handler, runMutation, runAction, handlers, calls } =
         sessionsHarness();
       const deleted = JSON.stringify(
@@ -487,7 +489,7 @@ describe("registerLogtoWebhook with sessions", () => {
   );
 
   it("rejects User.Deleted when the entity id is present but unreadable", async () => {
-    // Not the same as "no entity": an id that is present and not a string could
+    // Not the same as "no entity". An id that is present and not a string could
     // be naming someone other than the route params, and the destructive path
     // must not run on a guess.
     const { handler, runMutation, runAction, handlers } = sessionsHarness();
@@ -510,7 +512,7 @@ describe("registerLogtoWebhook with sessions", () => {
 
   it("accepts a User.Deleted whose entity names no one", async () => {
     // `data: {}` carries the same information as the documented `data: null`
-    // shape — nothing to contradict the route params.
+    // shape. Nothing contradicts the route params.
     const { handler, runMutation, runAction, handlers } = sessionsHarness();
     const empty = JSON.stringify(
       freshPayload({
@@ -600,14 +602,15 @@ const callSync = (
   ctx: unknown,
   payload: unknown,
 ): Promise<unknown> =>
-  // Bracket access: `_handler` is convex's internal, not part of its public type.
+  // Bracket access, because `_handler` is convex's internal, not part of its
+  // public type.
   (sync as unknown as Record<string, SyncHandler>)["_handler"](ctx, {
     payload,
   });
 
 describe("Logto payload shapes", () => {
   it("accepts a User.Created whose lastSignInAt is null", async () => {
-    // `users.last_sign_in_at` is nullable: a user who has never signed in
+    // `users.last_sign_in_at` is nullable. A user who has never signed in
     // serialises as null. Rejecting it would drop a signed, authentic delivery.
     const handler = captureWebhookRoute({ signingKey });
     const payload = JSON.stringify(
@@ -796,9 +799,10 @@ describe("logtoSync dispatch", () => {
 
   it("drops a drifted advisory field instead of the delivery", async () => {
     // Refusing a signature-verified delivery over a field this library never
-    // reads is how Logto schema drift becomes permanent event loss: Logto
-    // retries a 5xx, not a 4xx. The handler still gets a `LogtoUserEntity`
-    // that matches its declared type, and the raw value stays on `payload`.
+    // reads is how Logto schema drift becomes permanent event loss, because
+    // Logto retries a 5xx, not a 4xx. The handler still gets a
+    // `LogtoUserEntity` that matches its declared type, and the raw value
+    // stays on `payload`.
     const handler = vi.fn();
     const { sync } = logtoSync({ "User.Created": handler });
     await callSync(
@@ -830,7 +834,7 @@ describe("logtoSync dispatch", () => {
     expect(payload.hookId).toBeUndefined();
     expect(payload.ip).toBeUndefined();
     expect(payload.status).toBeUndefined();
-    // Nothing is actually lost: the delivery is reachable verbatim.
+    // Nothing is lost. The delivery is reachable verbatim.
     expect(payload.data.identities).toEqual([]);
     expect(payload.data.lastSignInAt).toBe("2026-01-01T00:00:00.000Z");
   });

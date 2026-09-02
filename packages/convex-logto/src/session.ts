@@ -43,7 +43,7 @@ export type LogtoSessionDevicePublicKey = {
 };
 
 /**
- * Coarse, self-reported client description. Advisory display data only — it is
+ * Coarse, self-reported client description. Advisory display data only. It is
  * never authenticated and must never drive a security decision.
  */
 const clientDescriptorValidator = v.object({
@@ -63,7 +63,7 @@ const devicePublicKeyValidator = v.object({
  * The shape of `components.logto` in an app that installed the session
  * component (`app.use(logto)` in `convex/convex.config.ts`). Hand-written so
  * the app-side wrappers are typed without dragging the component's generated
- * types into the public surface.
+ * types into the public API.
  */
 export type LogtoSessionComponent = {
   lib: {
@@ -258,7 +258,7 @@ export type LogtoSessionComponent = {
   };
 };
 
-// --- public function surface -------------------------------------------------
+// --- public functions --------------------------------------------------------
 
 /** Coarse, self-reported description of a signing-in client. */
 export type LogtoSessionClientDescriptor = {
@@ -270,13 +270,14 @@ export type LogtoSessionClientDescriptor = {
 /**
  * What an Organization or Resource token authorizes, without the token itself.
  *
- * The default custody in session mode: an app checks `scopes` server-side and
- * the credential never enters `window`. `docs/adr/0002-token-custody.md`.
+ * This is the default custody in session mode. An app checks `scopes`
+ * server-side and the credential never enters `window`. See
+ * `docs/adr/0002-token-custody.md`.
  */
 export type LogtoResourceTokenClaims = {
   /** `organization:<id>`, `resource:<indicator>`, or `default`. */
   audience: string;
-  /** What Logto granted — which may be narrower than what was asked for. */
+  /** What Logto granted, which may be narrower than what was asked for. */
   scopes: string[];
   /** Absolute expiry in ms. */
   expiresAt: number;
@@ -298,7 +299,7 @@ export type LogtoSessionSummary = {
 };
 
 /**
- * The nine public functions {@link logtoSessionApi} registers, as the frontend
+ * The eleven public functions {@link logtoSessionApi} registers, as the frontend
  * sees them. `ConvexLogtoSessionProvider` takes a reference to the module that
  * re-exports them (e.g. `api.auth`).
  */
@@ -343,7 +344,7 @@ export type LogtoSessionApi = {
     { endSessionUrl?: string }
   >;
   /**
-   * Optional only for rolling upgrades: providers feature-detect an app module
+   * Optional only for rolling upgrades. Providers feature-detect an app module
    * that has not re-exported the new action yet and report the exact fix.
    */
   signOutEverywhere?: FunctionReference<
@@ -357,7 +358,7 @@ export type LogtoSessionApi = {
     { endSessionUrl?: string; count: number }
   >;
   /**
-   * Optional for the same rolling-upgrade reason as `signOutEverywhere`: a
+   * Optional for the same rolling-upgrade reason as `signOutEverywhere`. A
    * provider on a newer library must keep working against an app module that
    * has not re-exported these yet.
    */
@@ -386,7 +387,7 @@ export type LogtoSessionApi = {
   >;
   /**
    * Optional for the same rolling-upgrade reason as `listSessions`. Absent
-   * means the app has not re-exported it; the client surfaces that as a clear
+   * means the app has not re-exported it; the client reports that as a clear
    * error rather than a mystery.
    */
   exchangeToken?: FunctionReference<
@@ -424,35 +425,35 @@ export type LogtoSessionApi = {
 export type LogtoSessionApiOptions = LogtoEndpointPolicy & {
   /**
    * Extra OIDC scopes beyond the built-in `openid offline_access profile email`.
-   * Server-configured — the browser can't request scopes on its own.
+   * Server-configured, because the browser can't request scopes on its own.
    */
   scopes?: string[];
   /**
    * API resource indicators appended to the authorize request.
    *
-   * Required for `getAccessTokenClaims`: Logto will not issue a Resource token
-   * from a grant that never named the resource — it answers `invalid_target` —
-   * so the set has to be fixed before the user signs in and cannot be widened
-   * in place. Every indicator must be registered in Logto; one that is not
-   * breaks sign-in outright.
+   * Required for `getAccessTokenClaims`. Logto will not issue a Resource token
+   * from a grant that never named the resource. It answers `invalid_target`
+   * instead, so the set has to be fixed before the user signs in and cannot be
+   * widened in place. Every indicator must be registered in Logto; one that is
+   * not breaks sign-in outright.
    *
    * Organization tokens need nothing here.
    */
   resources?: string[];
   /**
-   * Let `getOrganizationToken` / `getAccessToken` return the token *string*,
-   * not just its claims.
+   * Let `getOrganizationToken` / `getAccessToken` return the token *string* as
+   * well as its claims.
    *
-   * Off by default, which is the whole point of session mode: the component
+   * Off by default, which is the whole point of session mode. The component
    * mints the token and hands back what it authorizes, so nothing long-lived
    * enters `window`. Turn this on only for a caller that must reach a
    * non-Convex API from the browser, accepting that the token becomes one more
-   * thing XSS can steal. `docs/adr/0002-token-custody.md`.
+   * thing XSS can steal. See `docs/adr/0002-token-custody.md`.
    */
   exposeAccessTokens?: boolean;
   /**
-   * How long (ms) recently superseded Session-token generations stay accepted,
-   * absorbing multi-tab races and network retries. Default 10s.
+   * How long (ms) recently superseded Session-token generations stay accepted.
+   * The window absorbs multi-tab races and network retries. Default 10s.
    */
   reuseWindowMs?: number;
   /** Logto endpoint. Defaults to `LOGTO_ENDPOINT`. */
@@ -475,7 +476,7 @@ function readSessionConfig(options: LogtoSessionApiOptions): {
   if (!clientSecret) {
     throw new Error(
       `convex-logto: missing LOGTO_CLIENT_SECRET. Session mode needs the ` +
-        `Traditional Web app's secret — set it on your Convex deployment ` +
+        `Traditional Web app's secret. Set it on your Convex deployment ` +
         `(\`npx convex env set LOGTO_CLIENT_SECRET ...\`).`,
     );
   }
@@ -486,7 +487,7 @@ function readSessionConfig(options: LogtoSessionApiOptions): {
  * Build the public auth functions for session mode, backed by the Logto session
  * component. Reads `LOGTO_ENDPOINT`, `LOGTO_APP_ID` and `LOGTO_CLIENT_SECRET`
  * from the deployment's env (the secret never leaves the server). Re-export all
- * eleven — the frontend provider looks them up by these exact names, and a
+ * eleven. The frontend provider looks them up by these exact names, and a
  * missing one disables that feature rather than failing the build:
  *
  * @example
@@ -804,7 +805,7 @@ export function logtoSessionApi(
           !(options.scopes ?? []).includes(ORGANIZATIONS_SCOPE)
         ) {
           // Logto answers `403 insufficient_scope` for this, and scopes are
-          // fixed at authorization time — so no retry, no `forceRefresh` and no
+          // fixed at authorization time. No retry, no `forceRefresh` and no
           // amount of waiting can make it succeed for a session that already
           // exists. Refusing here costs the caller nothing; letting it through
           // spends a refresh claim on a request that cannot work.
@@ -814,7 +815,7 @@ export function logtoSessionApi(
             message:
               "convex-logto: an organization token needs the " +
               `${ORGANIZATIONS_SCOPE} scope in the grant. Add it to ` +
-              "`logtoSessionApi({ scopes })` and sign in again — a grant " +
+              "`logtoSessionApi({ scopes })` and sign in again. A grant " +
               "cannot be widened in place. Membership and roles need no token " +
               "at all; they are already in the ID token.",
           });
@@ -822,7 +823,7 @@ export function logtoSessionApi(
         if (args.includeToken && !options.exposeAccessTokens) {
           // Refuse rather than silently downgrade to claims. A caller that
           // asked for the token string is about to call an API with it, and
-          // `undefined` would surface as an authorization failure somewhere
+          // `undefined` would appear as an authorization failure somewhere
           // else entirely.
           throw new ConvexError({
             kind: "terminal" as const,
@@ -886,15 +887,15 @@ type SessionCheckCtx = {
 };
 
 /**
- * Subject-level revocation enforcement: throw unless the authenticated
+ * Subject-level revocation enforcement. Throws unless the authenticated
  * identity's subject has at least one active session in the component.
  *
  * This deliberately does not claim that the current ID token came from that
  * session, nor can it bind a bearer to one particular browser session. Use it
  * when subject-wide revocation is the policy boundary. If more than eight
- * candidate Sessions remain while bounded revocation cleanup is still
- * progressing, this throws the transient
- * `session_liveness_scan_incomplete` error instead of guessing.
+ * candidate Sessions remain while bounded revocation cleanup is still running,
+ * this throws the transient `session_liveness_scan_incomplete` error instead
+ * of guessing.
  *
  * @example
  * export const sensitive = mutation({

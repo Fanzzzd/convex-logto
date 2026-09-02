@@ -9,9 +9,9 @@ import { describe, expect, it } from "vitest";
 import { ConvexLogtoProvider } from "./react";
 import type { LogtoConfigQueryRef } from "./config";
 
-// The provider is safe to render on the server: renderToString runs with no
+// The provider is safe to render on the server. renderToString runs with no
 // `window` and never runs effects, and nothing in the render path may touch
-// browser APIs. Real @logto/react + convex/react — no mocks — so a regression
+// browser APIs. Real @logto/react + convex/react, no mocks, so a regression
 // in either dependency's SSR behavior fails here too.
 describe("ConvexLogtoProvider SSR", () => {
   it("static config: children render under <AuthLoading> without throwing", () => {

@@ -1,9 +1,9 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
-// One row per Logto user. Fields by OWNER — this split is the whole point:
+// One row per Logto user. Fields by OWNER, and this split is the whole point:
 //   - Logto-owned (email, name, status): the webhook in `logto.ts` keeps these in
-//     sync. `status` is the Logto lifecycle — active / suspended, plus "deleted"
+//     sync. `status` is the Logto lifecycle: active / suspended, plus "deleted"
 //     written as a tombstone on User.Deleted.
 //   - App-owned (role): only your own mutations set this; the webhook never touches
 //     it, so editing a Logto profile can't reset someone's role.

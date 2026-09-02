@@ -17,7 +17,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 it("sends actions over HTTP instead of the app's client", async () => {
   // Convex stops the WebSocket before asking for a fresh token; an action sent
-  // on that client parks forever and the socket is never restarted.
+  // on that client parks forever and nothing restarts the socket.
   const fetchStub = vi.fn(() =>
     Promise.resolve(jsonResponse({ status: "success", value: { ok: true } })),
   );
@@ -47,8 +47,8 @@ it("sends actions over HTTP instead of the app's client", async () => {
 });
 
 it("keeps the ConvexError payload the session error taxonomy reads", async () => {
-  // `terminal` vs `transient` is decided from `error.data`, so the HTTP channel
-  // has to reconstruct it the way the WebSocket client does.
+  // `sessionErrorKind` reads `terminal` vs `transient` from `error.data`, so
+  // the HTTP channel has to reconstruct it the way the WebSocket client does.
   vi.stubGlobal("fetch", () =>
     Promise.resolve(
       jsonResponse({
@@ -74,8 +74,8 @@ it("keeps the ConvexError payload the session error taxonomy reads", async () =>
 });
 
 it("gives up on a request that never answers", async () => {
-  // A hung request would park `inflightRefresh` forever: every later token fetch
-  // merges into it and the recovery loop waits on it.
+  // A hung request would park `inflightRefresh` forever, since every later
+  // token fetch merges into it and the recovery loop waits on it.
   vi.useFakeTimers();
   try {
     vi.stubGlobal("fetch", () => new Promise<never>(() => {}));
@@ -99,8 +99,8 @@ it("gives up on a request that never answers", async () => {
 });
 
 it("falls back to the client when it exposes no deployment URL", async () => {
-  // `ConvexReactClient.url` exists on every supported version — a client-shaped
-  // stub should still mount rather than throw.
+  // `ConvexReactClient.url` exists on every supported version, but a
+  // client-shaped stub should still mount rather than throw.
   const clientAction = vi.fn(() => Promise.resolve("client"));
   const client = { action: clientAction } as unknown as ConvexReactClient;
 

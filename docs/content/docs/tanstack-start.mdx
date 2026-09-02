@@ -3,11 +3,11 @@ title: TanStack Start
 description: One SSR-safe ConvexLogtoProvider for TanStack Start. The same provider you'd use in a SPA, no client boundary.
 ---
 
-Finish [Quick start](/docs/quick-start) steps 1–3, then mount the provider. TanStack
+Finish [Quick start](/docs/quick-start) steps 1 to 3, then mount the provider. TanStack
 Start renders on the server, but `ConvexLogtoProvider` is **SSR-safe**, so there's no
 client boundary to add; use the same single provider you'd use in a SPA.
-([How it works → Server-side rendering](/docs/how-it-works#server-side-rendering)
-explains the inert-client trick that makes this safe.)
+[How it works → Server-side rendering](/docs/how-it-works#server-side-rendering)
+explains the inert-client trick that makes this safe.
 
 `configQuery` resolves the Logto endpoint and app id from the Convex deployment,
 so the frontend needs no Logto env vars. Add the query it reads:
@@ -44,7 +44,7 @@ Full app: [`examples/tanstack-start`](https://github.com/Fanzzzd/convex-logto/tr
 
 ## Session mode
 
-`ConvexLogtoSessionProvider` is SSR-safe for the same reason: on the server it
+`ConvexLogtoSessionProvider` is SSR-safe for the same reason. On the server it
 renders one fixed `restoring` snapshot and touches no browser API, so it mounts
 in the same place with no client boundary.
 
@@ -69,7 +69,7 @@ Start is the framework where session mode has *more* to offer than a SPA, becaus
 it has a server on the same origin:
 
 1. **Mount the cookie handler as a server route.** Start's server handlers receive
-   a standard `Request`, which is exactly what the handler takes:
+   a standard `Request`, which is what the handler takes:
 
    ```ts title="src/routes/api/logto/$.ts"
    import { createFileRoute } from "@tanstack/react-router";
@@ -106,9 +106,9 @@ it has a server on the same origin:
    ```
 
    Pass the pair to `initialToken` / `initialSessionId`. **Forwarding
-   `seed.headers` is not optional**: that response carries the rotated cookie, and
-   dropping it leaves the browser holding a superseded token that will eventually
-   be presented outside the reuse window and read as reuse. Call it at most once
-   per document request.
+   `seed.headers` is not optional.** That response carries the rotated cookie.
+   Dropping it leaves the browser holding a superseded token, which it will
+   eventually present outside the reuse window, and the component will read that
+   as reuse. Call it at most once per document request.
 
 Full walkthrough: [Session mode](/docs/session-mode).

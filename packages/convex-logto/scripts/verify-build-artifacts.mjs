@@ -1,9 +1,9 @@
 // Every file `package.json#exports` promises must exist after a build.
 //
-// This exists because the failure it catches is silent by construction: tsup
+// This exists because the failure it catches is silent by construction. tsup
 // reports "Build success" and prints the size of a declaration file that a
 // concurrent config's cleaner then deletes (see #101). The build looked fine and
-// only a consumer's typecheck noticed — sometimes only in CI. It also catches a
+// only a consumer's typecheck noticed, sometimes only in CI. It also catches a
 // new export added without a matching tsup entry.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -35,8 +35,8 @@ function isFile(path) {
 }
 
 /**
- * A wildcard subpath ("./component/*") is satisfied only by a real file the
- * pattern matches. Asserting the parent directory instead would pass on a
+ * Only a real file the pattern matches satisfies a wildcard subpath
+ * ("./component/*"). Asserting the parent directory instead would pass on a
  * half-populated one, which is exactly the failure this script exists to catch.
  */
 function matchesWildcard(target) {
@@ -83,12 +83,12 @@ if (missing.length > 0) {
 }
 
 /**
- * The component half is not bundled: the Convex CLI walks `dist/component/` and
- * bundles the modules it finds there, so every relative specifier in the emitted
- * tree has to resolve on disk. `publint` and `attw` only look at the exports map,
- * and nothing else ever loads these files — so a missing emit, or a specifier
- * `tsc` rewrote in a way Node cannot resolve, would ship and surface on the
- * *user's* next `convex dev` push instead of here.
+ * The component half ships unbundled. The Convex CLI walks `dist/component/`
+ * and bundles the modules it finds there, so every relative specifier in the
+ * emitted tree has to resolve on disk. `publint` and `attw` only look at the
+ * exports map, and nothing else ever loads these files. So a missing emit, or a
+ * specifier `tsc` rewrote in a way Node cannot resolve, would ship and show up
+ * on the *user's* next `convex dev` push instead of here.
  */
 const componentDir = resolve(packageDir, "dist/component");
 
@@ -144,17 +144,17 @@ if (unresolved.length > 0) {
 }
 
 /**
- * The two session entries have to agree on the surface they share.
+ * The two session entries have to agree on the exports they share.
  *
- * They are separate tsup entries with separate export lists, so one can quietly
- * lose a name the other keeps — and nothing else notices, because each entry
- * typechecks and builds on its own. That has already happened once:
+ * They are separate tsup entries with separate export lists, so one can lose a
+ * name the other keeps, and nothing else notices, because each entry typechecks
+ * and builds on its own. That has already happened once:
  * `SessionSignOutError` shipped from `native-session` and not from
  * `react-session`, leaving a web app matching on `error.name` for a failure a
  * native app could `instanceof`.
  *
- * Deliberately a small explicit list rather than a diff with an exception list:
- * the entries *should* differ (cookies and `TokenStorageKind` are web-only,
+ * A small explicit list on purpose, rather than a diff with an exception list.
+ * The entries *should* differ (cookies and `TokenStorageKind` are web-only,
  * `completeSignIn` is native-only), so a full diff would need an allowlist,
  * and an allowlist is the thing that rots. These are the names that must be in
  * both because both engines produce them.
@@ -181,9 +181,9 @@ for (const entry of ["react-session", "native-session"]) {
     process.exit(1);
   }
   const source = readFileSync(declaration, "utf8");
-  // The emitted export list, not the whole file: a `declare class` that no
-  // export names is not part of the public surface, and matching on it would
-  // make this check pass on exactly the drift it exists to catch.
+  // The emitted export list, not the whole file. A `declare class` that no
+  // export names is not public, and matching on it would make this check pass
+  // on exactly the drift it exists to catch.
   const exported = new Set(
     [...source.matchAll(/^export \{([^}]*)\};?$/gm)]
       .flatMap(([, names]) => names.split(","))
@@ -205,7 +205,7 @@ if (asymmetric.length > 0) {
   process.exit(1);
 }
 
-// The component's entry point must also actually load.
+// The component's entry point must also load.
 await import(pathToFileURL(resolve(componentDir, "convex.config.js")).href).catch(
   (error) => {
     console.error(

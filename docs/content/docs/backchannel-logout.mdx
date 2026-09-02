@@ -10,13 +10,13 @@ Logout Token's `sid`, then removes those rows in bounded batches. The existing
 `sessionValid` subscription pushes signed-out state to every live client. There
 is no client configuration or new frontend code.
 
-This is separate from [webhook sync](/docs/webhook-sync): webhooks handle
-account-level deletion and suspension, while back-channel logout handles an
+This is separate from [webhook sync](/docs/webhook-sync). Webhooks handle
+account-level deletion and suspension; back-channel logout handles an
 individual Logto sign-in session.
 
 ## Register the Convex endpoint
 
-Install the session component as described in the [session-mode setup](/docs/session-mode),
+Install the session component per the [session-mode setup](/docs/session-mode),
 then add the route to the same `convex/http.ts` router as your other HTTP actions:
 
 ```ts title="convex/http.ts"
@@ -39,8 +39,8 @@ with `path`.
 
 ## Configure Logto
 
-In Logto Console, open **Applications**, select the **Traditional web** app used
-by session mode, and find its **Backchannel logout** section. Set **Backchannel
+In Logto Console, open **Applications**, select the **Traditional web** app that
+session mode uses, and find its **Backchannel logout** section. Set **Backchannel
 logout URI** to:
 
 ```text
@@ -59,7 +59,7 @@ logically revokes every component Session for that subject before bounded row
 cleanup.
 
 Existing component sessions created before this feature gain their `sid` on
-their next ID-token refresh (or immediately after signing in again). A valid
+their next ID-token refresh (or on the next sign-in). A valid
 logout for an already-absent or not-yet-mapped `sid` still returns `200`, as the
 OIDC specification requires.
 
@@ -69,9 +69,9 @@ The endpoint accepts only a form-encoded POST containing exactly one
 `logout_token`. Before changing state it:
 
 - verifies an `RS256` or `PS256` signature with
-  `<LOGTO_ENDPOINT>/oidc/jwks` (cached for five minutes; concurrent misses share
-  one refresh; fetches time out after 10 seconds and responses are limited to
-  256 KiB and 32 keys);
+  `<LOGTO_ENDPOINT>/oidc/jwks` (the handler caches the key set for five minutes,
+  shares one refresh among concurrent misses, times fetches out after 10
+  seconds, and caps responses at 256 KiB and 32 keys);
 - requires the configured issuer and app audience, fresh `iat`, unexpired
   `exp`, and a non-empty `jti`;
 - requires the OIDC back-channel logout event and either `sid` or `sub`;
@@ -79,12 +79,12 @@ The endpoint accepts only a form-encoded POST containing exactly one
   `nonce` claim;
 - streams the request body through a 1 MiB application limit.
 
-Verified `jti` values are claimed for 24 hours using the component's existing
-delivery-deduplication table. A retry of a delivery that already *completed* is
-answered with the same `200` without re-running revocation; a claim whose work
-never completed is redone, because it may never have committed; revocation is
-idempotent. If the revocation mutation fails, the claim is released so Logto can
-retry the work.
+The endpoint claims each verified `jti` for 24 hours in the component's existing
+delivery-deduplication table. It answers a retry of a delivery that already
+*completed* with the same `200` without re-running revocation. It redoes a claim
+whose work never completed, because that work may never have committed;
+revocation is idempotent. If the revocation mutation fails, the endpoint
+releases the claim so Logto can retry the work.
 
 Responses include `Cache-Control: no-store`. Success is always `200`, including
 when no session matched, so the endpoint never reveals session existence.
@@ -92,6 +92,6 @@ Invalid or failed logout requests return `400` with an OAuth-style JSON error;
 oversized bodies return `413`.
 
 For a custom router, `createLogtoBackchannelLogoutHandler(options)` returns the
-same Convex HTTP action without registering a path. The lower-level
-`verifyLogtoLogoutToken(token, options?)` verifier is also exported for advanced
-integrations.
+same Convex HTTP action without registering a path. The package also exports the
+lower-level `verifyLogtoLogoutToken(token, options?)` verifier for integrations
+that need the verification step alone.

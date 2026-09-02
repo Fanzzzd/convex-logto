@@ -7,7 +7,7 @@ import { Dashboard } from "./dashboard";
 /**
  * Rendered on the server, with the caller's identity.
  *
- * The token here is a bearer Convex validates — it proves nothing on its own,
+ * The token here is a bearer Convex validates. It proves nothing on its own,
  * and `null` just means "render the signed-out view and let the client take
  * over".
  *
@@ -17,7 +17,7 @@ import { Dashboard } from "./dashboard";
  * signed-in shell. `me` returns identity the token already carries, so that
  * costs nothing beyond a shell the client corrects on hydration. A query that
  * returns anything the bearer does not already hold must not rely on the token
- * alone: enforce revocation inside the function, the way `convex/me.ts`'s
+ * alone. Enforce revocation inside the function, the way `convex/me.ts`'s
  * `sensitive` does with `assertSubjectHasActiveSession`.
  */
 export default async function Home() {

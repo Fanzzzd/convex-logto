@@ -240,7 +240,7 @@ describe("request validation", () => {
         }),
       );
       expect(response.status).toBe(400);
-      // Structured, so the client can classify it rather than surfacing a bare
+      // Structured, so the client can classify it rather than seeing a bare
       // "responded 400" that swallows the reason.
       await expect(response.json()).resolves.toEqual({
         error: {
@@ -388,8 +388,8 @@ describe("cookie session flows", () => {
       sessionToken: "session-token-2",
       postLogoutRedirectUri: APP_ORIGIN,
     });
-    // Both cookies are expired, even though `idTokenCookie` is off here:
-    // turning the option off must not strand a live ID token in the browser.
+    // The route expires both cookies, even though `idTokenCookie` is off here.
+    // Turning the option off must not strand a live ID token in the browser.
     expect(response.headers.getSetCookie()).toEqual([
       `${LOGTO_SESSION_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
       `${LOGTO_ID_TOKEN_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
@@ -423,8 +423,8 @@ describe("cookie session flows", () => {
 
   it("answers a cookieless sign-out in the shape the caller asked for", async () => {
     // The cookie can leave the jar while a tab lives (privacy extension, ITP
-    // eviction, another tab clearing cookies). Signing out is then a no-op —
-    // but a bare `{}` fails the client's `count` check, so it would retry twice
+    // eviction, another tab clearing cookies). Signing out is then a no-op.
+    // But a bare `{}` fails the client's `count` check, so it would retry twice
     // and then throw, turning a clean no-op into a hard error.
     const { handler, handlers } = makeHarness();
     const everywhere = await handler(
@@ -598,10 +598,11 @@ describe("SSR seed", () => {
   });
 
   it("leaves the cookie intact and returns an empty seed after an unclassifiable error", async () => {
-    // What an unreachable Logto looks like: the component rethrows a raw fetch
-    // failure unclassified on purpose. Rethrowing here would turn that outage
-    // into a 500 document for every signed-in visitor, while the browser
-    // `/token` route treats the same failure as transient and keeps going.
+    // This is what an unreachable Logto looks like. The component rethrows a
+    // raw fetch failure unclassified on purpose. Rethrowing here would turn
+    // that outage into a 500 document for every signed-in visitor, while the
+    // browser `/token` route treats the same failure as transient and keeps
+    // going.
     const { handler, handlers } = makeHarness();
     handlers.refresh.mockRejectedValueOnce(new Error("fetch failed"));
     const seed = await handler.getInitialToken(
@@ -1400,10 +1401,10 @@ describe("browser transport session management", () => {
 // --- SSR ID token cookie -----------------------------------------------------
 //
 // `getInitialToken` rotates the session cookie, and a framework that forbids
-// writing cookies during render cannot persist that rotation — which is why the
+// writing cookies during render cannot persist that rotation. That is why the
 // documented advice for the Next.js App Router has been to skip SSR seeding
-// entirely. This companion cookie is written only where cookies *can* be set,
-// and read anywhere.
+// entirely. Only places where cookies *can* be set write this companion
+// cookie, and anything can read it.
 
 /** An ID token that expires `seconds` from now. */
 function tokenExpiringIn(seconds: number, padding = 0): string {
@@ -1481,7 +1482,7 @@ describe("SSR ID token cookie", () => {
   });
 
   it("is skipped, not cleared, when the token cannot be stored", async () => {
-    // Too large for a cookie, already expired, or not a JWT at all: leave the
+    // Too large for a cookie, already expired, or not a JWT at all. Leave the
     // previous cookie to expire on its own rather than turn a size problem into
     // a sign-out.
     for (const idToken of [
@@ -1530,7 +1531,7 @@ describe("SSR ID token cookie", () => {
 
   it("reads null for a token that outlived its cookie", () => {
     // The cookie's own Max-Age normally handles this, but that is the browser's
-    // guarantee and this read is not always behind one — a replayed or cached
+    // guarantee and this read is not always behind one. A replayed or cached
     // Cookie header would otherwise render the page signed in for a bearer
     // Convex refuses.
     for (const value of [tokenExpiringIn(-1), tokenExpiringIn(-3600), "nope"]) {
@@ -1550,10 +1551,10 @@ describe("SSR ID token cookie", () => {
   });
 
   // Every exit that expires the session cookie has to expire this one with it.
-  // Neither is reachable from JavaScript, so a half-cleared pair cannot be
-  // finished by anything on the client: the browser keeps handing a signed-in
-  // identity to every server render until the token's own `Max-Age` runs out —
-  // on a shared computer, into the next visitor's HTML.
+  // JavaScript can reach neither, so nothing on the client can finish a
+  // half-cleared pair. The browser keeps handing a signed-in identity to every
+  // server render until the token's own `Max-Age` runs out. On a shared
+  // computer, that identity goes into the next visitor's HTML.
   it("is expired by every exit that expires the session cookie", async () => {
     const idToken = tokenExpiringIn(3600);
     const expired = [
@@ -1562,7 +1563,7 @@ describe("SSR ID token cookie", () => {
     ];
 
     // 1. A terminal refresh. The session is gone for good, which is exactly when
-    //    a surviving ID token has the longest run — up to its full lifetime.
+    //    a surviving ID token has the longest run, up to its full lifetime.
     const terminal = makeHarness({ idTokenCookie: true, idToken });
     terminal.handlers.refresh.mockRejectedValueOnce(
       new ConvexError({
@@ -1578,8 +1579,8 @@ describe("SSR ID token cookie", () => {
     expect(afterTerminal.headers.getSetCookie()).toEqual(expired);
 
     // 2. A sign-out the deployment could not complete. The route clears on every
-    //    exit precisely because rejecting the request is not a reason to keep the
-    //    session alive — and the ID token is part of that session.
+    //    exit because rejecting the request is not a reason to keep the session
+    //    alive, and the ID token is part of that session.
     const failing = makeHarness({ idTokenCookie: true, idToken });
     failing.handlers.signOut.mockRejectedValueOnce(
       new ConvexError({
@@ -1659,7 +1660,7 @@ describe("tokens route", () => {
 
   it("forwards forceRefresh on both ops", async () => {
     // The cookie transport is the one path where the browser cannot pass an
-    // argument straight through: every field has to be named on both sides. A
+    // argument straight through. Every field has to be named on both sides. A
     // dropped `forceRefresh` would silently serve the cached token the caller
     // just told the library not to trust.
     const { handler, handlers } = makeHarness();
@@ -1753,8 +1754,8 @@ describe("browser transport token exchange", () => {
   it("routes exchangeToken and fetchUserInfo through the cookie handler", async () => {
     const { handler } = makeHarness();
     // Piped through the real handler rather than a canned Response, because
-    // the route is the thing under test. The two headers a browser adds for
-    // free — the origin and the cookie — are added here for the same reason.
+    // the route is the thing under test. For the same reason this adds the two
+    // headers a browser adds for free, the origin and the cookie.
     const transport = createLogtoSessionCookieTransport(api, {
       endpoint: `${APP_ORIGIN}${BASE_PATH}`,
       fetch: (input, init) => {
@@ -1781,7 +1782,7 @@ describe("browser transport token exchange", () => {
   });
 
   it("carries forceRefresh across the transport, for both calls", async () => {
-    // End to end through the real route: the browser half has to *name* the
+    // End to end through the real route. The browser half has to *name* the
     // field to send it, and the server half has to name it again to forward
     // it. Two places to drop it, so this asserts what the app action received.
     const { handler, handlers } = makeHarness();

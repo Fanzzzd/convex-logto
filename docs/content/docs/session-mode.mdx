@@ -10,8 +10,8 @@ browser holds only two things:
 - a **short-lived ID token** (the bearer Convex validates; minutes of exposure,
   not weeks), and
 - a **rotating session token** issued in generations. The server stores only
-  hashes; the current generation and a bounded set of recently superseded
-  generations may be accepted during the reuse window. Presentation after that
+  hashes, and accepts the current generation and a bounded set of recently
+  superseded generations during the reuse window. Presentation after that
   window triggers reuse containment.
 
 Compared to the default [bridge mode](/docs/quick-start) (Logto's SPA SDK in the
@@ -21,7 +21,7 @@ browser, refresh token in `localStorage`):
 |---|---|---|
 | Logto app type | Single-page app | **Traditional web** |
 | Refresh token lives | browser `localStorage` | Convex component (never leaves) |
-| XSS steals | a ~2-week refresh token | a ~1-hour ID token plus a rotating application credential; late reuse is contained on presentation |
+| XSS steals | a ~2-week refresh token | a ~1-hour ID token plus a rotating application credential; the component contains late reuse on presentation |
 | Sign-out elsewhere / user suspended | at token expiry | **pushed live** (reactive revocation) |
 | Frontend dependencies | `@logto/react` | none beyond `convex` + `react` |
 | Logto config in the bundle | endpoint + app id | nothing |
@@ -33,14 +33,14 @@ this token model.
 
 The default localStorage transport works on any static host/CDN, no cookie
 domain or frontend server required. Apps with a same-site server endpoint can
-optionally move the rotating session token into an HttpOnly cookie; that upgrade
-is covered below.
+move the rotating session token into an HttpOnly cookie; see the cookie
+transport section below.
 
 ## Setup
 
 ### 1. Create a Traditional Web app in Logto
 
-In Logto Console: **Applications → Create application → Traditional web**. Add:
+In Logto Console, open **Applications → Create application → Traditional web**. Add:
 
 - **Redirect URI** → `http://localhost:5173/callback`
 - **Post sign-out redirect URI** → `http://localhost:5173`
@@ -71,7 +71,7 @@ npx convex env set LOGTO_APP_ID        your-traditional-web-app-id
 npx convex env set LOGTO_CLIENT_SECRET your-traditional-web-app-secret
 ```
 
-The endpoint policy is HTTPS by default (loopback HTTP is allowed for local
+The endpoint policy is HTTPS by default (loopback HTTP works for local
 development). For an existing HTTP-only, non-loopback self-hosted deployment,
 pass `{ allowInsecureHttp: true }` to both `logtoAuthConfig` and
 `logtoSessionApi`; prefer terminating TLS instead.
@@ -143,9 +143,9 @@ const {
   renameSession,
   revokeSession,
 } = useLogtoAuth();
-// signIn({ returnTo: "/dashboard" }): same-origin path, lands there after sign-in
-// signOut(): clears tabs sharing this localStorage transport and ends this
-// browser's Logto SSO session
+// signIn({ returnTo: "/dashboard" }) takes a same-origin path and lands there
+// after sign-in. signOut() clears tabs sharing this localStorage transport and
+// ends this browser's Logto SSO session.
 ```
 
 ## Sign out everywhere
@@ -161,29 +161,29 @@ await signOutEverywhere({
 ```
 
 The component derives the subject **only** from the caller's presented live
-session token. The current generation and a bounded set of recently superseded
-generations may be accepted during the configured reuse window. A superseded
-token outside that window is treated as reuse: only its own Session is
-contained and the operation rejects, leaving the subject's other Sessions
+session token. It accepts the current generation and a bounded set of recently
+superseded generations during the configured reuse window. It treats a
+superseded token outside that window as reuse. It contains only that token's
+own Session and rejects the operation, leaving the subject's other Sessions
 intact. There is no client-supplied subject and no read-then-delete race.
 
-Subject-wide logical revocation is committed first, so `sessionValid` rejects
-every affected Session immediately. Physical rows are then deleted in fixed
+The component commits subject-wide logical revocation first, so `sessionValid`
+rejects every affected Session at once. It then deletes physical rows in fixed
 batches. If cleanup exceeds one action's work budget, the marker remains
 effective and retrying continues cleanup. The returned `count` is the number of
-physical rows removed by a completed cleanup, not the point when revocation
-took effect. Local credentials are cleared first; other live devices receive
+physical rows a completed cleanup removed, not the point when revocation took
+effect. The client clears local credentials first; other live devices receive
 `sessionValid: false` through the existing reactive subscription.
 If the subject-wide server action fails, the promise rejects so the app can
 report that the everywhere operation was incomplete, even though this device
 has already cleared its local credentials.
 
 The caller also follows Logto's end-session URL, ending that device's browser
-SSO session. The URL deliberately carries no ID token; Logto's client ID and
-registered post-logout redirect are sufficient, as they are for ordinary
-`signOut()`. This is still an **RP-level boundary**: one device cannot erase the
+SSO session. The URL carries no ID token, on purpose; Logto's client ID and
+registered post-logout redirect are enough, as they are for ordinary
+`signOut()`. This is still an **RP-level boundary**. One device cannot erase the
 Logto OP cookies stored in other devices' browsers. A device that retains a
-live Logto cookie can start a new sign-in and may be authenticated by Logto
+live Logto cookie can start a new sign-in, and Logto may authenticate it
 without another credential prompt.
 
 Deleting a component row also deletes its server-held Logto refresh token, so
@@ -194,9 +194,9 @@ could invalidate still-live siblings. Unreachable grant state expires at its
 configured Logto TTL.
 
 If an older `convex/auth.ts` has not re-exported `signOutEverywhere`, the
-provider rejects with an explicit upgrade message instead of exposing a
-cryptic missing-function response. Re-export the eleven-function set shown above
-and deploy the Convex functions.
+provider rejects with an upgrade message instead of a cryptic missing-function
+response. Re-export the eleven-function set shown above and deploy the Convex
+functions.
 
 ## Where am I signed in
 
@@ -213,20 +213,20 @@ await renameSession(sessionId, "Work laptop"); // pass undefined to clear it
 await revokeSession(sessionId); // that device drops on its next revocation tick
 ```
 
-Every one of the three authenticates the same way `signOutEverywhere` does: the
-subject comes **only** from the caller's presented live session token, so a
-`sessionId` belonging to another user resolves to `session_not_found` rather than
-revealing that it exists. A session already killed by a revocation watermark is
-invisible to the list and untouchable by the mutations, even while its row waits
-for a bounded cleanup batch.
+All three authenticate the same way `signOutEverywhere` does. The subject comes
+**only** from the caller's presented live session token, so a `sessionId`
+belonging to another user resolves to `session_not_found` rather than revealing
+that it exists. A session already killed by a revocation watermark is invisible
+to the list and untouchable by the mutations, even while its row waits for a
+bounded cleanup batch.
 
 `listSessions()` is a snapshot, not a reactive query. The credential it
 authenticates with rotates roughly every ID-token lifetime, and a subscription
 keyed on a rotating credential would resubscribe on every rotation. Call it again
 after a rename or revoke. It returns at most 16 live sessions, newest first, with
-`truncated: true` when more remain. Rows killed by a watermark are skipped
+`truncated: true` when more remain. The scan skips rows killed by a watermark
 without consuming a slot, so a burst of revoked-but-not-yet-deleted sessions can
-never hide the live device behind them; the scan is bounded, and a page that
+never hide the live device behind them. The scan is bounded, and a page that
 stops at that bound also reports `truncated`.
 
 `revokeSession()` on the **current** session revokes the server side but leaves
@@ -236,19 +236,20 @@ not the target. Requiring the target's key would make it impossible to revoke a
 lost device, which is the main reason this exists.
 
 `renameSession()` and `revokeSession()` resolve with no value, or reject with the
-terminal `session_not_found` error. An id belonging to another subject, or one a
-watermark already killed, is refused without confirming that it exists. Like
-`signOutEverywhere()`, revocation is an **RP-level boundary**: it deletes the
-session and its server-held refresh token, but cannot erase the Logto OP cookie in
-that device's browser, so a device holding one can start a new sign-in. For a
-genuinely lost device, revoke it in Logto (or suspend the user) as well.
+terminal `session_not_found` error. The component refuses an id belonging to
+another subject, or one a watermark already killed, without confirming that it
+exists. Like `signOutEverywhere()`, revocation is an **RP-level boundary**. It
+deletes the session and its server-held refresh token, but cannot erase the
+Logto OP cookie in that device's browser, so a device holding one can start a
+new sign-in. For a lost device, revoke it in Logto (or suspend the user) as
+well.
 
 ### Labels and the client descriptor
 
-`label` is user-chosen and set through `renameSession`. It is normalized on write
-(whitespace collapsed, control characters and bidi overrides stripped so one
-entry cannot impersonate another) and rejected past 64 code points rather than
-silently truncated.
+`label` is user-chosen and set through `renameSession`. The component
+normalizes it on write (collapses whitespace, strips control characters and bidi
+overrides so one entry cannot impersonate another) and rejects it past 64 code
+points rather than truncating it.
 
 `client` is a coarse, **self-reported** description the app supplies at sign-in
 so the user recognises their own devices:
@@ -261,10 +262,10 @@ so the user recognises their own devices:
 >
 ```
 
-The library never reads a User-Agent or an IP address. It stores exactly what
-you pass, trimmed and truncated to 32 code points per field. It is not
-authenticated: treat it as display text and never make a security decision with
-it. `deviceBound` on each summary, by contrast, is server-derived and does say
+The library never reads a User-Agent or an IP address. It stores what you pass,
+trimmed and truncated to 32 code points per field. It is not authenticated, so
+treat it as display text and never make a security decision with it.
+`deviceBound` on each summary, by contrast, is server-derived and does say
 whether that session needs a device proof to refresh or sign out.
 
 ## Device binding (optional)
@@ -284,8 +285,8 @@ token transport:
 
 The browser generates an ECDSA P-256 keypair with Web Crypto and persists the
 `CryptoKeyPair` in deployment-namespaced IndexedDB. The private key is
-**non-extractable** and never reaches Convex; only its public JWK is captured
-when the callback creates the Session. Every refresh and sign-out operation
+**non-extractable** and never reaches Convex; the callback captures only its
+public JWK when it creates the Session. Every refresh and sign-out operation
 signs the presented rotating session token, and the component verifies that
 signature before it claims, rotates, deletes, or records subject-wide
 revocation. Because the token changes after every successful refresh, a
@@ -293,29 +294,29 @@ captured proof cannot authorize the next generation (the token-reuse grace
 still absorbs honest races).
 
 This protects against **off-device replay** after an attacker copies the
-JavaScript-visible session token: the token alone is no longer enough on
+JavaScript-visible session token. The token alone is no longer enough on
 another machine. It does not claim to defeat arbitrary code already executing
 on the same origin, which can ask the browser-held key to sign while that code
 is running.
 
-Binding is deliberately opt-in. If IndexedDB is unavailable, setup fails loudly
-instead of silently issuing an unbound session. If storage eviction removes the
-key while a bound session remains, the replacement key's next proof is rejected
-terminally and the client clears the session for a clean sign-in. That occasional
-re-authentication trade-off is why ordinary sessions remain unbound by default.
+Binding is opt-in on purpose. If IndexedDB is unavailable, setup fails with an
+error instead of issuing an unbound session. If storage eviction removes the
+key while a bound session remains, the component rejects the replacement key's
+next proof as terminal and the client clears the session for a clean sign-in.
+That occasional re-authentication trade-off is why ordinary sessions remain
+unbound by default.
 
 Do not combine `deviceBinding` with `cookieTransport` on any browser. The cookie
 transport already prevents off-device replay by taking the token out of
 JavaScript, while device binding requires JavaScript to sign that exact token;
 supporting both would require weakening one of those guarantees. The shared
-compatibility assertion throws the same explicit configuration error regardless
-of which option you enable first. On Safari this also avoids the original ITP
-failure mode where IndexedDB can be evicted while the cookie survives.
+compatibility assertion throws the same configuration error whichever option
+you enable first. On Safari this also avoids the original ITP failure mode,
+where Safari can evict IndexedDB while the cookie survives.
 
 Re-evaluate this software fallback when
 [Device Bound Session Credentials (DBSC)](https://developer.chrome.com/docs/web-platform/device-bound-session-credentials)
-is available cross-browser. DBSC should become the preferred browser-managed
-mechanism once its interoperability and deployment support are broad enough.
+is available in every major browser. Once it is, prefer it over this key.
 
 ## HttpOnly cookie transport (optional)
 
@@ -351,9 +352,9 @@ with six routes under `/api/logto-session` by default:
 
 Every application request has one fixed CSRF policy: `POST`, the
 `x-convex-logto-csrf: 1` custom header, and an exact match in `allowedOrigins`.
-Cross-origin same-site mounts also get credentialed CORS responses; wildcards
-are never accepted. Request bodies are streamed through a 64 KiB application
-limit; an oversized body returns `413` before JSON parsing.
+Cross-origin same-site mounts also get credentialed CORS responses; the handler
+never accepts wildcards. It streams request bodies through a 64 KiB application
+limit and returns `413` for an oversized body before JSON parsing.
 
 ### Shared handler
 
@@ -433,10 +434,10 @@ Use the same provider configuration shown for Next.js.
 
 ### Convex HTTP action on a custom domain
 
-Convex can host the standard handler directly. Use a custom domain that shares
+Convex can host the standard handler itself. Use a custom domain that shares
 the frontend's site, for example `app.example.com` and `api.example.com`. A
-default `*.convex.site` endpoint is cross-site to your app and is intentionally
-not a cookie-transport deployment.
+default `*.convex.site` endpoint is cross-site to your app, so it cannot host
+the cookie transport.
 
 ```ts title="convex/http.ts"
 import { createLogtoSessionCookieHandler } from "convex-logto";
@@ -476,9 +477,9 @@ Call it at most once per incoming document request and always forward its
 `headers` to the page response; the `Set-Cookie` header carries the next token
 generation. If your rendering hook cannot control response headers, let the
 browser use `/token` instead.
-The seed is best-effort under concurrent renders: every failed seed returns
+The seed is best-effort under concurrent renders. Every failed seed returns
 empty without changing the cookie. The client refreshes after hydration, and
-the browser `/token` route authoritatively clears a genuinely dead session.
+the browser `/token` route is what clears a dead session.
 
 For example, a TanStack Start server function can seed the root loader:
 
@@ -526,10 +527,10 @@ reason for the exclusion, but the HttpOnly/signing conflict applies everywhere.
 
 ## Reactive revocation
 
-Every session's liveness is a Convex subscription. The moment a session is
-killed server-side, by a sign-out in another tab, token-theft detection, or a
-webhook suspension, Convex pushes `false` and the app drops to signed-out
-**live**, not at token expiry.
+Every session's liveness is a Convex subscription. The moment a sign-out in
+another tab, token-theft detection, or a webhook suspension kills a session
+server-side, Convex pushes `false` and the app drops to signed-out **live**, not
+at token expiry.
 
 For functions whose policy is subject-wide revocation, enforce it server-side
 too (an ID token stays cryptographically valid until it expires):
@@ -549,10 +550,10 @@ export const sensitive = query({
 
 `assertSubjectHasActiveSession()` verifies that the authenticated bearer's
 subject has at least one active component Session. It does **not** prove that
-this bearer was issued for that particular Session. Use it when subject-wide
-revocation is the policy boundary. Its transaction-bounded scan can throw the
-transient `session_liveness_scan_incomplete` error while a large revocation is
-still being physically drained; retry rather than treating that as a definitive
+the component issued this bearer for that particular Session. Use it when
+subject-wide revocation is the policy boundary. Its transaction-bounded scan can
+throw the transient `session_liveness_scan_incomplete` error while a large
+revocation is still draining; retry rather than treating that as a definitive
 `session_revoked`. `assertUserHasActiveSession` remains as a deprecated
 compatibility alias.
 
@@ -568,11 +569,11 @@ To propagate an individual Logto session ending (including sign-out from
 another app), register the verified [OIDC back-channel logout
 endpoint](/docs/backchannel-logout). It stores the ID token's optional `sid` and
 revokes every component Session mapped to the Logout Token's `sid`; a token
-carrying only `sub` uses the specification's subject-wide fallback. Logical
-revocation is recorded before bounded physical cleanup. The same liveness
-subscription pushes the revocation, so no client changes are required.
+carrying only `sub` uses the specification's subject-wide fallback. It records
+logical revocation before bounded physical cleanup. The same liveness
+subscription pushes the revocation, so the client needs no changes.
 
-One consequence to plan for: a reactive query gated this way starts **throwing**
+Plan for one consequence. A reactive query gated this way starts **throwing**
 when the authenticated subject no longer has any active component Session. Wrap
 such data in an error boundary (ordinary Convex practice for query errors) so
 subject-wide revocation renders as a clean sign-out; the
@@ -583,12 +584,12 @@ is a 15-line version.
 
 A refresh has three possible failures, and the component keeps them apart. If
 Logto rejects the *grant*, because the refresh token was revoked, reused, or the
-SSO session ended, that is terminal. The row is deleted and the user signs in
-again.
-If the failure describes your **deployment** instead, the session is kept and the
-error is transient, so fixing the environment variable is all the recovery anyone
-needs. And if the component cannot tell what Logto did with the grant, the
-outcome is **unknown** and gets its own conservative handling, below.
+SSO session ended, that is terminal. The component deletes the row and the user
+signs in again.
+If the failure describes your **deployment** instead, the component keeps the
+session and reports a transient error, so fixing the environment variable is
+the whole recovery. And if the component cannot tell what Logto did with the
+grant, the outcome is **unknown** and gets its own conservative handling, below.
 
 Deployment faults include a wrong `LOGTO_CLIENT_SECRET` (`invalid_client`), a
 `LOGTO_ENDPOINT` that no longer matches the `iss` Logto issues, say after moving
@@ -596,7 +597,7 @@ behind a custom domain or a reverse proxy, and a missing `openid` scope.
 Any of these would otherwise destroy every session in the deployment, one refresh
 at a time.
 
-What makes keeping the session safe is that Logto *told us what it did*: it
+What makes keeping the session safe is that Logto *told us what it did*. It
 either returned a rotated refresh token, which the component persists before
 failing, or returned none, which means the stored one is still current.
 Presenting a superseded refresh token again would trip Logto's reuse detection
@@ -604,20 +605,20 @@ and destroy the whole grant, including the sibling sessions that share it.
 
 The unknown case is a response the component cannot parse as a token response at
 all: a proxy or WAF interstitial where JSON was expected, or a body too large to
-read. Whether Logto processed the grant is then genuinely unknown, so the refresh
-claim is left to expire and that session requires a fresh sign-in. Guessing there
-is what risks spending a rotated token twice. (During *sign-in* every one of
-these is terminal instead, including a wrong client secret. The component
+read. Whether Logto processed the grant is then unknown, so the component lets
+the refresh claim expire and that session requires a fresh sign-in. Guessing
+there is what risks spending a rotated token twice. During *sign-in* every one
+of these is terminal instead, including a wrong client secret. The component
 consumes the sign-in transaction before it contacts Logto, so the attempt is
 unrepeatable either way and a retry could only report a stale callback, hiding
-what actually went wrong. A failure that never reached the deployment at all is
-retried once, since nothing was consumed.)
+what went wrong. The provider retries once a failure that never reached the
+deployment at all, since nothing was consumed.
 
 A transient failure is not a sign-out, and the browser keeps retrying it. The
 session token stays in storage and the provider re-presents it on its
 own schedule until the refresh succeeds, the session is signed out, or the tab
 closes: a second, then two, five, ten, then every thirty seconds. This matters
-because Convex stops asking for a token after one failure: without the retry, a
+because Convex stops asking for a token after one failure. Without the retry, a
 tab that hit a tunnel hiccup or woke from sleep before its network did would sit
 signed-out until the user reloaded.
 
@@ -625,8 +626,8 @@ signed-out until the user reloaded.
 
 1. **Sign-in.** `signIn()` asks the component for an authorize URL. The OIDC
    `state` and PKCE verifier stay server-side (a one-time, 10-minute
-   transaction); the browser also pins the `state` to the signing-in tab, so a
-   forged or replayed callback is refused before any exchange.
+   transaction); the browser also pins the `state` to the signing-in tab, so the
+   provider refuses a forged or replayed callback before any exchange.
 2. **Exchange.** The callback action redeems the code (client secret + PKCE),
    stores the refresh token in the component, and hands the browser the ID token
    plus session token #1. With device binding enabled, it also stores the
@@ -634,25 +635,26 @@ signed-out until the user reloaded.
 3. **Refresh.** When the ID token nears expiry, the browser presents session
    generation #1 (and, for a bound Session, its signature); the component
    verifies proof before refreshing against Logto and answers with a fresh ID
-   token plus generation #2. A bounded set of superseded generation hashes is
-   retained until each generation's reuse-window expiry so concurrent responses
-   do not false-positive.
+   token plus generation #2. The component retains a bounded set of superseded
+   generation hashes until each generation's reuse-window expiry so concurrent
+   responses do not false-positive.
 4. **Reuse containment.** If a superseded generation appears after its window,
    the component abandons the Session and its associated server-held refresh
    token becomes unreachable; that client must reauthenticate without
    invalidating a still-live sibling that shares Logto grant state.
 5. **Sign-out.** Clears local state first (other tabs sharing localStorage
    follow via the `storage` event), removes the component Session, then ends the
-   current browser's SSO session unless federated sign-out is disabled.
+   current browser's SSO session unless you disable federated sign-out.
 
-Concurrent refreshes are single-flighted at three layers: per tab (in-flight
-merge), per browser (Web Locks), per session (a server-side claim). A concurrent
-replay of the same Logto refresh token at its rotation boundary would destroy
-the grant. Server claims are ownership-fenced. If a claim exceeds its
-safety timeout, the remote outcome is unknown, so the local Session is abandoned
-instead of spending the stored refresh token again. Credentials are returned
-only after the matching claim commits; concurrent deletion or ownership loss
-rejects the response and leaves uncommitted remote credentials unreachable.
+The client single-flights concurrent refreshes at three layers: per tab
+(in-flight merge), per browser (Web Locks), per session (a server-side claim). A
+concurrent replay of the same Logto refresh token at its rotation boundary would
+destroy the grant. Server claims are ownership-fenced. If a claim exceeds its
+safety timeout, the remote outcome is unknown, so the client abandons the local
+Session instead of spending the stored refresh token again. The component
+returns credentials only after the matching claim commits; concurrent deletion
+or ownership loss rejects the response and leaves uncommitted remote credentials
+unreachable.
 
 ## Provider props
 
@@ -663,12 +665,12 @@ rejects the response and leaves uncommitted remote credentials unreachable.
 | `callbackPath` | `"/callback"` | Route that finishes the redirect (exact match; must match the registered Redirect URI's path). |
 | `afterSignIn` | `"/"` | Where to land after sign-in; `signIn({ returnTo })` overrides. |
 | `navigate` | hard replace | Your router's navigate for soft post-sign-in navigation. |
-| `tokenStorage` | `"session"` | Where the ID token persists: `"session"` (per-tab; a fresh token restores without refresh only while its paired component-session marker remains), `"memory"` (strictest), `"local"`. Orphan ID tokens are cleared. |
+| `tokenStorage` | `"session"` | Where the ID token persists: `"session"` (per-tab; a fresh token restores without refresh only while its paired component-session marker remains), `"memory"` (strictest), `"local"`. The provider clears orphan ID tokens. |
 | `deviceBinding` | `false` | Bind refresh and revocation operations to a non-extractable IndexedDB-held ECDSA key. Cannot be combined with `cookieTransport`. |
 | `cookieTransport` | none | `{ endpoint?, fetch?, deviceBinding? }`: move the rotating session token into a persistent same-site HttpOnly cookie whose 190-day lifetime renews on every rotation. The reserved `deviceBinding` flag only activates the shared incompatibility assertion. |
 | `initialToken` / `initialSessionId` | none | Paired values from `handler.getInitialToken(request)` for authenticated SSR/hydration. |
 | `reactiveRevocation` | `true` | Subscribe to session liveness and drop auth live on revocation. |
-| `onAuthError` | none | Sign-in initiation and callback failures, plus opted-in device-key storage failures. Initiation failures are reported before `signIn()` rejects, so `void signIn()` remains observable. |
+| `onAuthError` | none | Sign-in initiation and callback failures, plus opted-in device-key storage failures. The provider reports initiation failures before `signIn()` rejects, so `void signIn()` remains observable. |
 
 `logtoSessionApi(component, opts?)` accepts `scopes` (server-set; the browser
 can't request its own), `reuseWindowMs`, env overrides, and two options that
@@ -683,7 +685,7 @@ scopes })`, and Logto puts the matching claims in the ID token. The two are
 independent scopes, so ask for both. `user.organizations` and
 `user.organization_roles` are then in every authenticated request, and
 [`assertOrganizationRole`](/docs/api-reference#organization-authorization)
-reads them server-side for free, as a snapshot taken when the token was issued,
+reads them server-side for free, as a snapshot from when Logto issued the token,
 which is the one thing to know before authorizing on them. Without the scopes the
 claims are absent, and absent authorizes nothing.
 
@@ -697,8 +699,8 @@ const { getOrganizationTokenClaims, fetchUserInfo } = useLogtoAuth();
 const { scopes } = await getOrganizationTokenClaims("org-id");
 ```
 
-Set `exposeAccessTokens: true` on `logtoSessionApi()` if a caller genuinely
-needs the token *string* in the browser. `getOrganizationToken(id)` and
+Set `exposeAccessTokens: true` on `logtoSessionApi()` if a caller needs the
+token *string* itself in the browser. `getOrganizationToken(id)` and
 `getAccessToken(resource)` then return it, and it becomes one more thing XSS can
 steal. The refresh token has no such option in either mode.
 
@@ -709,20 +711,21 @@ Two constraints worth knowing before you design around it:
   widening it means signing the user in again.
 - **The exchange shares the refresh claim**, because it spends the same Logto
   refresh token, so it can answer the transient `refresh_in_flight` while a
-  refresh is in flight. Minted tokens are cached per session, audience and scope
-  set, so a permission check on render is not a grant per render.
+  refresh is in flight. The component caches minted tokens per session, audience
+  and scope set, so a permission check on render is not a grant per render.
 
-<Callout>Bridge mode already has all of this: `@logto/react`'s `useLogto()` is
-in your bundle, so call `getOrganizationToken` on it directly.</Callout>
+<Callout>Bridge mode already has all of this. `@logto/react`'s `useLogto()` is
+in your bundle, so call `getOrganizationToken` on it.</Callout>
 
 ## Choosing a mode
 
 Stay on **bridge mode** if you want zero server-side state or you're already
-running it; it remains fully supported. Pick **session mode** for the smallest
-browser attack surface, live revocation, and a bundle with no auth SDK. Both
-modes present the same ID token to Convex, so `ctx.auth.getUserIdentity()` and
-the [webhook user sync](/docs/webhook-sync) work identically, and migrating is a
-config change (new Logto app + provider swap), not a data migration.
+running it; it remains supported. Pick **session mode** to keep long-lived
+credentials out of the browser, get live revocation, and ship a bundle with no
+auth SDK. Both modes present the same ID token to Convex, so
+`ctx.auth.getUserIdentity()` and the [webhook user sync](/docs/webhook-sync)
+work the same, and migrating is a config change (new Logto app + provider
+swap), not a data migration.
 
 See the runnable
 [vite-react-session example](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session).

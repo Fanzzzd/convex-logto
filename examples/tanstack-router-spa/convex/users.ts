@@ -24,7 +24,7 @@ export const myProfile = query({
       onboarded: true as const,
       role: user.role,
       status: user.status,
-      // Expose identity details only for an active account — a suspended/deleted
+      // Expose identity details only for an active account. A suspended/deleted
       // row has its PII scrubbed, so don't rehydrate it from the token.
       email: active ? (user.email ?? identity.email ?? null) : null,
       name: active ? (user.name ?? identity.name ?? null) : null,
@@ -32,24 +32,25 @@ export const myProfile = query({
   },
 });
 
-// First-login onboarding: create the caller's row, keyed by their token subject.
+// First-login onboarding. Create the caller's row, keyed by their token subject.
 // Get-or-create, so calling it twice is safe (and races resolve under Convex OCC).
 //
-// This — NOT the webhook — is what creates rows. `User.Created` doesn't fire for a
+// This, NOT the webhook, is what creates rows. `User.Created` doesn't fire for a
 // user who already existed in Logto, so a webhook-only approach would leave them
 // permanently row-less. An authenticated mutation is the reliable creator.
 //
-// Trust boundary: we create the row `active` on the strength of the caller's token,
+// Trust boundary. We create the row `active` on the strength of the caller's token,
 // which Convex already verified (signature + expiry). Like all JWT auth, a token
 // stays valid until it expires (≤ its TTL) even if Logto suspends/deletes the user
 // afterward. For someone already onboarded the webhook flips their status the moment
 // Logto fires the event; a user still in this pre-onboarding window could self-
 // provision an `active` row until their token lapses. Closing that residual gap
-// needs short token lifetimes or a live Logto check (Management API) — out of scope
-// for a demo, but the reason a webhook tombstone is the WRONG fix: it would mint a
-// row for every Logto user ever suspended/deleted, even ones who never used the app.
+// needs short token lifetimes or a live Logto check (Management API). That is out
+// of scope for a demo, but it is the reason a webhook tombstone is the WRONG fix.
+// It would mint a row for every Logto user ever suspended/deleted, even ones who
+// never used the app.
 //
-// DEMO ONLY: taking `role` from the client lets you try the gate from both sides.
+// DEMO ONLY. Taking `role` from the client lets you try the gate from both sides.
 // A real app drops the arg, always creates `role: "user"`, and grants admin OUT OF
 // BAND (a Convex dashboard mutation, an internal mutation, or an allowlist).
 export const completeOnboarding = mutation({
@@ -69,7 +70,7 @@ export const completeOnboarding = mutation({
 
 // Change an EXISTING active user's role. `role` is app-owned, so writing it is
 // correct; `requireActiveUser` stops a suspended/deleted user from touching it.
-// (Demo switcher — a real app would gate this on `requireRole(ctx, "admin")`.)
+// (Demo switcher. A real app would gate this on `requireRole(ctx, "admin")`.)
 export const setMyRole = mutation({
   args: { role: roleValidator },
   handler: async (ctx, { role }) => {
@@ -79,7 +80,7 @@ export const setMyRole = mutation({
 });
 
 // The payload the /admin page shows. `requireRole` throws "forbidden" for anyone
-// who isn't an active admin — enforced on the server regardless of the client UI.
+// who isn't an active admin, enforced on the server regardless of the client UI.
 export const adminStats = query({
   handler: async (ctx) => {
     await requireRole(ctx, "admin");

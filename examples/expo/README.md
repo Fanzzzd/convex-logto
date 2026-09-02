@@ -2,7 +2,7 @@
 
 The smallest correct way to use `convex-logto` in an Expo app. The frontend carries
 **no Logto config**; it pulls `{ endpoint, appId }` from the Convex backend via
-`api.logto.config`, exactly like the web examples. Auth uses the **`convex-logto/native`**
+`api.logto.config`, exactly like the web examples. Auth uses the `convex-logto/native`
 entry on top of [`@logto/rn`](https://github.com/logto-io/react-native).
 
 ## Run
@@ -41,7 +41,7 @@ entry on top of [`@logto/rn`](https://github.com/logto-io/react-native).
 - **`fallback` covers the one-time config fetch.** Native has no SSR "inert client"
   trick, so children mount once `{ endpoint, appId }` arrives; Convex's `<AuthLoading>`
   then covers the token handshake.
-- **`EXPO_PUBLIC_CONVEX_URL`**: Expo only exposes `EXPO_PUBLIC_*` env vars to the bundle.
+- **`EXPO_PUBLIC_CONVEX_URL`.** Expo only exposes `EXPO_PUBLIC_*` env vars to the bundle.
 
 ## Requires a development build
 
@@ -53,12 +53,12 @@ entry on top of [`@logto/rn`](https://github.com/logto-io/react-native).
 ## A note on Expo SDK / `@logto/rn` versions
 
 This example pins **Expo SDK 56** (latest) to match Logto's own sample app. The
-**published** `@logto/rn@1.1.0` still declares peer ranges for the older,
+published `@logto/rn@1.1.0` still declares peer ranges for the older,
 independently-versioned Expo modules (`expo-* >=14 <16`), so `pnpm install` prints
-peer-dependency **warnings** for `expo-crypto` / `expo-secure-store` / `expo-web-browser`
+peer-dependency warnings for `expo-crypto` / `expo-secure-store` / `expo-web-browser`
 on SDK 54+. They are warnings, not errors. The SDK runs fine on SDK 56 (Logto's master
 sample proves it), and they will clear once Logto publishes a release with updated peer ranges.
-To avoid the warnings entirely, pin Expo SDK 53 (RN 0.79), which is within the published
+To avoid the warnings, pin Expo SDK 53 (RN 0.79), which is within the published
 peer ranges.
 
 > **Want webhook user-sync?** It's framework-agnostic; the `convex/` backend code is

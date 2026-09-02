@@ -2,19 +2,20 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 /**
- * Component-private tables — app code cannot read them (component isolation),
+ * Component-private tables. App code cannot read them (component isolation),
  * which is the trust boundary that lets `logtoRefreshToken` live here in
  * plaintext while browsers only ever hold a rotating application session token
  * (stored hashed). The short-lived ID token is cached alongside for the
  * reuse-window path; it shares the refresh token's trust boundary.
  *
  * Schema evolution rule: new fields on existing tables must be
- * `v.optional(...)` — component tables have no dedicated migration mechanism;
- * fields in a brand-new table may be required. The schema ships with the npm
- * package and is validated against existing rows on the app's next push.
+ * `v.optional(...)`, because component tables have no dedicated migration
+ * mechanism; fields in a brand-new table may be required. The schema ships
+ * with the npm package, and Convex validates it against existing rows on the
+ * app's next push.
  */
 export default defineSchema({
-  // One row per sign-in round-trip: server-held state + PKCE verifier between
+  // One row per sign-in round-trip. Server-held state + PKCE verifier between
   // building the sign-in URL and the code exchange. Consumed exactly once.
   transactions: defineTable({
     state: v.string(),
@@ -26,9 +27,9 @@ export default defineSchema({
     .index("by_state", ["state"])
     .index("by_expiresAt", ["expiresAt"]),
 
-  // SHA-256 delivery claims — raw webhook bodies and back-channel logout jtis.
-  // Exactly-once handling absorbs a Logto retry whose 200 got lost. Swept by
-  // the GC cron after 24h.
+  // SHA-256 delivery claims over raw webhook bodies and back-channel logout
+  // jtis. Exactly-once handling absorbs a Logto retry whose 200 got lost. The
+  // GC cron sweeps them after 24h.
   webhookDeliveries: defineTable({
     bodyHash: v.string(),
     seenAt: v.number(),
@@ -48,11 +49,11 @@ export default defineSchema({
     subject: v.string(),
     /** Logto OP session id (the ID token's optional `sid`). */
     sid: v.optional(v.string()),
-    /** SHA-256 (hex) of the current session token — never the token itself. */
+    /** SHA-256 (hex) of the current session token, never the token itself. */
     tokenHash: v.string(),
     /** Legacy single-generation grace field retained for pre-history-table rows. */
     prevTokenHash: v.optional(v.string()),
-    /** When the last rotation happened — the reuse window counts from here. */
+    /** When the last rotation happened. The reuse window counts from here. */
     rotatedAt: v.optional(v.number()),
     /** Optimistic claim so concurrent refreshes can't double-hit Logto's token endpoint. */
     refreshingSince: v.optional(v.number()),
@@ -75,8 +76,8 @@ export default defineSchema({
     /**
      * Coarse, **self-reported** description of the client that signed in, so a
      * user can recognise their own devices. The app supplies it; the library
-     * never reads a User-Agent or IP. It is not authenticated and must never
-     * be used for a security decision.
+     * never reads a User-Agent or IP. It is not authenticated, and the app
+     * must never use it for a security decision.
      */
     client: v.optional(
       v.object({
@@ -107,7 +108,7 @@ export default defineSchema({
   // Watermarks remain after cleanup so a delayed create mutation can never
   // reuse an older timestamp and accidentally reactivate revoked state. GC
   // collects one only once it governs no surviving session and is older than
-  // any session that could still bind it — `by_revokedAt` is how it finds
+  // any session that could still bind it. `by_revokedAt` is how it finds
   // candidates without scanning, since back-channel logout writes one row per
   // OP session that ever ends.
   subjectRevocations: defineTable({
@@ -126,7 +127,7 @@ export default defineSchema({
 
   // Organization / API-resource access tokens minted from a Session's Logto
   // refresh token, cached so that an authorization check does not cost a grant
-  // per render. Server-held like the refresh token: the token string leaves the
+  // per render. Server-held like the refresh token. The token string leaves the
   // component only when the deployment set `exposeAccessTokens`.
   //
   // Rows are bounded per session (`RESOURCE_TOKEN_CACHE_LIMIT`) so the
@@ -136,7 +137,10 @@ export default defineSchema({
     sessionId: v.id("sessions"),
     /** `organization:<id>`, `resource:<indicator>`, or `default`. */
     audience: v.string(),
-    /** Sorted, space-joined requested scopes — a narrower ask is a different key. */
+    /**
+     * Sorted, space-joined requested scopes. A narrower ask is a different
+     * key.
+     */
     scopeKey: v.string(),
     accessToken: v.string(),
     /** From the token's own `exp` where it has one, else `expires_in`. */

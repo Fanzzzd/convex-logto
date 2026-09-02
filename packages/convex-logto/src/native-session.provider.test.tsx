@@ -3,7 +3,7 @@
 // Native sign-in lives entirely in one in-memory promise from
 // `openAuthSessionAsync`. When the OS reclaims the app mid-flow that promise
 // dies with the process and the redirect arrives as a cold-start deep link
-// instead — `completeSignIn` is the only way back into the exchange.
+// instead. `completeSignIn` is the only way back into the exchange.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -20,8 +20,9 @@ import { ConvexLogtoSessionProvider, useLogtoAuth } from "./native-session";
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 const store = new Map<string, string>();
-// Held open to model a cold start: SecureStore reads are two bridge round trips,
-// and `Linking.getInitialURL()` is one, so the deep link normally arrives first.
+// Held open to model a cold start. SecureStore reads are two bridge round
+// trips, and `Linking.getInitialURL()` is one, so the deep link normally
+// arrives first.
 let readGate: Promise<void> | null = null;
 vi.mock("expo-secure-store", () => ({
   isAvailableAsync: () => Promise.resolve(true),
@@ -39,7 +40,7 @@ vi.mock("expo-secure-store", () => ({
   },
 }));
 
-// Never resolves: the app was reclaimed while Logto had the browser.
+// Never resolves, because the OS reclaimed the app while Logto had the browser.
 const openAuthSessionAsync = vi.fn(
   (_url: string, _returnUrl: string) => new Promise<never>(() => {}),
 );
@@ -153,7 +154,7 @@ it("completes a cold-start deep link that beats storage preparation", async () =
   await act(async () => root!.unmount());
   root = null;
 
-  // A new process: the engine is fresh, SecureStore still holds the stash.
+  // A new process. The engine is fresh, SecureStore still holds the stash.
   let release = () => {};
   readGate = new Promise<void>((resolve) => {
     release = resolve;
@@ -174,7 +175,7 @@ it("completes a cold-start deep link that beats storage preparation", async () =
 });
 
 it("leaves the stash alone for a deep link carrying no OIDC response", async () => {
-  // Apps forward every link they receive, and the guard is a prefix match — so
+  // Apps forward every link they receive, and the guard is a prefix match, so
   // `myapp://callback/done` must not destroy an in-flight sign-in.
   await render();
   await act(async () => {

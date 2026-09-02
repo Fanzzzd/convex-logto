@@ -27,13 +27,13 @@ import {
 } from "react-native";
 import { api } from "./convex/_generated/api";
 
-// Session mode carries no Logto config in the app bundle at all — not even the
+// Session mode carries no Logto config in the app bundle at all, not even the
 // endpoint. The deployment is the OAuth client; this client only ever holds a
 // short-lived ID token and a rotating session token, both in SecureStore.
 const convex = new ConvexReactClient(process.env.EXPO_PUBLIC_CONVEX_URL!, {
   unsavedChangesWarning: false,
   // Convex otherwise refetches a fresh token the instant it confirms the cached
-  // one, which costs a Logto refresh grant on every page load — and in session
+  // one, which costs a Logto refresh grant on every page load, and in session
   // mode a session-token rotation with it. Experimental in convex@1.44.
   initialAuthTokenReuse: true,
 });
@@ -81,8 +81,8 @@ function Me() {
   );
 }
 
-// "Where am I signed in": a snapshot, not a subscription — the session token it
-// authenticates with rotates, so reload it after every mutation instead.
+// "Where am I signed in" is a snapshot, not a subscription. The session token
+// it authenticates with rotates, so reload it after every mutation instead.
 function Sessions() {
   const { listSessions, renameSession, revokeSession } = useLogtoAuth();
   const [sessions, setSessions] = useState<LogtoSessionSummary[] | null>(null);
@@ -122,9 +122,9 @@ function Sessions() {
         <View key={session.sessionId} style={styles.session}>
           <Text>
             {session.label ?? "Unnamed"}
-            {session.current ? " — this device" : ""}
+            {session.current ? ", this device" : ""}
             {session.client
-              ? ` — ${Object.values(session.client).join(" / ")}`
+              ? `, ${Object.values(session.client).join(" / ")}`
               : ""}
           </Text>
           <Text style={styles.muted}>
@@ -164,7 +164,7 @@ function Sessions() {
                 }
               />
               {/* Revoking the current session leaves this device's credentials
-                  in place — "Sign out" is the button for that. */}
+                  in place. "Sign out" is the button for that. */}
               <Button
                 title="Revoke"
                 onPress={() => run(revokeSession(session.sessionId))}
@@ -198,20 +198,21 @@ function SignedIn() {
 }
 
 function SignIn() {
-  // No callback route: `signIn()` opens the system browser and resolves when the
+  // No callback route. `signIn()` opens the system browser and resolves when the
   // deep link returns to the provider's `redirectUri`.
   const { signIn } = useLogtoAuth();
   // The provider's `onAuthError` reports the failure; swallowing the rejection
-  // here just keeps it from also surfacing unhandled.
+  // here just keeps it from also becoming an unhandled rejection.
   return <Button title="Sign in" onPress={() => void signIn().catch(() => {})} />;
 }
 
 // The sign-in flow lives in one in-memory promise. If the OS reclaims the app
-// while Logto has the browser — routine on a low-memory Android device — that
-// promise dies with the process and the redirect arrives as a cold-start deep
-// link instead. Handing every link to `completeSignIn` finishes the exchange;
-// anything that is not this app's redirect, or carries no OIDC response, is
-// ignored without disturbing a sign-in already in progress.
+// while Logto has the browser, which is routine on a low-memory Android device,
+// that promise dies with the process and the redirect arrives as a cold-start
+// deep link instead. Handing every link to `completeSignIn` finishes the
+// exchange. `completeSignIn` ignores anything that is not this app's redirect,
+// or carries no OIDC response, without disturbing a sign-in already in
+// progress.
 function DeepLinkBridge() {
   const { completeSignIn } = useLogtoAuth();
   useEffect(() => {
@@ -233,7 +234,7 @@ export default function App() {
       sessionApi={api.auth}
       redirectUri="io.logto.session://callback"
       // Advisory, app-supplied device description shown by listSessions(). The
-      // library never inspects the device — this is exactly what you pass.
+      // library never inspects the device. This is exactly what you pass.
       clientDescriptor={{ platform: "native", os: Platform.OS }}
       // `signIn` / `signOut` reject rather than storing the error, so without
       // this a dismissed browser sheet or an offline sign-out is an unhandled
@@ -245,7 +246,7 @@ export default function App() {
       <DeepLinkBridge />
       <SafeAreaView style={styles.screen}>
         <Text style={styles.title}>convex-logto native session mode</Text>
-        {/* Convex's own auth state: a cold start with a live SecureStore ID
+        {/* Convex's own auth state. A cold start with a live SecureStore ID
             token authenticates with no round-trip at all. */}
         <AuthLoading>
           <Spinner label="Restoring session…" />

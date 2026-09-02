@@ -204,10 +204,10 @@ describe("logtoSessionApi exchangeToken", () => {
   }>;
 
   /**
-   * `scopes` carries the organization scope by default because an organization
-   * exchange is refused without it — Logto answers `403 insufficient_scope`,
-   * and no retry can fix a grant that is already signed. Tests about *that*
-   * rule pass their own `scopes`.
+   * `scopes` carries the organization scope by default because the handler
+   * refuses an organization exchange without it. Logto answers
+   * `403 insufficient_scope`, and no retry can fix a grant that is already
+   * signed. Tests about *that* rule pass their own `scopes`.
    */
   function handlerFor(options: Record<string, unknown> = {}) {
     const api = logtoSessionApi(component, {
@@ -257,10 +257,10 @@ describe("logtoSessionApi exchangeToken", () => {
   });
 
   it("refuses an organization token the grant can never satisfy", async () => {
-    // Measured against a real Logto: without `urn:logto:scope:organizations`
+    // Measured against a real Logto. Without `urn:logto:scope:organizations`
     // the token endpoint answers `403 insufficient_scope`. Scopes are fixed at
     // authorization time, so no retry and no `forceRefresh` can rescue an
-    // existing session — and letting it through spends a refresh claim on a
+    // existing session, and letting it through spends a refresh claim on a
     // request that cannot work.
     const runAction = vi.fn();
     await expect(
@@ -292,8 +292,8 @@ describe("logtoSessionApi exchangeToken", () => {
   });
 
   it("refuses to hand back a token string unless the deployment opted in", async () => {
-    // Refusing beats silently returning claims: the caller is about to put the
-    // value in an Authorization header, and `undefined` would surface as an
+    // Refusing beats silently returning claims. The caller is about to put the
+    // value in an Authorization header, and `undefined` would appear as an
     // authorization failure somewhere else entirely.
     const runAction = vi.fn();
     await expect(
