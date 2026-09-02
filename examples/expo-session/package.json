@@ -11,7 +11,7 @@
     "typecheck": "pnpm check-types"
   },
   "dependencies": {
-    "convex": "^1.44.0",
+    "convex": "^1.45.0",
     "convex-logto": "workspace:*",
     "expo": "~56.0.12",
     "expo-linking": "~56.0.4",

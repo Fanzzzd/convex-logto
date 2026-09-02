@@ -9,7 +9,7 @@
     "typecheck": "pnpm check-types"
   },
   "dependencies": {
-    "convex": "^1.44.0",
+    "convex": "^1.45.0",
     "convex-logto": "workspace:*",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
