@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@logto/react": "^4.0.14",
-    "@tanstack/react-router": "^1.170.27",
+    "@tanstack/react-router": "^1.170.32",
     "convex": "^1.44.0",
     "convex-logto": "workspace:*",
     "react": "^19.2.8",
