@@ -54,7 +54,7 @@ component 目录里有自己的 `schema.ts`，官方描述为 *"Defines a schema
 
 > "code inside a component can't read data that is not explicitly provided to it. This includes database tables, file storage, environment variables, scheduled functions, etc. Conversely, the component's data cannot be directly mutated by the main app."
 
-事务性（understanding.mdx L64-71）：component mutation 与 app 的顶层 mutation 同事务提交（"You'll never have a component commit data but have the calling code roll back"），且每次 component mutation 调用是隔离子事务，caller 可以 catch component 抛出的异常后继续。这对 session 表非常合适，例如"写 session + 写 app 用户表"天然原子。
+事务性（understanding.mdx L64-71）：component mutation 与 app 的顶层 mutation 同事务提交（"You'll never have a component commit data but have the calling code roll back"），且每次 component mutation 调用是隔离子事务，caller 可以 catch component 抛出的异常后继续。这正适合 session 表，例如"写 session + 写 app 用户表"天然原子。
 
 实例：workos-authkit 的 [`src/component/schema.ts`](https://github.com/get-convex/workos-authkit/blob/b026110f3de67e69398143a48f6971ff1be50b20/src/component/schema.ts) 定义 `events`（`.index("eventId", ...)`）、`backfillState`、`users`（`.index("id")` + `.index("externalId")`）三张表，语法与 app schema 完全一致。
 

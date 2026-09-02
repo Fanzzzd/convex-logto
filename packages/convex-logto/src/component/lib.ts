@@ -57,10 +57,11 @@ import {
 import { buildLogtoEndpointUrl } from "./endpoint.js";
 import { readBoundedBody } from "./http_body.js";
 
-// The confidential-client config every OIDC-touching call needs. The values are
-// read from the APP's env by the `logtoSessionApi()` wrappers and passed in as
-// arguments (components can't read the app's process.env) — the workos-authkit
-// pattern. The secret crosses the component boundary as an argument only.
+// The confidential-client config every OIDC-touching call needs. The
+// `logtoSessionApi()` wrappers read the values from the APP's env and pass them
+// in as arguments (components can't read the app's process.env). This is the
+// workos-authkit pattern. The secret crosses the component boundary as an
+// argument only.
 const oidcArgs = {
   endpoint: v.string(),
   appId: v.string(),
@@ -88,8 +89,8 @@ const devicePublicKeyValidator = v.object({
 
 type OidcConfig = { endpoint: string; appId: string; clientSecret: string };
 
-// Explicit result types for same-file `ctx.runMutation(internal.lib.*)` calls —
-// without them TypeScript's inference goes circular (action ↔ generated api).
+// Explicit result types for same-file `ctx.runMutation(internal.lib.*)` calls.
+// Without them TypeScript's inference goes circular (action ↔ generated api).
 type ConsumedTransaction = { codeVerifier: string; returnTo?: string };
 type BeginRefreshResult =
   | { outcome: "refresh"; sessionId: string; refreshToken: string }
@@ -118,12 +119,13 @@ type SignOutConsumptionResult =
 // A session document may be as large as Convex's 1 MiB document limit.
 // Ordinary batches delete eight aggregate roots; a batch takes two extra rows to
 // see whether more remain, and the authenticated final batch also reads its
-// separately preserved caller — eleven session documents at worst. That plus
-// their tiny, bounded generation rows stays below the 16 MiB transaction limits.
+// separately preserved caller. That is eleven session documents at worst, and
+// with their tiny, bounded generation rows it stays below the 16 MiB
+// transaction limits.
 export const REVOCATION_BATCH_SIZE = 8;
 const MAX_REVOCATION_BATCHES = 512;
 // A transaction row is `state` + `codeVerifier` (43 each) plus two strings
-// bounded at SIGN_IN_URL_MAX_LENGTH — under 5 KB, not the near-1 MiB document
+// bounded at SIGN_IN_URL_MAX_LENGTH, so under 5 KB, not the near-1 MiB document
 // this batch was originally sized for. 128 of them is well inside the share of
 // the 16 MiB budget this mutation can spare, and abandoned sign-ins are the one
 // table an unauthenticated caller can fill.
@@ -201,8 +203,8 @@ function tokenMatchIsWithinReuseWindow(
 }
 
 /**
- * Retain the superseded current token behind one indexed, bounded seam. The
- * newest generation is inserted after old/expired rows are pruned, so the
+ * Retain the superseded current token behind one indexed, bounded seam. This
+ * prunes old/expired rows before it inserts the newest generation, so the
  * table can never exceed the documented per-session limit.
  */
 async function rememberSupersededToken(
@@ -422,14 +424,17 @@ function basicAuth(config: OidcConfig): string {
  * A 2xx that does not carry usable tokens is *not* classified here, because the
  * two callers need opposite answers. Sign-in has no session to lose and cannot
  * retry a spent authorization code, so it fails terminally; a refresh has to
- * weigh what Logto may already have done to the grant. Both get the facts —
+ * weigh what Logto may already have done to the grant. Both get the facts:
  * whether the body was a token response at all, and which tokens it held.
  */
 async function tokenEndpoint(
   config: OidcConfig,
   params: Record<string, string>,
 ): Promise<{
-  /** False when a 2xx body was not JSON at all — e.g. a proxy or WAF interstitial. */
+  /**
+   * False when a 2xx body was not JSON at all, e.g. a proxy or WAF
+   * interstitial.
+   */
   tokenResponse: boolean;
   id_token?: string;
   refresh_token?: string;
@@ -454,14 +459,14 @@ async function tokenEndpoint(
         signal: controller.signal,
       });
     } catch (error) {
-      // Our own timeout fired: the request was on the wire, so Logto may have
+      // Our own timeout fired. The request was on the wire, so Logto may have
       // rotated the grant already. Everything else that fails without any
-      // response (DNS, connection refused, Logto down) overwhelmingly fails
+      // response (DNS, connection refused, Logto down) almost always fails
       // before the grant is processed, and treating those as unknown would
       // force a full reauthentication on every Logto outage.
       if (controller.signal.aborted) {
         throw outcomeUnknown(
-          "Logto's token endpoint did not answer in time — the refresh outcome is unknown.",
+          "Logto's token endpoint did not answer in time. The refresh outcome is unknown.",
         );
       }
       throw error;
@@ -472,8 +477,8 @@ async function tokenEndpoint(
       // A 2xx we could not read means Logto *did* issue (and rotate) tokens.
       throw outcomeUnknown(
         bodyResult.reason === "too_large"
-          ? "Logto's token response exceeded the safe size limit — the refresh outcome is unknown."
-          : "Could not read the Logto token response — the refresh outcome is unknown.",
+          ? "Logto's token response exceeded the safe size limit. The refresh outcome is unknown."
+          : "Could not read the Logto token response. The refresh outcome is unknown.",
       );
     }
     let body: unknown;
@@ -539,7 +544,7 @@ export const createSignInUrl = action({
   returns: v.object({ url: v.string() }),
   handler: async (ctx, args) => {
     // `signIn` is unauthenticated by necessity, and both strings are stored for
-    // the transaction TTL — bound them before anything is written.
+    // the transaction TTL. Bound them before anything is written.
     const targets = normalizeSignInTargets({
       redirectUri: args.redirectUri,
       returnTo: args.returnTo,
@@ -601,7 +606,7 @@ export const exchange = action({
     returnTo: v.optional(v.string()),
   }),
   handler: async (ctx, args) => {
-    // Normalize the display fields before anything is spent: an over-long label
+    // Normalize the display fields before anything is spent. An over-long label
     // rejects here, not after the authorization code has been exchanged for a
     // grant no one would ever hold.
     const label = normalizeSessionLabel(args.label);
@@ -626,24 +631,24 @@ export const exchange = action({
     } catch (error) {
       // `tokenEndpoint` classifies for refresh, where transient is the safe
       // default. Here the transaction is already consumed, so a retry finds
-      // nothing and reports `transaction_not_found` — losing Logto's own answer,
-      // which is usually the one an operator needs.
+      // nothing and reports `transaction_not_found`. That loses Logto's own
+      // answer, which is usually the one an operator needs.
       throw asSpentAuthorizationCode(error);
     }
     if (!tokens.tokenResponse || tokens.id_token === undefined) {
-      // Sign-in cannot retry: the authorization code is spent either way, so
+      // Sign-in cannot retry. The authorization code is spent either way, so
       // there is nothing to gain by calling this transient.
       throw terminal(
         "no_id_token",
         tokens.tokenResponse
-          ? "Logto's token response carried no id_token — is `openid` scope enabled?"
+          ? "Logto's token response carried no id_token. Is `openid` scope enabled?"
           : "Logto's token endpoint answered with something that is not a token response.",
       );
     }
     if (!tokens.refresh_token) {
       throw terminal(
         "no_refresh_token",
-        "Logto issued no refresh token — the session can't be maintained. " +
+        "Logto issued no refresh token, so the session can't be maintained. " +
           "Check the app is a Traditional Web application.",
       );
     }
@@ -685,13 +690,13 @@ export const consumeTransaction = internalMutation({
       .query("transactions")
       .withIndex("by_state", (q) => q.eq("state", args.state))
       .unique();
-    // Deleting inside the same mutation makes consumption one-time: a replayed
+    // Deleting inside the same mutation makes consumption one-time. A replayed
     // callback with the same state finds nothing and fails terminally.
     if (transaction) await ctx.db.delete(transaction._id);
     if (!transaction || transaction.expiresAt < args.now) {
       throw terminal(
         "transaction_not_found",
-        "No pending sign-in for this state — the callback is stale, replayed, or the sign-in expired. Start sign-in again.",
+        "No pending sign-in for this state. The callback is stale, replayed, or the sign-in expired. Start sign-in again.",
       );
     }
     if (transaction.redirectUri !== args.redirectUri) {
@@ -766,7 +771,7 @@ export const refresh = action({
       sessionToken: args.sessionToken,
       proof: args.deviceProof,
     });
-    // The next token is generated in the action (mutations have deterministic
+    // The action generates the next token (mutations have deterministic
     // randomness); the mutation adopts it only where rotation happens.
     const candidate = generateToken();
     const claimId = generateToken();
@@ -783,17 +788,17 @@ export const refresh = action({
 
     switch (begin.outcome) {
       case "cached":
-        // Previous token inside the reuse window, cached ID token still fresh:
-        // rotated locally without touching Logto.
+        // Previous token inside the reuse window, cached ID token still fresh.
+        // Rotated locally without touching Logto.
         return {
           idToken: begin.idToken,
           sessionToken: candidate,
           sessionId: begin.sessionId,
         };
       case "reuse": {
-        // Reuse handling: the session and its server-held refresh token were
-        // deleted atomically. Do not RFC 7009-revoke here: Logto may associate
-        // sibling component sessions with the same grant.
+        // Reuse handling. The mutation deleted the session and its server-held
+        // refresh token atomically. Do not RFC 7009-revoke here, because Logto
+        // may associate sibling component sessions with the same grant.
         throw sessionReuseDetectedError();
       }
       case "claim-expired": {
@@ -828,14 +833,14 @@ export const refresh = action({
           throw error;
         }
         if (!tokens.tokenResponse) {
-          // A 2xx that is not a token response at all — a proxy or WAF
+          // A 2xx that is not a token response at all, such as a proxy or WAF
           // interstitial where JSON was expected. Whether Logto processed (and
-          // rotated) the grant is genuinely unknown, exactly like a 2xx we could
-          // not read, so the claim is deliberately left to age into
-          // `claim-expired` rather than guessing.
+          // rotated) the grant is unknown, exactly like a 2xx we could not
+          // read, so the claim is left on purpose to age into `claim-expired`
+          // rather than guessing.
           throw outcomeUnknown(
-            "Logto's token endpoint answered with something that is not a token response — " +
-              "the refresh outcome is unknown.",
+            "Logto's token endpoint answered with something that is not a token response. " +
+              "The refresh outcome is unknown.",
           );
         }
         let claims: ReturnType<typeof decodeIdToken>;
@@ -844,23 +849,23 @@ export const refresh = action({
           if (tokens.id_token === undefined) {
             throw terminal(
               "no_id_token",
-              "Logto's token response carried no id_token — is `openid` scope enabled?",
+              "Logto's token response carried no id_token. Is `openid` scope enabled?",
             );
           }
           idToken = tokens.id_token;
           claims = decodeIdToken(idToken, args);
         } catch (error) {
           // Logto answered with a well-formed token response, so this is a
-          // *deployment* fault — an `iss`/`aud` drift after an endpoint change,
-          // a missing `openid` scope — and not a dead session. Deleting the row
-          // here is how one wrong env var takes out every session in the
+          // *deployment* fault and not a dead session. An `iss`/`aud` drift
+          // after an endpoint change, or a missing `openid` scope. Deleting the
+          // row here is how one wrong env var takes out every session in the
           // deployment, one refresh at a time.
           //
           // The rotation state is *known* here, which is what makes releasing
-          // the claim safe: either Logto returned a new refresh token, stored in
-          // the same transaction that releases, or it returned none and the
+          // the claim safe. Either Logto returned a new refresh token, stored
+          // in the same transaction that releases, or it returned none and the
           // stored one is still current. Retaining the claim instead would age
-          // into `claim-expired` — and that path deletes the session, so the
+          // into `claim-expired`, and that path deletes the session, so the
           // operator could never recover it by fixing the configuration.
           await ctx.runMutation(internal.lib.abandonRefreshWithRotation, {
             sessionId: begin.sessionId,
@@ -917,7 +922,7 @@ export const devicePublicKeyForToken = internalQuery({
     const match = await resolveSessionToken(ctx.db, args.presentedHash);
     // Return the binding even after logical revocation. A pending cleanup may
     // still delete the aggregate, and that write must not become proofless
-    // merely because a subject/sid marker already made the session unusable.
+    // only because a subject/sid marker already made the session unusable.
     if (match === null) return null;
     return match.session.devicePublicKey ?? null;
   },
@@ -932,13 +937,14 @@ export const beginRefresh = internalMutation({
     reuseWindowMs: v.number(),
   },
   returns: v.union(
-    // Rotate against Logto: the claim is set; the action must complete or release.
+    // Rotate against Logto. The claim is set; the action must complete or
+    // release.
     v.object({
       outcome: v.literal("refresh"),
       sessionId: v.string(),
       refreshToken: v.string(),
     }),
-    // Rotated locally off the reuse window — the cached ID token is still fresh.
+    // Rotated locally off the reuse window; the cached ID token is still fresh.
     v.object({
       outcome: v.literal("cached"),
       sessionId: v.string(),
@@ -956,7 +962,7 @@ export const beginRefresh = internalMutation({
     if (!match) {
       throw terminal(
         "session_not_found",
-        "No session for this token — it was signed out or revoked. Sign in again.",
+        "No session for this token. It was signed out or revoked. Sign in again.",
       );
     }
     const { session } = match;
@@ -979,11 +985,11 @@ export const beginRefresh = internalMutation({
       case "in-flight":
         throw transient(
           "refresh_in_flight",
-          "Another refresh for this session is mid-flight — retry shortly.",
+          "Another refresh for this session is mid-flight. Retry shortly.",
         );
       case "reuse": {
-        // A token older than the reuse window: assume theft, kill the session.
-        // The victim's next refresh finds nothing and cleanly re-authenticates.
+        // A token older than the reuse window. Assume theft, kill the session.
+        // The victim's next refresh finds nothing and re-authenticates cleanly.
         await deleteSessionWithGenerations(ctx.db, session._id);
         return { outcome: "reuse" as const };
       }
@@ -1107,16 +1113,16 @@ export const completeRefresh = internalMutation({
 });
 
 /**
- * Finish a refresh whose response Logto answered but we could not use: store any
- * rotation and release the claim, in **one** transaction.
+ * Finish a refresh whose response Logto answered but we could not use. Store
+ * any rotation and release the claim, in **one** transaction.
  *
  * Both halves have to commit together. Persisting the rotation without
- * releasing would leave the row holding a claim that ages into `claim-expired`
- * — which deletes the session this path exists to preserve — and releasing
- * without persisting would leave the next refresh presenting a token Logto has
- * already superseded, tripping reuse detection on a grant sibling sessions
- * share. An action interrupted between two mutations would land in exactly one
- * of those states, so there is only one mutation.
+ * releasing would leave the row holding a claim that ages into `claim-expired`,
+ * which deletes the session this path exists to preserve. Releasing without
+ * persisting would leave the next refresh presenting a token Logto has already
+ * superseded, tripping reuse detection on a grant sibling sessions share. An
+ * action interrupted between two mutations would land in exactly one of those
+ * states, so there is only one mutation.
  */
 export const abandonRefreshWithRotation = internalMutation({
   args: {
@@ -1128,8 +1134,8 @@ export const abandonRefreshWithRotation = internalMutation({
   handler: async (ctx, args) => {
     const id = ctx.db.normalizeId("sessions", args.sessionId);
     const session = id && (await ctx.db.get(id));
-    // Ownership fencing: a concurrent sign-out or a re-claim means this response
-    // is no longer the one the row is waiting for.
+    // Ownership fencing. A concurrent sign-out or a re-claim means this
+    // response is no longer the one the row is waiting for.
     if (!session || session.refreshClaimId !== args.claimId) return false;
     await ctx.db.patch(session._id, {
       refreshingSince: undefined,
@@ -1200,8 +1206,8 @@ function claimsFromRow(
  *
  * This spends the Session's Logto refresh token, so it runs inside the *same*
  * claim as {@link refresh} and inherits its whole failure vocabulary. That is
- * not defensive: Logto rotates on a rule blind to what the grant was for, and
- * only past 70% of the refresh token's lifetime — so an exchange running
+ * not defensive. Logto rotates on a rule blind to what the grant was for, and
+ * only past 70% of the refresh token's lifetime, so an exchange running
  * outside the claim would look correct until real tokens aged, then start
  * tripping reuse detection on a grant sibling sessions share. See
  * `docs/adr/0003-organization-token-exchange.md`.
@@ -1244,9 +1250,9 @@ export const exchangeToken = action({
      * Mint a new token even if a live one is cached.
      *
      * The cache is keyed by target and scope set and holds a token until it
-     * expires, so a token the *resource server* has stopped accepting — a
-     * revoked grant, a clock that drifted past the skew allowance, an
-     * organization whose roles changed — would otherwise keep being served for
+     * expires. A token the *resource server* has stopped accepting, after a
+     * revoked grant, a clock that drifted past the skew allowance, or an
+     * organization whose roles changed, would otherwise keep being served for
      * up to its whole lifetime with no way for the caller to say "not that
      * one". This is that way. It costs a grant, so it belongs on the failure
      * path, not on every call.
@@ -1261,12 +1267,12 @@ export const exchangeToken = action({
     minted: v.boolean(),
   }),
   handler: async (ctx, args): Promise<ExchangeResult> => {
-    // The `default` audience is the opaque token `/oidc/me` accepts — the one
+    // The `default` audience is the opaque token `/oidc/me` accepts, the one
     // credential here that carries the user's whole profile scope. It is
     // reachable from `fetchUserInfo`, which never returns it, and from nowhere
-    // else: `exposeAccessTokens` governs Organization and Resource tokens, and
-    // letting an argument-free call fall through to `default` would quietly put
-    // a target on the public surface that no typed client method can name.
+    // else. `exposeAccessTokens` governs Organization and Resource tokens, and
+    // letting an argument-free call fall through to `default` would put a
+    // target in the public API that no typed client method can name.
     if (args.organizationId === undefined && args.resource === undefined) {
       throw terminal(
         "missing_token_target",
@@ -1301,7 +1307,7 @@ async function runExchange(
     proof: args.deviceProof,
   });
 
-  // The device proof is checked above, before this branch: a forced mint must
+  // The device proof is checked above, before this branch. A forced mint must
   // not be a way to skip it, and neither must a cache hit.
   const cached: CachedResourceToken | null = args.forceRefresh
     ? null
@@ -1354,9 +1360,9 @@ async function runExchange(
       ...(scopeKey === "" ? {} : { scope: scopeKey }),
     });
   } catch (error) {
-    // Identical reasoning to `refresh`: release only when the failure proves
-    // Logto never processed the grant. `killSession` is deliberately absent —
-    // a terminal token-endpoint failure here (a mistyped organization id
+    // Identical reasoning to `refresh`. Release only when the failure proves
+    // Logto never processed the grant. `killSession` is absent on purpose. A
+    // terminal token-endpoint failure here (a mistyped organization id
     // reaching Logto as `invalid_grant`) must not delete a session the user
     // is still signed in to.
     if (!isOutcomeUnknownError(error)) {
@@ -1369,12 +1375,12 @@ async function runExchange(
   }
   if (!tokens.tokenResponse) {
     throw outcomeUnknown(
-      "Logto's token endpoint answered with something that is not a token response — " +
-        "the refresh outcome is unknown.",
+      "Logto's token endpoint answered with something that is not a token response. " +
+        "The refresh outcome is unknown.",
     );
   }
   if (tokens.access_token === undefined) {
-    // A well-formed token response with no access token: a deployment fault
+    // A well-formed token response with no access token is a deployment fault
     // (an organization the user does not belong to, a resource that is not
     // registered), not a dead session. Persist any rotation and keep the row.
     await ctx.runMutation(internal.lib.abandonRefreshWithRotation, {
@@ -1394,7 +1400,7 @@ async function runExchange(
   const accessToken = tokens.access_token;
   const now = Date.now();
   // Every `refresh_token` grant returns an id_token, including this one.
-  // Keeping it is not an optimisation: discarding it would leave the Session
+  // Keeping it is not an optimisation. Discarding it would leave the Session
   // ageing on a Short bearer older than the one Logto just issued.
   let refreshedIdToken:
     | { idToken: string; exp: number; sid?: string }
@@ -1408,7 +1414,7 @@ async function runExchange(
         ...(claims.sid === undefined ? {} : { sid: claims.sid }),
       };
     } catch {
-      // An ID token we cannot validate is dropped, not raised: the exchange
+      // An ID token we cannot validate is dropped, not raised. The exchange
       // asked for an access token and got one. `refresh` is where an
       // unusable ID token is a reportable deployment fault.
     }
@@ -1490,13 +1496,13 @@ export const cachedResourceToken = internalQuery({
     // `beginTokenExchange`, which is a *mutation* and can do what a query
     // cannot: treat the presentation as theft and kill the session. Serving the
     // cache here would hand a live Organization token to a rotated-away token
-    // and leave reuse detection untriggered — the one read in this component
-    // that could be used to hold a stolen session open.
+    // and leave reuse detection untriggered. That would be the one read in
+    // this component an attacker could use to hold a stolen session open.
     if (!tokenMatchIsWithinReuseWindow(match, args.now, args.reuseWindowMs)) {
       return null;
     }
     // A logically revoked session's cached tokens are invisible, exactly like
-    // its other reads: the rows may still be waiting for a bounded cleanup
+    // its other reads. The rows may still be waiting for a bounded cleanup
     // batch, and until then they must retain no authority.
     if (await sessionIsLogicallyRevoked(ctx.db, match.session)) return null;
     const row = await ctx.db
@@ -1545,7 +1551,7 @@ export const beginTokenExchange = internalMutation({
     if (!match) {
       throw terminal(
         "session_not_found",
-        "No session for this token — it was signed out or revoked. Sign in again.",
+        "No session for this token. It was signed out or revoked. Sign in again.",
       );
     }
     const { session } = match;
@@ -1566,11 +1572,11 @@ export const beginTokenExchange = internalMutation({
     switch (decision.outcome) {
       case "in-flight":
         // A refresh (or another exchange) holds the claim. Transient by
-        // design: an Organization token is not worth destroying a grant for,
+        // design. An Organization token is not worth destroying a grant for,
         // and the caller retries once the refresh lands.
         throw transient(
           "refresh_in_flight",
-          "A refresh for this session is mid-flight — retry shortly.",
+          "A refresh for this session is mid-flight. Retry shortly.",
         );
       case "reuse":
         await deleteSessionWithGenerations(ctx.db, session._id);
@@ -1601,7 +1607,7 @@ type CompleteExchangeResult =
 
 /**
  * Persist the minted token, any refresh-token rotation and any fresher ID
- * token, and release the claim — in one transaction, for the same reason
+ * token, and release the claim, all in one transaction, for the same reason
  * {@link abandonRefreshWithRotation} is one transaction.
  */
 export const completeTokenExchange = internalMutation({
@@ -1641,7 +1647,7 @@ export const completeTokenExchange = internalMutation({
       return { outcome: "stale-owner" as const };
     }
     if (await sessionIsLogicallyRevoked(ctx.db, session)) {
-      // Revoked mid-flight. Delete rather than cache: a token minted under
+      // Revoked mid-flight. Delete rather than cache. A token minted under
       // authority that has since been withdrawn must not survive in a row.
       await deleteSessionWithGenerations(ctx.db, session._id);
       return { outcome: "revoked" as const };
@@ -1649,7 +1655,7 @@ export const completeTokenExchange = internalMutation({
     // The *incoming* sid too, exactly as `completeRefresh` does. Logto may
     // report an OP session this row has not adopted yet, and a back-channel
     // logout for that sid has already withdrawn the authority the token was
-    // minted under — patching it in first would issue one Organization token
+    // minted under. Patching it in first would issue one Organization token
     // after the logout that was supposed to stop it.
     const incomingSid = args.refreshedIdToken?.sid;
     if (incomingSid !== undefined && incomingSid !== session.sid) {
@@ -1661,9 +1667,9 @@ export const completeTokenExchange = internalMutation({
     }
 
     // Cache only what keeps the per-session bound a *byte* bound. A token past
-    // this is still returned to the caller; it simply is not stored, so the
-    // batched session deletion cannot be pushed out of its read budget by a
-    // deployment whose tokens are unusually large.
+    // this is still returned to the caller but not stored, so a deployment
+    // whose tokens are unusually large cannot push the batched session
+    // deletion out of its read budget.
     const cacheable =
       args.accessToken.length <= MAX_CACHEABLE_ACCESS_TOKEN_LENGTH;
     const existing = await ctx.db
@@ -1676,7 +1682,7 @@ export const completeTokenExchange = internalMutation({
       )
       .unique();
     if (!cacheable) {
-      // Drop any older row for this key rather than leaving it: it would go on
+      // Drop any older row for this key rather than leaving it. It would go on
       // being served for a target whose current token this call could not
       // store, which is a stale answer, not a conservative one.
       if (existing) await ctx.db.delete(existing._id);
@@ -1689,8 +1695,8 @@ export const completeTokenExchange = internalMutation({
       });
     } else {
       // Evict before inserting, so the table can never exceed the documented
-      // per-session limit — the same ordering `rememberSupersededToken` uses,
-      // and what keeps session deletion a bounded amount of work.
+      // per-session limit. This is the same ordering `rememberSupersededToken`
+      // uses, and what keeps session deletion a bounded amount of work.
       const rows = await ctx.db
         .query("resourceTokens")
         .withIndex("by_sessionId_mintedAt", (q) =>
@@ -1744,7 +1750,7 @@ export const completeTokenExchange = internalMutation({
  * Logto's `/oidc/me`, through the same exchange.
  *
  * The userinfo endpoint wants the *default* (opaque) access token, which is
- * what the `default` audience caches — so a profile fetch costs a grant only
+ * what the `default` audience caches, so a profile fetch costs a grant only
  * when the cached token has aged out, not on every call.
  */
 export const fetchUserInfo = action({
@@ -1757,18 +1763,18 @@ export const fetchUserInfo = action({
   },
   returns: v.any(),
   handler: async (ctx, args): Promise<unknown> => {
-    // The `default` audience: no organization, no resource — the opaque token
-    // Logto's userinfo endpoint accepts. `exposeAccessTokens` does not gate it,
-    // because it never leaves this function.
+    // The `default` audience, with no organization and no resource, is the
+    // opaque token Logto's userinfo endpoint accepts. `exposeAccessTokens` does
+    // not gate it, because it never leaves this function.
     const first = await callUserInfo(ctx, args);
     if (first.ok) return first.profile;
     // Logto refused the token itself. If it came from the cache, this is the
     // one caller in the library that *knows* a cached token has stopped
-    // working — and the only one that can act on it. Mint once and retry:
-    // without this, a token Logto has stopped honouring keeps being served for
+    // working, and the only one that can act on it. Mint once and retry.
+    // Without this, a token Logto has stopped honouring keeps being served for
     // the rest of its lifetime and every profile fetch fails until it expires.
     // Bounded to a single extra grant, and only when the first token was
-    // cached: a freshly minted token Logto rejects is a deployment fault, and
+    // cached. A freshly minted token Logto rejects is a deployment fault, and
     // minting again would spend grants on it forever.
     if (!first.tokenRejected || first.minted) {
       throw transient(
@@ -1818,7 +1824,7 @@ async function callUserInfo(
         ok: false,
         status: res.status,
         // 401 is "this credential is not acceptable" and 403 is "it is, but it
-        // does not authorize this" — Logto answers the second for a token
+        // does not authorize this". Logto answers the second for a token
         // whose scopes no longer cover the profile. Both are answers about the
         // token, and both are worth one fresh mint. A 5xx is not.
         tokenRejected: res.status === 401 || res.status === 403,
@@ -1835,7 +1841,7 @@ async function callUserInfo(
   } finally {
     clearTimeout(timeout);
   }
-  // Parsed outside the network `try`: a body that is not JSON is a deployment
+  // Parsed outside the network `try`. A body that is not JSON is a deployment
   // answering wrongly, not an unreachable one, and folding it into
   // "could not reach Logto" sends the reader looking at the network.
   try {
@@ -1951,7 +1957,7 @@ export const hasActiveSessionForSubject = query({
       )
       .order("desc")
       .take(REVOCATION_BATCH_SIZE + 1);
-    // The ninth row is only a sentinel: inspect at most eight potentially
+    // The ninth row is only a sentinel. Inspect at most eight potentially
     // 1 MiB sessions, and never claim `false` while unchecked rows remain.
     const sidCutoffs = new Map<string, number | undefined>();
     for (const session of sessions.slice(0, REVOCATION_BATCH_SIZE)) {
@@ -2059,7 +2065,7 @@ export const beginSubjectRevocationByToken = internalMutation({
     if (!match) {
       throw terminal(
         "session_not_found",
-        "No session for this token — it was signed out or revoked. Sign in again.",
+        "No session for this token. It was signed out or revoked. Sign in again.",
       );
     }
     if (!tokenMatchIsWithinReuseWindow(match, args.now, args.reuseWindowMs)) {
@@ -2070,8 +2076,8 @@ export const beginSubjectRevocationByToken = internalMutation({
     }
     const caller = match.session;
     // A row that is logically revoked but not yet physically cleaned up is an
-    // expected intermediate state. It must not retain destructive authority:
-    // otherwise a dead token could raise the watermark past sessions created
+    // expected intermediate state. It must not retain destructive authority.
+    // Otherwise a dead token could raise the watermark past sessions created
     // after it died and delete them.
     if (await sessionIsLogicallyRevoked(ctx.db, caller)) {
       throw terminal(
@@ -2161,7 +2167,7 @@ const sessionSummaryValidator = v.object({
  * proof. Never accepts a client-supplied subject.
  *
  * Unlike `signOut` and `signOutEverywhere`, presenting a superseded token from
- * outside the window here does not contain the session: this is a query, which
+ * outside the window here does not contain the session. This is a query, which
  * cannot write, and the token it rejected already grants nothing. Reuse
  * detection still fires on the first refresh or sign-out that token is used for.
  */
@@ -2181,7 +2187,7 @@ export const resolveCallerSession = internalQuery({
     ) {
       throw terminal(
         "session_not_found",
-        "No active session for this token — it was signed out or revoked. Sign in again.",
+        "No active session for this token. It was signed out or revoked. Sign in again.",
       );
     }
     return { sessionId: match.session._id, subject: match.session.subject };
@@ -2196,7 +2202,7 @@ export const listSubjectSessions = internalQuery({
   }),
   handler: async (ctx, args) => {
     const cutoff = await subjectRevokedAt(ctx.db, args.subject);
-    // Stream rather than `take(LIMIT + 1)`: sid-revoked rows are dropped after
+    // Stream rather than `take(LIMIT + 1)`. Sid-revoked rows are dropped after
     // the read, so a fixed page could spend every slot on rows awaiting cleanup
     // and hide the live devices behind them. Scanning is bounded instead.
     const rows = ctx.db
@@ -2217,7 +2223,7 @@ export const listSubjectSessions = internalQuery({
         scanned === SESSION_LIST_SCAN_LIMIT ||
         scannedBytes >= SESSION_LIST_SCAN_BYTES
       ) {
-        // Stopped early with rows left: there may be more live sessions, and
+        // Stopped early with rows left. There may be more live sessions, and
         // saying so beats an unbounded scan or a silent omission.
         truncated = true;
         break;
@@ -2301,7 +2307,7 @@ async function loadOwnedSession(
 
 /**
  * The caller's own sessions. Authenticated by session token, so the subject is
- * never client-supplied. A snapshot rather than a reactive query: the token
+ * never client-supplied. A snapshot rather than a reactive query. The token
  * rotates roughly every ID-token lifetime, and a subscription keyed on a
  * rotating credential would resubscribe on every rotation.
  */
@@ -2350,9 +2356,9 @@ export const renameSession = action({
 });
 
 /**
- * Revoke one of the caller's own sessions — the "sign out that other device"
+ * Revoke one of the caller's own sessions, the "sign out that other device"
  * operation. The proof requirement applies to the *caller's* session, not the
- * target: requiring the target's key would make it impossible to revoke a lost
+ * target. Requiring the target's key would make it impossible to revoke a lost
  * device, which is the main reason this exists.
  */
 export const revokeSession = action({
@@ -2400,7 +2406,10 @@ async function authenticateCaller(
   });
 }
 
-/** Kill every session of a subject — webhook revocation (User.Deleted / suspension). */
+/**
+ * Kill every session of a subject. Webhook revocation (User.Deleted /
+ * suspension).
+ */
 export const killSubjectSessions = action({
   args: { subject: v.string() },
   returns: v.number(),
@@ -2483,9 +2492,9 @@ export const deleteSidSessionsBatch = internalMutation({
 /**
  * Claim a verified Logto delivery by a SHA-256 key (webhook body or issuer+jti).
  *
- * `claimed` is true only for the caller that created the row — the first
+ * `claimed` is true only for the caller that created the row, meaning the first
  * delivery, or the first retry after a released claim. `completed` reports
- * whether some caller got as far as {@link completeWebhookDelivery}: a claim on
+ * whether some caller got as far as {@link completeWebhookDelivery}. A claim on
  * its own proves a delivery *started*, not that its work committed, so a caller
  * whose work is idempotent should redo an unfinished one rather than answer for
  * it.
@@ -2511,8 +2520,8 @@ export const recordWebhookDelivery = mutation({
 
 /**
  * Record that a delivery's work committed. Inserts when the row is gone, so a
- * caller that took over an abandoned claim — one whose owner failed and
- * released it — still leaves proof behind for the next retry.
+ * caller that took over an abandoned claim, one whose owner failed and
+ * released it, still leaves proof behind for the next retry.
  */
 export const completeWebhookDelivery = mutation({
   args: { bodyHash: v.string(), now: v.number() },
@@ -2541,8 +2550,8 @@ export const completeWebhookDelivery = mutation({
  *
  * Never releases a *completed* delivery. A caller that took over an abandoned
  * claim can finish while the original owner is still failing, and deleting the
- * row then would erase the only proof the work happened — re-arming a replay of
- * a `sub`-only logout token, which revokes whatever the subject has when it
+ * row then would erase the only proof the work happened. That re-arms a replay
+ * of a `sub`-only logout token, which revokes whatever the subject has when it
  * runs, including sessions created since.
  */
 export const forgetWebhookDelivery = mutation({
@@ -2568,7 +2577,7 @@ export const forgetWebhookDelivery = mutation({
  * the two tables' deletions separately, since either one filling its batch
  * means there is more to collect.
  *
- * A marker that still governs a surviving row is skipped, not deleted — that
+ * A marker that still governs a surviving row is skipped, not deleted. That
  * row is logically dead *because* of the marker, and dropping it early would
  * hand its token back its authority. Skipped markers are the oldest in the
  * table, so they hold up younger ones until `gc`'s dead-session sweep removes
@@ -2645,7 +2654,7 @@ export const gc = internalMutation({
       await ctx.db.delete(generation._id);
     }
     // Minted Organization / Resource tokens normally die with their session.
-    // This collects the ones whose session outlives them — an expired row keeps
+    // This collects the ones whose session outlives them. An expired row keeps
     // no authority (`cachedResourceToken` re-checks expiry) but it is dead
     // weight inside the per-session cache bound until something removes it.
     const expiredResourceTokens = await ctx.db
@@ -2673,12 +2682,12 @@ export const gc = internalMutation({
       return null;
     }
     // Revocation watermarks outlive the rows they killed on purpose, but not
-    // forever: back-channel logout writes one per OP session that ever ends,
+    // forever. Back-channel logout writes one per OP session that ever ends,
     // including logouts that matched nothing, and nothing else ever deletes
     // them. They sweep in their own transaction because proving a marker
     // governs nothing reads session documents, which this mutation has already
-    // spent most of its budget on — and once per `gc` run, not once per chained
-    // batch, since each sweep re-reads those documents.
+    // spent most of its budget on. They sweep once per `gc` run, not once per
+    // chained batch, since each sweep re-reads those documents.
     await ctx.scheduler.runAfter(0, internal.lib.gcRevocationMarkers, {});
     return null;
   },
@@ -2686,7 +2695,7 @@ export const gc = internalMutation({
 
 /**
  * Sweep revocation watermarks, one bounded batch per transaction. Split out of
- * {@link gc} for the read budget: a marker row is tiny, but each one costs an
+ * {@link gc} for the read budget. A marker row is tiny, but each one costs an
  * indexed lookup into `sessions`, whose documents are the largest this
  * component stores.
  */
@@ -2700,8 +2709,8 @@ export const gcRevocationMarkers = internalMutation({
     );
     // Continue while either table filled its batch with *deletions*. Counting
     // the two together would stop the chain exactly when both are backlogged,
-    // and counting rows merely examined would spin forever on a batch that
-    // skipped everything — a skipped marker is retained, not collected.
+    // and counting rows only examined would spin forever on a batch that
+    // skipped everything. A skipped marker is retained, not collected.
     if (
       subjectDeleted === GC_MARKER_BATCH_SIZE ||
       sidDeleted === GC_MARKER_BATCH_SIZE

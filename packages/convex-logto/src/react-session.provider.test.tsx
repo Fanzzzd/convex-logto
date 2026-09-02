@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 //
-// Provider-level tests for session mode: the engine identity contract. The
-// engine owns the whole mount state machine (callback exchange, restore,
-// refresh) and `engine.start()` has no cancellation, so rebuilding it mid-mount
-// abandons an in-flight sign-in while its replacement reports a failed one.
-// `convex/react` is mocked at the module boundary; the engine is real.
+// Provider-level tests for session mode, covering the engine identity
+// contract. The engine owns the whole mount state machine (callback exchange,
+// restore, refresh) and `engine.start()` has no cancellation, so rebuilding it
+// mid-mount abandons an in-flight sign-in while its replacement reports a
+// failed one. These tests mock `convex/react` at the module boundary; the
+// engine is real.
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -34,7 +35,7 @@ vi.mock("convex/react", () => ({
     isLoading: false,
     isAuthenticated: convexAuthenticated,
   }),
-  // Mirrors the real hooks: `useQuery` rethrows a query error during render,
+  // Mirrors the real hooks. `useQuery` rethrows a query error during render,
   // `useQueries` hands it back as a value.
   useQuery: () => {
     if (sessionValidResult instanceof Error) throw sessionValidResult;
@@ -45,7 +46,7 @@ vi.mock("convex/react", () => ({
 }));
 
 // Session actions must reach the deployment over HTTP, never over the app's
-// WebSocket client — see `session-transport.ts`.
+// WebSocket client. See `session-transport.ts`.
 const httpClientUrls: string[] = [];
 vi.mock("convex/browser", () => ({
   ConvexHttpClient: class {
@@ -60,8 +61,8 @@ vi.mock("convex/browser", () => ({
 }));
 
 const callback = vi.fn();
-// Real references, not stubs: the cookie transport maps every one of them
-// through `getFunctionName`.
+// Real references, not stubs, because the cookie transport maps every one of
+// them through `getFunctionName`.
 const api = {
   signIn: makeFunctionReference<"action">("auth:signIn"),
   callback: makeFunctionReference<"action">("auth:callback"),
@@ -82,7 +83,7 @@ const client = {
 } as never;
 
 // `signIn` is stable per engine instance, so its identity is a proxy for the
-// engine's: a new function object means a new engine.
+// engine's. A new function object means a new engine.
 let capturedSignIn: unknown = null;
 function Probe() {
   capturedSignIn = useLogtoAuth().signIn;
@@ -139,8 +140,8 @@ afterEach(async () => {
 });
 
 it("keeps one engine when the client descriptor arrives late", async () => {
-  // Apps learn the description asynchronously — an effect, a `useState`, or
-  // `navigator.userAgentData.getHighEntropyValues()`. A rebuilt engine would
+  // Apps learn the description asynchronously, from an effect, a `useState`,
+  // or `navigator.userAgentData.getHighEntropyValues()`. A rebuilt engine would
   // restart the mount state machine underneath an in-flight sign-in.
   await render(undefined);
   const first = capturedSignIn;
@@ -268,7 +269,7 @@ it("survives a sessionValid query error instead of blanking the app", async () =
 });
 
 it("reports convex_authenticated once Convex accepts the token, and only once", async () => {
-  // The phase an app actually measures against: the first authenticated query.
+  // The phase an app measures against, the first authenticated query.
   await render(undefined, (event) => authEvents.push(event));
   expect(authEvents.map((event) => event.phase)).not.toContain(
     "convex_authenticated",
@@ -291,7 +292,7 @@ it("reports convex_authenticated once Convex accepts the token, and only once", 
 it("stays silent until a handler exists, then reports from that point", async () => {
   // Opting out has to cost nothing, so the engine reads the handler per event
   // rather than wrapping one that may never arrive. A handler passed later then
-  // sees the phases from then on — never a replayed bootstrap it missed.
+  // sees the phases from then on, never a replayed bootstrap it missed.
   await render(undefined, undefined);
   expect(authEvents).toHaveLength(0);
 

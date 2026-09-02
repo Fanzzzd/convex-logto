@@ -7,12 +7,12 @@
 ## 结论先行
 
 1. **现在的 localStorage 不是 `convex-logto` 自己选择的。** `ConvexLogtoProvider` 使用 `@logto/react`，后者默认实例化 `@logto/browser`；Logto 的 `BrowserStorage` 把 `idToken`、`refreshToken`、`accessToken` 放在 localStorage，把包含 `state`、PKCE `codeVerifier`、`redirectUri` 的 `signInSession` 放在 sessionStorage。`convex-logto` 只调用 Logto 的 token API，没有自己写入 localStorage。
-2. **localStorage 是 Logto SPA SDK 的官方默认，但不是整个行业一致推荐的“最安全方案”。** Auth0 SPA SDK 默认内存、允许显式选择 localStorage；Okta Auth JS 默认 localStorage；Clerk 采用“HttpOnly 长期 client token + 约 60 秒、JavaScript 可读的 app session token”的混合架构。领先实践不是某一种浏览器 API，而是先按风险选择架构。
+2. **localStorage 是 Logto SPA SDK 的官方默认，但不是整个行业一致推荐的"最安全方案"。** Auth0 SPA SDK 默认内存、允许显式选择 localStorage；Okta Auth JS 默认 localStorage；Clerk 采用"HttpOnly 长期 client token + 约 60 秒、JavaScript 可读的 app session token"的混合架构。领先实践是先按风险选择架构，再选浏览器 API。
 3. **不能把 localStorage 简单改成 cookie 就获得安全性。** JavaScript 设置的 cookie 不能带 `HttpOnly`，对 XSS 没有本质改善，还会被浏览器自动随请求发送，带来 cookie/CSRF 设计责任。真正的 `HttpOnly` cookie 必须由同站服务端/BFF 设置，并由服务端持有 OAuth token；这是架构变更，不是 storage 选项。
-4. **面向普通 Convex SPA，建议默认继续使用 Logto 官方 Authorization Code + PKCE 客户端，但必须明确其 XSS 威胁模型。** 这与 Convex 浏览器客户端直连 WebSocket 的模型最契合。要减少风险，应缩小 scope、确保 Logto 对 public client 启用 refresh-token rotation/过期策略、严格防 XSS，并提供 BFF/token-mediating 高安全模式，而不是宣称 localStorage“安全”。
+4. **面向普通 Convex SPA，建议默认继续使用 Logto 官方 Authorization Code + PKCE 客户端，但必须明确其 XSS 威胁模型。** 这与 Convex 浏览器客户端直连 WebSocket 的模型最契合。要减少风险，应缩小 scope、确保 Logto 对 public client 启用 refresh-token rotation/过期策略、严格防 XSS，并提供 BFF/token-mediating 高安全模式，而不是宣称 localStorage"安全"。
 5. **首开卡顿和 localStorage 关系很小。** 当前最明显的启动瀑布来自先连 Convex、执行公开配置 query、再构造真实 Logto client，以及 loading→ready 时重建 Provider 子树。`endpoint` 与 `appId` 都是公开配置，默认应同步静态传入；runtime query 应降为有明确用途的兼容/多租户选项。
 6. **callback 应由固定、精确的 callback URI 和 Logto SDK 的事务状态驱动。** 不能只凭任意页面 URL 中出现 `code`/`state` 就进入 callback loading。当前 SDK 已校验已保存的 redirect URI、state 和 PKCE verifier，`convex-logto` 不应另造一个更宽松的 URL 分类器充当入口。
-7. **当前 webhook HMAC 原始字节验签方向正确，但“验签成功”不等于“不可重放”。** Logto 会对失败交付最多自动重试三次，因此 handler 必须幂等；还应校验签名后的 `createdAt` 新鲜度，并以已验证签名或 raw-body digest 做短期去重。`hookId` 是 webhook 配置 ID，不是单次事件 ID，不能单独用于去重。
+7. **当前 webhook HMAC 原始字节验签方向正确，但"验签成功"不等于"不可重放"。** Logto 会对失败交付最多自动重试三次，因此 handler 必须幂等；还应校验签名后的 `createdAt` 新鲜度，并以已验证签名或 raw-body digest 做短期去重。`hookId` 是 webhook 配置 ID，不是单次事件 ID，不能单独用于去重。
 
 ## 1. 标准给出的架构顺序
 
@@ -26,7 +26,7 @@ OAuth 浏览器应用最新 BCP 工作把架构按安全性从高到低列为：
 
 所有浏览器模式都应使用 Authorization Code，而不是 Implicit flow；public SPA 必须使用 PKCE。OAuth Security BCP 还要求 public client 的 refresh token 使用 sender constraint 或 refresh-token rotation，并应在闲置后过期。来源：[RFC 9700 §2.1.1](https://www.rfc-editor.org/rfc/rfc9700.html#section-2.1.1)、[RFC 9700 §4.14.2](https://www.rfc-editor.org/rfc/rfc9700.html#section-4.14.2)、[browser-based apps draft §6.3.2](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-browser-based-apps-27#section-6.3.2)。
 
-这意味着“行业领先默认值”不能脱离产品边界来回答：
+这意味着"行业领先默认值"不能脱离产品边界来回答：
 
 | 场景 | 合适默认 | token 是否暴露给页面 JS | 复杂度 |
 | --- | --- | --- | --- |
@@ -34,7 +34,7 @@ OAuth 浏览器应用最新 BCP 工作把架构按安全性从高到低列为：
 | 商业应用、个人数据、较高安全要求，同时仍需浏览器直连 Convex | token-mediating backend | 短期 ID/access token 是；refresh token 否 | 中 |
 | 高价值操作、所有 API 可经服务端代理 | Full BFF | 否 | 高 |
 
-IETF 明确“强烈推荐”商业应用、敏感应用和处理个人数据的应用使用 BFF；同时也明确 BFF 会增加服务端部署和全量代理负担。来源：[RFC-to-be 10017 §6.1.4](https://auth48-transition.rfc-editor.org/authors/rfc10017.html#section-6.1.4)。
+IETF 明确"强烈推荐"商业应用、敏感应用和处理个人数据的应用使用 BFF；同时也明确 BFF 会增加服务端部署和全量代理负担。来源：[RFC-to-be 10017 §6.1.4](https://auth48-transition.rfc-editor.org/authors/rfc10017.html#section-6.1.4)。
 
 ### Convex 特有约束
 
@@ -42,10 +42,10 @@ Convex 的 React 客户端通过 `ConvexProviderWithAuth` 从身份提供方拿 
 
 因此：
 
-- 只要保留 `ConvexReactClient` 从浏览器直接连接 Convex，页面 JS 就需要在某个时刻得到可交给 Convex 的 ID token。这最多是 **token-mediating backend**，不是“token 永不进浏览器”的 full BFF。
+- 只要保留 `ConvexReactClient` 从浏览器直接连接 Convex，页面 JS 就需要在某个时刻得到可交给 Convex 的 ID token。这最多是 **token-mediating backend**，不是"token 永不进浏览器"的 full BFF。
 - Full BFF 必须把 Convex 调用也代理到服务端，或采用另一套不向浏览器暴露 bearer token 的会话/网关设计；这会失去或重做一部分 Convex 的浏览器实时订阅模型。
 
-这一区分必须出现在库文档中，不能把“服务端保护 refresh token、仍向浏览器返回 ID token”宣传为 full BFF。
+这一区分必须出现在库文档中，不能把"服务端保护 refresh token、仍向浏览器返回 ID token"宣传为 full BFF。
 
 ## 2. localStorage 到底是不是推荐方式
 
@@ -65,7 +65,7 @@ localStorage 对同源 JavaScript 完全可读。若任意一段同源代码被 
 
 IETF 的浏览器存储分析明确指出：localStorage 对整个 origin 开放、长期存在、不能阻止恶意同源 JavaScript 读取，而且同步 API 会阻塞 JavaScript；sessionStorage 只是把生命周期缩到 tab，并没有 XSS 隔离。来源：[RFC-to-be 10017 §8.5](https://auth48-transition.rfc-editor.org/authors/rfc10017.html#section-8.5)。OWASP 也明确建议不要把 session identifier/token 存在 localStorage。来源：[OWASP HTML5 Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/HTML5_Security_Cheat_Sheet.html#storage-apis)、[OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#html5-web-storage-api)。
 
-更重要的边界是：即使 Web Worker 完全隔离了已存 token，能在应用 origin 执行恶意 JS 的攻击者仍可能启动新的授权流程，获得自己的一套 token；所以“把 token 换个浏览器存储位置”不是完整的 XSS 答案。来源：[RFC-to-be 10017 §5.1.3](https://auth48-transition.rfc-editor.org/authors/rfc10017.html#section-5.1.3)、[§8](https://auth48-transition.rfc-editor.org/authors/rfc10017.html#section-8)。
+更重要的边界是，即使 Web Worker 完全隔离了已存 token，能在应用 origin 执行恶意 JS 的攻击者仍可能启动新的授权流程，获得自己的一套 token；所以"把 token 换个浏览器存储位置"不是完整的 XSS 答案。来源：[RFC-to-be 10017 §5.1.3](https://auth48-transition.rfc-editor.org/authors/rfc10017.html#section-5.1.3)、[§8](https://auth48-transition.rfc-editor.org/authors/rfc10017.html#section-8)。
 
 ### 2.3 业界默认并不一致
 
@@ -74,7 +74,7 @@ IETF 的浏览器存储分析明确指出：localStorage 对整个 origin 开放
 | Logto React/Browser | token localStorage；登录事务 sessionStorage | 持久恢复；SPA public client 配合 PKCE、短期 access token、refresh-token rotation |
 | Auth0 SPA SDK | 默认 memory；可选择 `cacheLocation: "localstorage"` | memory 刷新即丢；localStorage 可持久但 XSS 可读 |
 | Okta Auth JS | TokenManager 默认 localStorage，可选 sessionStorage/cookie/memory/custom | 强调 custom provider 会接收 raw sensitive token |
-| Clerk | 长期 client token 位于 Clerk FAPI 域的 HttpOnly cookie；app 域另有约 60 秒且 JS 可读的 `__session` token | 用极短 token 限制 JS 可读 credential 的窃取窗口；并非“所有 token 都是 HttpOnly” |
+| Clerk | 长期 client token 位于 Clerk FAPI 域的 HttpOnly cookie；app 域另有约 60 秒且 JS 可读的 `__session` token | 用极短 token 限制 JS 可读 credential 的窃取窗口；并非"所有 token 都是 HttpOnly" |
 
 来源：[Auth0 SPA SDK storage options](https://auth0.com/docs/libraries/auth0-single-page-app-sdk#change-storage-options)、[Okta Auth JS storageManager](https://github.com/okta/okta-auth-js#storagemanager)、[Clerk architecture](https://clerk.com/docs/guides/how-clerk-works/overview#clerk-s-cookies-and-tokens-in-detail)、[Logto SPA application security model](https://docs.logto.io/integrate-logto/application-data-structure#application-types)。
 
@@ -101,7 +101,7 @@ IETF 的浏览器存储分析明确指出：localStorage 对整个 origin 开放
 - [`@logto/browser` 官方源码](https://github.com/logto-io/js/blob/e9d307c9ebfc8a9a7af85b6491314fa84eb8b681/packages/browser/src/index.ts) 直接构造 `BrowserStorage(config.appId)`；well-known cache 只有第二个构造参数 `unstable_enableCache` 为 true 时才启用。
 - [`@logto/react` Provider 官方源码](https://github.com/logto-io/js/blob/e9d307c9ebfc8a9a7af85b6491314fa84eb8b681/packages/react/src/provider.tsx) 默认实例化上述 browser client，仅暴露 `LogtoClientClass` 替换入口，没有 `cookie` 或通用 `storage` prop。
 
-### 3.2 是我们“非要这样存”吗
+### 3.2 是我们"非要这样存"吗
 
 不是。`packages/convex-logto/src/react.tsx` 没有调用 `localStorage.setItem`；它调用 `getIdToken()`、`getAccessToken()`、`clearAccessToken()`，实际存储由 Logto client adapter 完成。
 
@@ -112,7 +112,7 @@ IETF 的浏览器存储分析明确指出：localStorage 对整个 origin 开放
 不能直接配置。`LogtoProvider` 的 `LogtoClientClass` 是底层逃生口，但内置 browser client 没有 cookie storage 选项。更根本的是：
 
 - 浏览器 JavaScript 无法创建 `HttpOnly` cookie；只有服务端 `Set-Cookie` 能做到。
-- JavaScript 可读 cookie 与 localStorage 一样可被 XSS 读取；而且 cookie 还会自动发送。IETF 明确不建议把 cookie 当作 JavaScript token storage；这与 BFF 中“JS 不可读、刻意随请求发送”的 session cookie 是两种不同模式。来源：[RFC-to-be 10017 §8.1](https://auth48-transition.rfc-editor.org/authors/rfc10017.html#section-8.1)。
+- JavaScript 可读 cookie 与 localStorage 一样可被 XSS 读取；而且 cookie 还会自动发送。IETF 明确不建议把 cookie 当作 JavaScript token storage；这与 BFF 中"JS 不可读、刻意随请求发送"的 session cookie 是两种不同模式。来源：[RFC-to-be 10017 §8.1](https://auth48-transition.rfc-editor.org/authors/rfc10017.html#section-8.1)。
 
 所以从 localStorage 迁移到真正安全的 cookie，必须改为 Logto Traditional Web/confidential client + 服务端 session/BFF。Logto 官方传统 Web 快速开始也把 ID/access/refresh token 放在服务端 session，而不是浏览器 JS。来源：[Logto traditional web quick start](https://docs.logto.io/quick-starts/traditional-web)。
 
@@ -122,7 +122,7 @@ IETF 的浏览器存储分析明确指出：localStorage 对整个 origin 开放
 
 在正常浏览器里，读取几个小 token 的 localStorage 是同步操作，确实会短暂占用主线程，但与网络握手、OIDC discovery、token exchange、Convex WebSocket 认证相比通常不是秒级瓶颈。当前普通回访路径中，`convex-logto` 直接调用 `getIdToken()`；只有 Convex 强制刷新时才调用 token endpoint。
 
-因此“首次打开很卡”更应优先归因于当前 bootstrap：
+因此"首次打开很卡"更应优先归因于当前 bootstrap：
 
 ```text
 启动应用
@@ -239,7 +239,7 @@ runtime query 仍有合理用途：同一前端 artifact 服务多个环境/租�
 - 部署 strict CSP（nonce/hash；`object-src 'none'`; `base-uri 'none'`），条件允许时加 Trusted Types。CSP 是纵深防御，不是替代输出编码/净化。来源：[OWASP XSS Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html)、[OWASP CSP](https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html#strict-csp)。
 - 尽量不加载第三方运行时脚本/analytics；必须加载时固定来源、版本，并评估 SRI/隔离。第三方脚本与应用同权限，可读取同源 localStorage。来源：[OWASP Third Party JavaScript Management](https://cheatsheetseries.owasp.org/cheatsheets/Third_Party_Javascript_Management_Cheat_Sheet.html)。
 - 不在同一 origin 托管互不信任的多个应用，因为它们共享 localStorage。
-- scopes/resources 最小化；Convex 只需 Logto ID token 时，不要为“可能以后用”添加 API resources/permissions。RFC 9700 要求 audience 与权限最小化：[RFC 9700 §2.3](https://www.rfc-editor.org/rfc/rfc9700.html#section-2.3)。
+- scopes/resources 最小化；Convex 只需 Logto ID token 时，不要为"可能以后用"添加 API resources/permissions。RFC 9700 要求 audience 与权限最小化：[RFC 9700 §2.3](https://www.rfc-editor.org/rfc/rfc9700.html#section-2.3)。
 - 确认 Logto SPA application 使用 refresh-token rotation、最大/闲置 lifetime，并对登出、密码修改等事件撤销 grant。Logto 官方说明 SPA 无 app secret，依靠 PKCE、严格 redirect/CORS、短期 access token 与 refresh-token rotation：[Logto application types](https://docs.logto.io/integrate-logto/application-data-structure#application-types)。
 - token、authorization code、state、callback 完整 URL 不进入日志、Sentry breadcrumbs、analytics 或错误上报。
 
@@ -292,7 +292,7 @@ Logto client 在 `signIn()` 时生成随机 state 与 PKCE verifier/challenge，
 - 验签后才解析 JSON；
 - 限制为已知 `User.*` payload。
 
-这符合 Logto 官方“必须对 raw body 计算 HMAC，不要用解析后的 body”的要求。来源：[Logto Secure webhooks](https://docs.logto.io/developers/webhooks/secure-webhooks)。使用 Web API 而非 Node crypto 也符合 Convex V8 runtime 要求。
+这符合 Logto 官方"必须对 raw body 计算 HMAC，不要用解析后的 body"的要求。来源：[Logto Secure webhooks](https://docs.logto.io/developers/webhooks/secure-webhooks)。使用 Web API 而非 Node crypto 也符合 Convex V8 runtime 要求。
 
 ### 8.2 HMAC 不防重放
 
@@ -331,7 +331,7 @@ Logto client 在 `signIn()` 时生成随机 state 与 PKCE verifier/challenge，
 
 ### P1：把 SPA 安全边界做清楚
 
-1. 文档明确 localStorage 是 Logto upstream 默认、XSS 可读，不宣传为“安全存储”。
+1. 文档明确 localStorage 是 Logto upstream 默认、XSS 可读，不宣传为"安全存储"。
 2. 固定 redirect URI；`returnTo` same-origin allowlist；callback no-referrer/最小资源/replace URL。
 3. 发布 CSP、第三方脚本、scope、refresh-token rotation/lifetime checklist。
 4. 暴露可恢复 `onAuthError`，不要 render throw 或静默吞掉全部 refresh 错误。

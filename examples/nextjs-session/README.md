@@ -23,10 +23,10 @@ read.
 
 **Never call `getInitialToken()` from a layout or a page.** It rotates the
 session cookie, and a Server Component cannot set cookies; Next.js allows that
-only in Route Handlers, Server Actions, and the proxy. The rotated cookie would
-be dropped, the browser would keep presenting a superseded token, and once it
-fell outside the reuse window the component would read it as theft and kill the
-session.
+only in Route Handlers, Server Actions, and the proxy. Next would drop the
+rotated cookie, the browser would keep presenting a superseded token, and once
+it fell outside the reuse window the component would read it as theft and kill
+the session.
 
 Read `readLogtoIdTokenCookie` in a page; call `getInitialToken()` in the proxy.
 This example does exactly that, and `proxy.ts` says why inline.
@@ -35,11 +35,11 @@ Two consequences worth understanding before you copy the wiring:
 
 - **Rotate once per document request.** Every `getInitialToken()` call is a real
   Logto round trip that rotates the session token. A matcher that also catches
-  `/favicon.ico`, images and RSC prefetches fires several for one page view, and
-  whichever `Set-Cookie` the browser keeps last may be an older generation than
-  the server's, which the next client refresh presents outside its reuse window
-  and the component correctly reads as theft. `proxy.ts` gates on
-  `Sec-Fetch-Dest: document`.
+  `/favicon.ico`, images and RSC prefetches fires several for one page view.
+  Whichever `Set-Cookie` the browser keeps last may then be an older generation
+  than the server's; the next client refresh presents it outside its reuse
+  window, and the component reads that as theft, which is correct. `proxy.ts`
+  gates on `Sec-Fetch-Dest: document`.
 - **The provider gets no SSR seed here.** It takes `initialToken` and
   `initialSessionId` as a pair, and the session id comes only from
   `getInitialToken()`, which cannot run in a render. So the server renders the
@@ -84,15 +84,15 @@ old claims and the buttons stay disabled until a new sign-in.
 ## Going to production
 
 - `APP_ORIGIN` must be your real origin, and it is deliberately *not* a
-  `NEXT_PUBLIC_` name: Next inlines those at build time, so a public one set in
-  the production environment would be ignored in favour of the build machine's
-  and every request to the handler would be answered `403`. `allowedOrigins`
-  takes exact origins and rejects wildcards.
+  `NEXT_PUBLIC_` name. Next inlines those at build time, so a public one set in
+  the production environment would lose to the build machine's, and the handler
+  would answer every request `403`. `allowedOrigins` takes exact origins and
+  rejects wildcards.
 - The cookies are `__Host-` prefixed and `Secure`, so everything except
   `localhost` needs HTTPS.
 - A cookie rides on **every** same-origin request, so the ID token reaches
-  access logs and proxies that an `Authorization` header would not. That is the
-  trade-off `idTokenCookie` exists to let you make deliberately; see
+  access logs and proxies that an `Authorization` header would not. That
+  trade-off is yours to make, which is why `idTokenCookie` is opt-in; see
   [ADR 0002](../../docs/adr/0002-token-custody.md).
 
 Full walkthrough: [Session mode](https://convex-logto-docs.vercel.app/docs/session-mode)

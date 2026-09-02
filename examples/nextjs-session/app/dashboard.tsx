@@ -36,7 +36,7 @@ function Devices() {
       <button
         onClick={() => {
           // Revoking the *current* session leaves this browser's cookie in
-          // place — signOut() is what clears it. The other device drops on its
+          // place. signOut() is what clears it. The other device drops on its
           // next reactive revocation tick.
           void listSessions()
             .then(async ({ sessions }) => {
@@ -55,7 +55,7 @@ function Devices() {
   );
 }
 
-/** Organization permissions and the live Logto profile — both server-minted. */
+/** Organization permissions and the live Logto profile, both server-minted. */
 function Tokens() {
   const { getOrganizationTokenClaims, fetchUserInfo, user } = useLogtoAuth();
   const [state, setState] = useState<string>("");
@@ -101,8 +101,8 @@ export function Dashboard({
   serverSawToken: boolean;
 }) {
   // The server's result until the client's own subscription resolves, then the
-  // live one — so this is *the client's* view of the identity, not the
-  // server's, from the moment auth is restored.
+  // live one. So this is *the client's* view of the identity, not the server's,
+  // from the moment auth is restored.
   const me = usePreloadedQuery(preloadedMe);
   return (
     <main style={{ maxWidth: 720, margin: "48px auto", padding: "0 16px" }}>
@@ -117,7 +117,7 @@ export function Dashboard({
         A null identity is not the same as a signed-out one. Before the client
         finishes restoring, `me` is null for a visitor who is about to be
         authenticated, and rendering "signed out" there is the transient
-        logged-out flash — the exact bug the provider's loading phase exists to
+        logged-out flash, the exact bug the provider's loading phase exists to
         prevent. So "signed out" appears only under `Unauthenticated`, and the
         server's preloaded value stays on screen while auth restores, which is
         the whole point of `preloadQuery`.

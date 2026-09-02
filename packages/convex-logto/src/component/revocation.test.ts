@@ -286,7 +286,7 @@ describe("bounded session revocation", () => {
   it("sweeps watermarks once, after the last GC batch", async () => {
     // Every sweep re-reads session documents to prove a marker governs nothing.
     // Scheduling one per chained batch multiplies that by the length of the
-    // chain — which an unauthenticated caller controls, since anyone who knows
+    // chain, which an unauthenticated caller controls, since anyone who knows
     // the deployment URL can create `transactions` rows in a loop.
     const scheduled: string[] = [];
     const db = {

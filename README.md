@@ -41,7 +41,7 @@ cookie is reachable at all. Optional same-site cookie transport and non-extracta
 device binding on top.
 
 Both present the same ID token to Convex, so identity, webhook sync and
-environment handling are identical and moving between them is an import change.
+environment handling are the same and moving between them is an import change.
 
 ## Also included
 

@@ -1,4 +1,4 @@
-// convex-logto's provider is SSR-safe: children render under Convex's <AuthLoading>
+// convex-logto's provider is SSR-safe. Children render under Convex's <AuthLoading>
 // while config loads, and nothing touches `window` on the server. So the boundary is
 // just the provider plus a bridge that re-runs the route guards when auth changes.
 import { useEffect } from "react";
@@ -19,8 +19,8 @@ function RouterAuthBridge({
 }) {
   const auth = useLogtoAuth();
   // `auth` is memoized, so its identity already changes whenever isAuthenticated /
-  // isLoading / user does — depending on it alone is enough (and listing the
-  // primitives too would be redundant).
+  // isLoading / user does. Depending on it alone is enough, and listing the
+  // primitives too would be redundant.
   useEffect(() => {
     holder.auth = auth;
     void router.invalidate();
@@ -44,7 +44,7 @@ export function AuthBoundary({
       client={client}
       // This example keeps the runtime `configQuery` path (config served from
       // the Convex deployment) to exercise it; static `config` is the default
-      // choice — see the other examples. `fallback` renders while it loads.
+      // choice. See the other examples. `fallback` renders while it loads.
       configQuery={api.logto.config}
       fallback={null}
       // Soft-navigate after sign-in instead of a hard redirect.

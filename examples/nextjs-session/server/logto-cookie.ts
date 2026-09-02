@@ -14,19 +14,19 @@ export const logtoCookieHandler = createLogtoSessionCookieHandler({
   sessionApi: api.auth,
   action: (reference, args) => client.action(reference, args),
   // Deliberately *not* a `NEXT_PUBLIC_` name. Next inlines those at build time,
-  // so a `NEXT_PUBLIC_APP_ORIGIN` set in the production environment would be
-  // ignored in favour of whatever the build machine had — and every request to
-  // this handler would be answered `403 Origin is not allowed`, with sign-in
-  // failing for everyone and nothing in the build to explain it. A plain
-  // server-side variable is read when the handler runs.
+  // so a `NEXT_PUBLIC_APP_ORIGIN` set in the production environment would lose
+  // to whatever the build machine had, and this handler would answer every
+  // request `403 Origin is not allowed`, with sign-in failing for everyone and
+  // nothing in the build to explain it. The handler reads a plain server-side
+  // variable when it runs.
   //
   // Exact origins only; the handler rejects wildcards.
   allowedOrigins: [process.env.APP_ORIGIN ?? "http://localhost:3000"],
   basePath: "/api/logto",
-  // The opt-in companion cookie that makes server rendering possible: the ID
-  // token, HttpOnly, with Max-Age from its own `exp`. Reading it mints nothing
-  // and rotates nothing, which is the point — a Server Component cannot set
-  // cookies, so it must not be handed anything that rotates. See
+  // The opt-in companion cookie that makes server rendering possible. It holds
+  // the ID token, HttpOnly, with Max-Age from its own `exp`. Reading it mints
+  // nothing and rotates nothing, which is the point. A Server Component cannot
+  // set cookies, so it must not be handed anything that rotates. See
   // docs/adr/0002-token-custody.md for the custody trade-off.
   idTokenCookie: true,
 });

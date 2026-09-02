@@ -26,7 +26,7 @@ function memoryRepository(): SessionDeviceKeyRepository & {
 }
 
 /**
- * The narrowest IndexedDB that can model a commit-time abort: a request that
+ * The narrowest IndexedDB that can model a commit-time abort. A request that
  * succeeds, followed by a transaction that does not.
  */
 function fakeIndexedDb(options: {
@@ -120,8 +120,8 @@ describe("WebCryptoSessionDeviceBinding", () => {
   it("fails loudly when the key's transaction aborts at commit", async () => {
     // IndexedDB reports a quota failure on the transaction, after the `add`
     // request has already succeeded. Believing the request would leave the key
-    // in this tab's memory only: the next reload generates a different one,
-    // every device proof is rejected, and the component deletes the session.
+    // in this tab's memory only. The next reload generates a different one, and
+    // the component rejects every device proof and deletes the session.
     const binding = createSessionDeviceBinding(
       "deployment",
       fakeIndexedDb({ abortCommitWith: "QuotaExceededError" }),
@@ -133,8 +133,8 @@ describe("WebCryptoSessionDeviceBinding", () => {
   });
 
   it("adopts another tab's key when the add loses the race", async () => {
-    // A ConstraintError is swallowed so the transaction still commits, and the
-    // caller re-reads the winner instead of failing.
+    // The repository swallows a ConstraintError so the transaction still
+    // commits, and the caller re-reads the winner instead of failing.
     const binding = createSessionDeviceBinding(
       "deployment",
       fakeIndexedDb({ occupied: true }),

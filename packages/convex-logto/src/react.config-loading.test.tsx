@@ -11,7 +11,7 @@ import { ConvexLogtoProvider } from "./react";
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 // These tests cover the provider's config phases only, so both neighbors are
-// stubbed to passthroughs — the Logto and Convex internals are irrelevant here.
+// passthrough stubs. The Logto and Convex internals are irrelevant here.
 vi.mock("@logto/react", () => ({
   LogtoProvider: ({ children }: { children: unknown }) => children,
   useLogto: () => ({
@@ -83,7 +83,7 @@ it("configQuery mode: renders fallback while loading, then mounts children exact
     );
   });
 
-  // Loading: the fallback shows and the auth tree does not exist yet — so
+  // Loading. The fallback shows and the auth tree does not exist yet, so
   // nothing (like a signIn call) can build Logto state against a half-ready
   // provider, which is the class of bug the old inert-client remount guarded.
   expect(container.textContent).toBe("SPLASH");
@@ -97,7 +97,7 @@ it("configQuery mode: renders fallback while loading, then mounts children exact
   expect(container.textContent).toBe("CHILDREN");
   expect(mountCount).toBe(1);
 
-  // Re-render with fresh prop identities: children must not remount.
+  // Re-render with fresh prop identities. Children must not remount.
   await act(async () => {
     root.render(
       <ConvexLogtoProvider

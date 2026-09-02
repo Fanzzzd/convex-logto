@@ -14,11 +14,11 @@
 //
 // Our `fetchAccessToken` answers that call by running the `refresh` action. On
 // a stopped socket `sendMessage` returns false and the action parks as
-// `"NotSent"` in a promise that never settles, so `tryRestartSocket()` is never
-// reached — and it is the only caller of `tryRestart()`. The app wedges until a
-// reload: queries stop updating, mutations queue silently, and every later
-// refresh merges into the dead promise. A backgrounded tab or a suspended
-// native app reaches that path routinely.
+// `"NotSent"` in a promise that never settles, so nothing ever reaches
+// `tryRestartSocket()`, and it is the only caller of `tryRestart()`. The app
+// wedges until a reload: queries stop updating, mutations queue silently, and
+// every later refresh merges into the dead promise. A backgrounded tab or a
+// suspended native app reaches that path routinely.
 //
 // Session actions carry their own credential in their arguments and never use
 // Convex auth, so a plain HTTP client is all they need.
@@ -40,17 +40,17 @@ export function createDeploymentSessionTransport(
 ): SessionTransport {
   const client = new ConvexHttpClient(url, {
     skipConvexDeploymentUrlCheck: true,
-    // `ConvexHttpClient` calls `fetch` with no signal of its own. A request that
-    // never answers would park `inflightRefresh` forever — every later token
-    // fetch merges into that promise, and the recovery loop waits on it — which
-    // is the same wedge this module exists to avoid, moved from a stopped socket
-    // to a stalled request.
+    // `ConvexHttpClient` calls `fetch` with no signal of its own. A request
+    // that never answers would park `inflightRefresh` forever, since every
+    // later token fetch merges into that promise and the recovery loop waits on
+    // it. That is the same wedge this module exists to avoid, moved from a
+    // stopped socket to a stalled request.
     fetch: timeoutFetch,
   });
   return {
-    // Belt and braces: `fetch` is a newer constructor option than this package's
-    // `convex` floor, so an older client would ignore it. The race settles the
-    // caller either way.
+    // Belt and braces. `fetch` is a newer constructor option than this
+    // package's `convex` floor, so an older client would ignore it. The race
+    // settles the caller either way.
     action: (reference, args) => withDeadline(client.action(reference, args)),
   };
 }
@@ -87,7 +87,7 @@ async function withDeadline<T>(operation: Promise<T>): Promise<T> {
 }
 
 /**
- * The default transport for a provider: HTTP when the client exposes its URL,
+ * The default transport for a provider. HTTP when the client exposes its URL,
  * otherwise the client itself.
  *
  * `ConvexReactClient.url` exists on every version this package supports; the

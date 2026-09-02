@@ -1,4 +1,4 @@
-// Pure logic for the session component — no ctx, no fetch, unit-testable.
+// Pure logic for the session component. No ctx, no fetch, unit-testable.
 // Everything here runs in Convex's V8 runtime: Web APIs only.
 
 import { ConvexError } from "convex/values";
@@ -27,7 +27,7 @@ export const SESSION_LABEL_MAX_LENGTH = 64;
  * the deployment URL can park documents near Convex's 1 MiB limit in a loop, and
  * GC would have to drain them a handful per mutation. Every other
  * caller-supplied string in this component is bounded; these are generous by
- * comparison — a redirect URI that does not fit in 2048 code points is not a
+ * comparison. A redirect URI that does not fit in 2048 code points is not a
  * redirect URI anyone registered with Logto.
  */
 export const SIGN_IN_URL_MAX_LENGTH = 2048;
@@ -43,7 +43,7 @@ export const SESSION_LIST_LIMIT = 16;
 /**
  * How many rows one `listSessions` call may read while filling that page.
  * Sessions killed by a `sid` watermark are filtered after the read, so the scan
- * must be allowed to walk past them — but only this far, to keep the query's
+ * must be allowed to walk past them, but only this far, to keep the query's
  * work bounded no matter how much revoked state is awaiting cleanup.
  */
 export const SESSION_LIST_SCAN_LIMIT = 128;
@@ -51,7 +51,7 @@ export const SESSION_LIST_SCAN_LIMIT = 128;
 /**
  * The other half of that bound. A session document may approach Convex's 1 MiB
  * limit (a fat ID token with many claims), so a row count alone does not bound
- * the read: the scan also stops once it has read this many bytes. A quarter of
+ * the read. The scan also stops once it has read this many bytes. A quarter of
  * the 16 MiB transaction budget leaves room for the one document already in
  * hand when the check fires, and for the watermark lookups alongside it.
  */
@@ -86,8 +86,8 @@ export type SessionClientDescriptor = {
  * Every invisible character class, not a hand-picked list of bidi overrides:
  * `Cc` controls, `Cf` format characters (the bidi embeddings and isolates, but
  * also RLM/LRM/ALM and the zero-width joiners `\s` never matches), and the line
- * and paragraph separators. A label is rendered next to other sessions, and any
- * of these can make one entry impersonate another.
+ * and paragraph separators. The UI renders a label next to other sessions, and
+ * any of these can make one entry impersonate another.
  */
 const INVISIBLE_DISPLAY_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
@@ -99,7 +99,7 @@ const ZERO_WIDTH_JOINER = "\u200d";
  * newlines or direction changes into a UI that lists it beside other sessions.
  */
 function normalizeDisplayText(raw: string): string {
-  // Code points, not graphemes: the limit these feed is a storage bound, and
+  // Code points, not graphemes. The limit these feed is a storage bound, and
   // per-code-point filtering is what strips the invisible characters.
   return Array.from(raw)
     .filter(
@@ -126,7 +126,7 @@ export function sessionLabelTooLong(raw: string): boolean {
 }
 
 /**
- * Normalize a user-chosen session label. Rejects rather than truncates: a
+ * Normalize a user-chosen session label. Rejects rather than truncates. A
  * silently shortened label is worse than a clear error, because the user is
  * naming a device they need to recognise later.
  */
@@ -155,12 +155,12 @@ const DEVICE_KEY_COORDINATE = /^[\w-]{43}$/;
  *
  * `x` and `y` are the only caller-supplied strings this component stores
  * without a bound of their own, and {@link sessionReadCost} does not count
- * them — so an unbounded key is a session row the list scan under-measures by
+ * them, so an unbounded key is a session row the list scan under-measures by
  * however much the caller chose to send. The key is otherwise parsed only at
  * verify time, inside a `try/catch` that returns `false`, so nothing on the
  * write path would notice.
  *
- * Called before the authorization code is spent, like the label: a key that can
+ * Called before the authorization code is spent, like the label. A key that can
  * never produce a valid proof should fail the sign-in it was offered to, not
  * one refresh later.
  */
@@ -201,7 +201,7 @@ export function normalizeClientDescriptor(
 }
 
 /**
- * GC horizon for dead sessions: Logto's grant chain has a hard 180-day cap, so
+ * GC horizon for dead sessions. Logto's grant chain has a hard 180-day cap, so
  * a session not refreshed for longer than this can never refresh again.
  */
 export const SESSION_GC_AFTER_MS = 190 * 24 * 60 * 60 * 1000;
@@ -242,14 +242,16 @@ function toHex(buffer: ArrayBuffer): string {
   return hex;
 }
 
-/** 256-bit random opaque token, base64url — the browser-held session credential. */
+/**
+ * 256-bit random opaque token, base64url. The browser-held session credential.
+ */
 export function generateToken(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return toBase64Url(bytes);
 }
 
-/** SHA-256 hex of a session token — the only form stored at rest. */
+/** SHA-256 hex of a session token, the only form stored at rest. */
 export async function hashToken(token: string): Promise<string> {
   return toHex(await crypto.subtle.digest("SHA-256", encoder.encode(token)));
 }
@@ -263,10 +265,10 @@ export type DevicePublicKey = {
 
 /**
  * A JWT segment is base64url over **UTF-8 bytes**. `atob` alone yields one
- * latin-1 character per byte, which silently mojibakes every multi-byte claim —
- * a `name` of `王小明` decodes as `ç\u008e\u008bå°\u008fæ\u0098\u008e` — so the bytes
- * have to go through a UTF-8 decode. Returns `undefined` rather than a partial
- * result: nothing downstream can act on half-decoded claims.
+ * latin-1 character per byte, which mojibakes every multi-byte claim. A `name`
+ * of `王小明` decodes as `ç\u008e\u008bå°\u008fæ\u0098\u008e`. So the bytes have
+ * to go through a UTF-8 decode. Returns `undefined` rather than a partial
+ * result, because nothing downstream can act on half-decoded claims.
  */
 export function decodeJwtSegment(segment: string): unknown {
   const bytes = fromBase64Url(segment);
@@ -396,7 +398,7 @@ export function buildAuthorizeUrl(options: {
     state: options.state,
     code_challenge: options.challenge,
     code_challenge_method: "S256",
-    // Required for offline_access to actually issue a refresh token.
+    // Required for offline_access to issue a refresh token at all.
     prompt: "consent",
   });
   for (const resource of options.resources ?? []) {
@@ -423,9 +425,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Decode a JWT payload without verifying the signature. Verification is not
- * this component's job: the token arrives directly from Logto over TLS, and
+ * this component's job. The token arrives directly from Logto over TLS, and
  * Convex verifies the signature against Logto's JWKS when the browser presents
- * it. We only need claims for bookkeeping — with a sanity check that the token
+ * it. We only need claims for bookkeeping, plus a sanity check that the token
  * is for this app and issuer, so a misconfiguration fails loudly here instead
  * of as a silent Convex rejection later.
  */
@@ -453,7 +455,7 @@ export function decodeIdToken(
     throw terminal(
       "id_token_mismatch",
       `ID token iss/aud (${String(iss)} / ${String(aud)}) don't match the configured ` +
-        `LOGTO_ENDPOINT / LOGTO_APP_ID — check the Traditional Web app's configuration.`,
+        `LOGTO_ENDPOINT / LOGTO_APP_ID. Check the Traditional Web app's configuration.`,
     );
   }
   if (typeof sub !== "string" || typeof exp !== "number") {
@@ -467,9 +469,10 @@ export function decodeIdToken(
 }
 
 /**
- * The rotation decision — the heart of reuse handling, pure so it's testable.
- * `presentedHash` was found either as the current or a recently superseded
- * Session-token generation; decide what the refresh should do.
+ * The rotation decision. This is where reuse handling lives, kept pure so it is
+ * testable. The caller found `presentedHash` as either the current or a
+ * recently superseded Session-token generation; decide what the refresh should
+ * do.
  */
 export function decideRefresh(options: {
   presentedHash: string;
@@ -523,14 +526,14 @@ export function decideRefresh(options: {
 
   if (presentedHash === session.tokenHash) {
     // Current token. If another refresh is mid-flight (same token double-fired
-    // past the client's Web Lock), don't double-hit Logto's token endpoint —
-    // at the ≥70%-TTL rotation boundary a concurrent replay of the same
+    // past the client's Web Lock), don't double-hit Logto's token endpoint.
+    // At the ≥70%-TTL rotation boundary a concurrent replay of the same
     // refresh token would trip Logto's reuse detection and destroy the grant.
     if (claimed) return { outcome: "in-flight" };
     return { outcome: "refresh" };
   }
 
-  // Not current — resolution matched a retained superseded generation (or the
+  // Not current. Resolution matched a retained superseded generation (or the
   // legacy prevTokenHash adapter).
   const inWindow =
     presentedTokenExpiresAt === undefined
@@ -550,12 +553,12 @@ export function decideRefresh(options: {
 /**
  * Decide whether a token exchange (Organization / Resource / userinfo) may run.
  *
- * Deliberately *not* {@link decideRefresh}. An exchange spends the same Logto
- * refresh token — so it takes the same claim, and inherits `in-flight`,
- * `claim-expired` and `reuse` unchanged — but it does not rotate the Session
- * token, so there is no `cached`/`refresh-superseded` split and no candidate to
- * adopt. A superseded generation still inside its Reuse window may exchange:
- * nothing rotates, so nothing can be orphaned by it.
+ * Not {@link decideRefresh}, on purpose. An exchange spends the same Logto
+ * refresh token, so it takes the same claim and inherits `in-flight`,
+ * `claim-expired` and `reuse` unchanged. It does not rotate the Session token,
+ * so there is no `cached`/`refresh-superseded` split and no candidate to adopt.
+ * A superseded generation still inside its Reuse window may exchange. Nothing
+ * rotates, so nothing can be orphaned by it.
  */
 export function decideExchange(options: {
   presentedHash: string;
@@ -610,12 +613,12 @@ export function decideExchange(options: {
 /**
  * How many minted Resource/Organization tokens one Session caches.
  *
- * Bounded because a session's rows are deleted in the transaction that deletes
- * the session — an unbounded cache would make that deletion unbounded too, and
- * "a revoked session's rows are gone" is the invariant that stops a minted
- * token from outliving the authority it was minted under. Eight covers a few
- * organizations plus a couple of API resources; beyond that the
- * least-recently-minted row is evicted.
+ * Bounded because the transaction that deletes a session also deletes its rows.
+ * An unbounded cache would make that deletion unbounded too, and "a revoked
+ * session's rows are gone" is the invariant that stops a minted token from
+ * outliving the authority it was minted under. Eight covers a few organizations
+ * plus a couple of API resources; beyond that the component evicts the
+ * least-recently-minted row.
  */
 export const RESOURCE_TOKEN_CACHE_LIMIT = 8;
 
@@ -631,9 +634,9 @@ export const TOKEN_AUDIENCE_MAX_LENGTH = 256;
  * The scope key is caller-supplied and lands verbatim in a `resourceTokens`
  * row, and session deletion collects those rows for eight sessions in one
  * transaction. Every other caller-supplied string in this component is
- * bounded; unbounded, eight rows of near-document-limit scope text is enough
+ * bounded. Unbounded, eight rows of near-document-limit scope text is enough
  * to put a subject's sessions permanently beyond a revocation batch's read
- * budget — a session that can never be revoked.
+ * budget. That is a session that can never be revoked.
  */
 export const TOKEN_SCOPE_MAX_COUNT = 32;
 export const TOKEN_SCOPE_KEY_MAX_LENGTH = 512;
@@ -642,11 +645,11 @@ export const TOKEN_SCOPE_KEY_MAX_LENGTH = 512;
  * Largest minted access token this will cache.
  *
  * The token comes from Logto rather than the caller, so this is not a defence
- * against an attacker — it is what keeps the per-session row bound a *byte*
+ * against an attacker. It is what keeps the per-session row bound a *byte*
  * bound and not just a row count, so the batched session deletion above stays
  * inside its transaction budget no matter what a deployment's tokens look
- * like. A token past this is still returned; it is simply not stored, so the
- * next call mints again.
+ * like. The component still returns a token past this limit but does not
+ * store it, so the next call mints again.
  */
 export const MAX_CACHEABLE_ACCESS_TOKEN_LENGTH = 8 * 1024;
 
@@ -654,7 +657,7 @@ export const MAX_CACHEABLE_ACCESS_TOKEN_LENGTH = 8 * 1024;
  * The cache key's audience half.
  *
  * Prefixed rather than raw so an organization id can never collide with a
- * resource indicator, and `default` — the opaque token `fetchUserInfo` needs —
+ * resource indicator, and `default`, the opaque token `fetchUserInfo` needs,
  * is a third namespace rather than the absence of one.
  */
 export function tokenAudienceKey(target: {
@@ -694,7 +697,7 @@ function assertAudienceLength(value: string, what: string): string {
  *
  * Sorted and de-duplicated so the same ask in a different order is the same
  * cache entry, and a *narrower* ask never gets served a token minted for a
- * wider one — Logto issues exactly what was requested, so reusing across scope
+ * wider one. Logto issues exactly what was requested, so reusing across scope
  * sets would silently hand back a token missing a scope the caller asked for.
  */
 export function tokenScopeKey(scopes?: string[]): string {
@@ -708,7 +711,7 @@ export function tokenScopeKey(scopes?: string[]): string {
   const unique = [
     ...new Set(scopes.map((scope) => scope.trim()).filter(Boolean)),
   ];
-  // Sorted in place: the array was built on the line above and is owned by
+  // Sorted in place. The array was built on the line above and is owned by
   // nobody else. `toSorted` would say it better but is ES2023, and the library
   // targets ES2022.
   unique.sort();
@@ -725,7 +728,7 @@ export function tokenScopeKey(scopes?: string[]): string {
 /**
  * When a minted access token actually expires.
  *
- * The token's own `exp` wins where there is one: `expires_in` is relative to a
+ * The token's own `exp` wins where there is one. `expires_in` is relative to a
  * clock we did not read it on, and an Organization token whose `exp` disagrees
  * with `expires_in` is the one that would be cached past its life. An opaque
  * token (the `default` audience) has no `exp`, so `expires_in` is all there is.
@@ -748,7 +751,7 @@ export function accessTokenExpiresAt(options: {
 
 /**
  * The claims an app can authorize on without the token string ever leaving the
- * component — the default custody in `docs/adr/0002-token-custody.md`.
+ * component. This is the default custody in `docs/adr/0002-token-custody.md`.
  */
 export type ResourceTokenClaims = {
   audience: string;
@@ -785,10 +788,9 @@ export function rotateTokenHashes(
  * Bound and sanity-check the two caller-supplied strings a sign-in stores.
  *
  * `redirectUri` only has to be a parseable absolute URI with no embedded
- * credentials: native flows legitimately use a custom scheme
- * (`io.logto://callback`), and Logto itself rejects any URI the app has not
- * registered, so anything stricter here would break platforms rather than
- * protect them.
+ * credentials. Native flows use a custom scheme (`io.logto://callback`), and
+ * Logto itself rejects any URI the app has not registered, so anything
+ * stricter here would break platforms rather than protect them.
  */
 export function normalizeSignInTargets(targets: {
   redirectUri: string;
@@ -832,8 +834,8 @@ export function normalizeSignInTargets(targets: {
 
 /**
  * OIDC Core §2 allows `aud` to be an array, Convex's own ID-token validation
- * accepts one, and this library's back-channel-logout verifier always has — so
- * rejecting it here would fail a token every other party considers valid, and
+ * accepts one, and this library's back-channel-logout verifier always has.
+ * Rejecting it here would fail a token every other party considers valid, and
  * on the refresh path that costs the session.
  */
 export function audienceMatches(value: unknown, appId: string): boolean {
@@ -848,15 +850,16 @@ export function audienceMatches(value: unknown, appId: string): boolean {
 
 // --- error taxonomy ---------------------------------------------------------
 //
-// Terminal: the session/transaction is gone for good — the client clears its
-// state and transitions to unauthenticated. Transient: network/5xx/contention —
-// the client retries with backoff and NEVER treats it as a sign-out.
+// Terminal means the session/transaction is gone for good; the client clears
+// its state and transitions to unauthenticated. Transient means
+// network/5xx/contention; the client retries with backoff and NEVER treats it
+// as a sign-out.
 //
-// One class of terminal error is about the *input*, not the session: a rejected
-// session label means "do not retry this value", and nothing about the session
-// died. The client validates label length before the round-trip so an app never
-// has to tell the two apart, and this guard stays as defence in depth for a
-// caller reaching the component directly.
+// One class of terminal error is about the *input*, not the session. A
+// rejected session label means "do not retry this value", and nothing about
+// the session died. The client validates label length before the round-trip so
+// an app never has to tell the two apart, and this guard stays as defence in
+// depth for a caller reaching the component directly.
 
 export type SessionErrorData = {
   kind: "terminal" | "transient";
@@ -883,19 +886,20 @@ export function transient(
  *
  * {@link classifyTokenEndpointFailure} answers for `refresh`, where transient is
  * the safe default because terminal deletes the session row. Sign-in has no
- * session to lose, and by the time Logto is contacted the transaction row is
- * already consumed and the authorization code spent — so a retry can only find
- * nothing and report `transaction_not_found`, burying the diagnosis Logto just
- * gave us. Keep the code and the message; only the verdict changes.
+ * session to lose, and by the time the action contacts Logto the transaction
+ * row is already consumed and the authorization code spent. A retry can only
+ * find nothing and report `transaction_not_found`, burying the diagnosis Logto
+ * just gave us. Keep the code and the message; only the verdict changes.
  */
 export function asSpentAuthorizationCode(
   error: unknown,
 ): ConvexError<SessionErrorData> {
-  // Not "the authorization code is spent": a `logto_unreachable` may never have
-  // reached Logto at all. What is always true is that the transaction row is
-  // consumed, so *this* attempt is unrepeatable whatever happened downstream.
+  // Not "the authorization code is spent", because a `logto_unreachable` may
+  // never have reached Logto at all. What is always true is that the
+  // transaction row is consumed, so *this* attempt is unrepeatable whatever
+  // happened downstream.
   const suffix =
-    " Start sign-in again: this sign-in attempt cannot be retried.";
+    " Start sign-in again. This sign-in attempt cannot be retried.";
   if (error instanceof ConvexError && isSessionErrorData(error.data)) {
     return terminal(error.data.code, `${error.data.message}${suffix}`);
   }
@@ -909,15 +913,15 @@ export function asSpentAuthorizationCode(
  * Re-classify a failure that happened *after* Logto answered with a well-formed
  * token response.
  *
- * The response was unusable to us — an `iss`/`aud` drift after an endpoint
- * change, a missing `openid` scope — but Logto processed the grant and told us
- * what it did with the refresh token, so the session is not dead. Terminal here
- * would delete the row, which is how one wrong environment variable takes out
- * every session in a deployment, one refresh at a time.
+ * The response was unusable to us, say an `iss`/`aud` drift after an endpoint
+ * change or a missing `openid` scope. But Logto processed the grant and told
+ * us what it did with the refresh token, so the session is not dead. Terminal
+ * here would delete the row, which is how one wrong environment variable takes
+ * out every session in a deployment, one refresh at a time.
  *
- * The caller persists any rotation and releases the claim before raising this:
- * the rotation state is known, so the stored token is the one Logto expects
- * next. A response we could not parse is a different case — the outcome is
+ * The caller persists any rotation and releases the claim before raising this.
+ * The rotation state is known, so the stored token is the one Logto expects
+ * next. A response we could not parse is a different case. The outcome is
  * unknown and `outcomeUnknown` handles it.
  */
 export function asDeploymentFault(
@@ -926,7 +930,7 @@ export function asDeploymentFault(
   if (error instanceof ConvexError && isSessionErrorData(error.data)) {
     return transient(
       error.data.code,
-      `${error.data.message} The session was kept: this looks like a deployment ` +
+      `${error.data.message} The session was kept. This looks like a deployment ` +
         `fault rather than a dead session.`,
     );
   }
@@ -948,17 +952,20 @@ function isSessionErrorData(data: unknown): data is SessionErrorData {
 export function sessionReuseDetectedError(): ConvexError<SessionErrorData> {
   return terminal(
     "session_reuse_detected",
-    "This session token was already rotated away — the session has been revoked. Sign in again.",
+    "This session token was already rotated away, so the session has been revoked. Sign in again.",
   );
 }
 
-/** Classify a Logto token-endpoint failure: 4xx auth failures are terminal, the rest transient. */
+/**
+ * Classify a Logto token-endpoint failure. 4xx auth failures are terminal, the
+ * rest transient.
+ */
 /**
  * OAuth 2.0 error codes (RFC 6749 §5.2) that describe a broken *deployment*,
- * not a dead user grant. `invalid_client` in particular is answered with 401
- * and means this app's own credentials are wrong — treating it as terminal
- * would delete every session in the deployment the moment a client secret is
- * rotated without updating `LOGTO_CLIENT_SECRET`.
+ * not a dead user grant. Logto answers `invalid_client` in particular with
+ * 401, and it means this app's own credentials are wrong. Treating it as
+ * terminal would delete every session in the deployment the moment someone
+ * rotates a client secret without updating `LOGTO_CLIENT_SECRET`.
  */
 const CONFIGURATION_FAULT_ERRORS = new Set([
   "invalid_client",
@@ -966,19 +973,19 @@ const CONFIGURATION_FAULT_ERRORS = new Set([
   "unauthorized_client",
   "unsupported_grant_type",
   "invalid_scope",
-  // Measured, not assumed: asking Logto for an Organization token on a grant
+  // Measured, not assumed. Asking Logto for an Organization token on a grant
   // that never requested `urn:logto:scope:organizations` answers
   // `403 insufficient_scope`. Scopes are fixed at authorization time, so this
-  // is a deployment that has not put them in `logtoSessionApi({ scopes })` —
-  // and it is answered identically for every session, which is exactly why it
-  // must never be terminal.
+  // is a deployment that has not put them in `logtoSessionApi({ scopes })`.
+  // Logto answers it identically for every session, which is why it must
+  // never be terminal.
   "insufficient_scope",
 ]);
 
 /**
  * `outcome_unknown` marks a refresh whose request reached Logto but whose
  * result never came back. The stored refresh token may already have been
- * rotated, so it must never be presented a second time — Logto's reuse
+ * rotated, so it must never be presented a second time. Logto's reuse
  * detection destroys the whole grant, including sibling Sessions.
  */
 export const TOKEN_OUTCOME_UNKNOWN = "logto_outcome_unknown";
@@ -1002,12 +1009,12 @@ export function classifyTokenEndpointFailure(
   body: { error?: string; scope?: string },
 ): ConvexError<SessionErrorData> {
   // 403 belongs here with 400 and 401. RFC 6749 §5.2 does not use it, but Logto
-  // does — an Organization token asked for on a grant without
+  // does. An Organization token asked for on a grant without
   // `urn:logto:scope:organizations` comes back `403 insufficient_scope`, with a
-  // machine-readable body. Reading that as "outcome unknown" was a real bug:
-  // the claim was kept, every later refresh answered `refresh_in_flight`, and
-  // when the claim aged out the session was *deleted* — one missing scope in a
-  // deployment's config signing every user out.
+  // machine-readable body. Reading that as "outcome unknown" was a real bug.
+  // The claim was kept, every later refresh answered `refresh_in_flight`, and
+  // when the claim aged out the session was *deleted*. One missing scope in a
+  // deployment's config signed every user out.
   if (status === 400 || status === 401 || status === 403) {
     // Logto answered with a decision, so it did not rotate anything.
     if (
@@ -1017,30 +1024,31 @@ export function classifyTokenEndpointFailure(
       if (body.error === "insufficient_scope") {
         return transient(
           body.error,
-          `Logto refused this grant: it never requested ${body.scope ?? "the scope this call needs"}. ` +
-            "Scopes are fixed at authorization time — add it to " +
+          `Logto refused this grant because it never requested ${body.scope ?? "the scope this call needs"}. ` +
+            "Scopes are fixed at authorization time, so add it to " +
             "`logtoSessionApi({ scopes })` and sign in again. Sessions are kept.",
         );
       }
       if (body.error === "invalid_scope") {
         // Not a credentials problem, so the generic message below would send
         // the reader to the wrong three environment variables. Logto names the
-        // offending scope, and the rule is a subset rule: a refresh grant may
-        // only ask for scopes it already holds. Organization *permissions*
-        // never do — they are not OIDC scopes at all (they are absent from
-        // `scopes_supported`), so asking for one here can only fail.
+        // offending scope, and the rule is a subset rule. A refresh grant may
+        // only ask for scopes it already holds, and it never holds
+        // organization *permissions*. They are not OIDC scopes at all, and
+        // they are absent from `scopes_supported`, so asking for one here can
+        // only fail.
         return transient(
           body.error,
-          `Logto rejected the scopes this call asked for${body.scope === undefined ? "" : ` (${body.scope})`}: ` +
-            "a refresh grant can only request scopes it already holds. Add " +
-            "them to `logtoSessionApi({ scopes })` and sign in again — and note " +
-            "that organization permissions are not OIDC scopes, so they cannot " +
-            "be asked for this way. Sessions are kept.",
+          `Logto rejected the scopes this call asked for${body.scope === undefined ? "" : ` (${body.scope})`}. ` +
+            "A refresh grant can only request scopes it already holds. Add " +
+            "them to `logtoSessionApi({ scopes })` and sign in again. Organization " +
+            "permissions are not OIDC scopes, so they cannot be asked for this " +
+            "way. Sessions are kept.",
         );
       }
       return transient(
         body.error,
-        `Logto rejected this deployment's own request (${body.error}) — check ` +
+        `Logto rejected this deployment's own request (${body.error}). Check ` +
           `LOGTO_APP_ID / LOGTO_CLIENT_SECRET / LOGTO_ENDPOINT. Sessions are kept.`,
       );
     }
@@ -1049,22 +1057,22 @@ export function classifyTokenEndpointFailure(
       // attribute is the irreversible choice, so fail transiently instead.
       return transient(
         "logto_rejected",
-        `Logto token endpoint responded ${status} without an error code — retry later.`,
+        `Logto token endpoint responded ${status} without an error code. Retry later.`,
       );
     }
     return terminal(
       body.error,
-      `Logto rejected the grant (${body.error}) — the session can't continue.`,
+      `Logto rejected the grant (${body.error}), so the session can't continue.`,
     );
   }
   if (status === 429) {
     // Rate limiting happens before the grant is processed.
     return transient(
       "logto_rate_limited",
-      "Logto rate-limited the token endpoint — retry later.",
+      "Logto rate-limited the token endpoint. Retry later.",
     );
   }
   return outcomeUnknown(
-    `Logto token endpoint responded ${status} — the refresh outcome is unknown.`,
+    `Logto token endpoint responded ${status}. The refresh outcome is unknown.`,
   );
 }

@@ -11,10 +11,10 @@ export const me = query({
   },
 });
 
-// Subject-level revocation enforcement: an ID token stays cryptographically
-// valid until it expires, so sensitive functions can additionally require that
-// its subject still has an active component session. This is not a proof that
-// the bearer came from one particular browser session.
+// Subject-level revocation enforcement. An ID token stays cryptographically
+// valid until it expires, so sensitive functions can also require that its
+// subject still has an active component session. This is not a proof that the
+// bearer came from one particular browser session.
 export const sensitive = query({
   handler: async (ctx) => {
     await assertSubjectHasActiveSession(ctx, components.logto);

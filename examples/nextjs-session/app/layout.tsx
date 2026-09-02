@@ -7,8 +7,9 @@ export const metadata: Metadata = {
 };
 
 // Stays a Server Component; it only renders the client <Providers> boundary.
-// The identity is read where it is used — in `app/page.tsx` — rather than here,
-// so a route that does not need it is not forced dynamic by this layout.
+// `app/page.tsx` reads the identity where it is used, rather than this layout,
+// so this layout does not force dynamic rendering on a route that does not need
+// it.
 export default function RootLayout({
   children,
 }: {

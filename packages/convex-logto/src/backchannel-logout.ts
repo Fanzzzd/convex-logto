@@ -293,7 +293,7 @@ function audienceMatches(value: unknown, appId: string): boolean {
 /**
  * Verify a compact, signed OIDC Logout Token against Logto's RSA JWKS and the
  * Back-Channel Logout validation rules. Encrypted logout tokens are not
- * supported; compact JWE input is rejected as malformed.
+ * supported; this rejects compact JWE input as malformed.
  */
 export async function verifyLogtoLogoutToken(
   logoutToken: string,
@@ -476,9 +476,9 @@ export function createLogtoBackchannelLogoutHandler(
       // A *completed* replay is already fully handled. Always return the same
       // 200 as a first delivery so neither jti nor session existence leaks.
       //
-      // A claim that has not completed is not the same thing: the revocation
+      // A claim that has not completed is not the same thing. The revocation
       // may never have committed, and a release that itself failed keeps the
-      // claim for the whole dedupe window. Redo the work instead — revocation
+      // claim for the whole dedupe window. Redo the work instead. Revocation
       // is idempotent (the marker takes the max of what it already holds, and
       // the drain deletes rows that are already dead), so the worst case for
       // two deliveries racing inside that window is doing it twice.
@@ -495,7 +495,7 @@ export function createLogtoBackchannelLogoutHandler(
         throw new Error("Verified logout token has no subject or sid.");
       }
       // Only now is a later replay safe to answer without working. Suppressing
-      // replays still matters: a `sub`-only logout token revokes everything the
+      // replays still matters. A `sub`-only logout token revokes everything the
       // subject has *at the time it runs*, so a replay after the user signs in
       // again would sign them out a second time.
       await ctx.runMutation(options.sessions.lib.completeWebhookDelivery, {

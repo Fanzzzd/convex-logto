@@ -8,8 +8,8 @@ condensed reference for the two Vite-specific pieces: where the provider mounts 
 the callback route.
 
 <Callout>
-Backend setup (Logto app + RSA key, Convex env, `auth.config.ts`) is identical for
-every framework; see [Quick start](/docs/quick-start) steps 1–3.
+Backend setup (Logto app + RSA key, Convex env, `auth.config.ts`) is the same for
+every framework; see [Quick start](/docs/quick-start) steps 1 to 3.
 </Callout>
 
 `configQuery` resolves the Logto endpoint and app id from the Convex deployment,
@@ -23,7 +23,8 @@ export const config = logtoConfigQuery();
 ## Provider
 
 A plain SPA needs no `navigate`; the provider falls back to a hard redirect after
-sign-in. (Add `navigate` once you have a router, as TanStack Router does below.)
+sign-in. Add `navigate` once you have a router, as the
+[TanStack Router](/docs/tanstack-router) page does.
 
 ```tsx title="src/main.tsx"
 import { ConvexReactClient } from "convex/react";
@@ -65,7 +66,7 @@ root.render(
 );
 ```
 
-There is no `configQuery`: session mode keeps every Logto value on the Convex
+There is no `configQuery`. Session mode keeps every Logto value on the Convex
 deployment, so nothing needs to reach the bundle. `sessionApi` is the module
 re-exporting `logtoSessionApi(...)`, `api.auth` above.
 
@@ -80,10 +81,10 @@ if (window.location.pathname === "/callback") return <p>Finishing sign in…</p>
 <Callout>
 A plain Vite SPA usually ships to a static host, which has no same-site server to
 mount the [cookie transport](/docs/session-mode#httponly-cookie-transport-optional)
-on. That is fine: the default localStorage transport is the supported
-static-hosting path. The session token there is one-time, rotates on every use,
-and is stored server-side only as a hash. Add the cookie transport when you have a
-server on the same site, not before.
+on. That is fine; the default localStorage transport is the supported
+static-hosting path. The session token there is one-time and rotates on every
+use, and the server stores only its hash. Add the cookie transport when you have
+a server on the same site, not before.
 </Callout>
 
 Full app: [`examples/vite-react-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session).

@@ -46,6 +46,6 @@ jobs:
         run: pnpm lint:package
 
       # After the build, because it reads the emitted declarations rather than
-      # the source — it sees the surface a reader's `npm i` would.
+      # the source. It sees the exports a reader's `npm i` would.
       - name: Check documented imports against the built exports
         run: pnpm check:docs

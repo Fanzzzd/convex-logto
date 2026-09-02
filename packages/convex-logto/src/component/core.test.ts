@@ -1,5 +1,5 @@
 // Pure-logic tests for the session component's core: the rotation decision
-// state machine (the heart of reuse handling), URL builders, token helpers,
+// state machine (where reuse handling lives), URL builders, token helpers,
 // and the error taxonomy.
 import { ConvexError } from "convex/values";
 import { describe, expect, it } from "vitest";
@@ -551,7 +551,7 @@ it.each([
   [400, "unsupported_grant_type", "transient"],
   [401, "invalid_client", "transient"],
   [401, "unauthorized_client", "transient"],
-  // 403 is not in RFC 6749 §5.2, but Logto answers it — and it is a decision,
+  // 403 is not in RFC 6749 §5.2, but Logto answers it, and it is a decision,
   // not an unknown outcome. The dedicated test below is the one that proves it.
   [403, "invalid_grant", "terminal"],
   [429, undefined, "transient"],
@@ -576,7 +576,7 @@ it.each([400, 401, 403])(
 );
 
 it("does not read a 403 as an unknown outcome, which would delete the session", () => {
-  // The whole chain this prevents, measured live before it was fixed: an
+  // The whole chain this prevents, measured live before the fix. An
   // Organization token requested without `urn:logto:scope:organizations`
   // answers `403 insufficient_scope`; read as "outcome unknown" the component
   // keeps the refresh claim, every later refresh answers `refresh_in_flight`,
@@ -608,7 +608,7 @@ it("does not blame the client credentials for a scope Logto refused", () => {
   expect(error.data.message).not.toContain("LOGTO_CLIENT_SECRET");
 });
 
-it("classifyTokenEndpointFailure surfaces Logto's error code", () => {
+it("classifyTokenEndpointFailure reports Logto's error code", () => {
   expect(
     classifyTokenEndpointFailure(400, { error: "invalid_grant" }).data.code,
   ).toBe("invalid_grant");
@@ -694,7 +694,7 @@ describe("session labels and client descriptors", () => {
 describe("assertUsableDevicePublicKey", () => {
   // `x` and `y` are the only caller-supplied strings the component stores
   // without a bound of their own, and the key is otherwise parsed only at verify
-  // time inside a try/catch — so nothing on the write path would notice.
+  // time inside a try/catch, so nothing on the write path would notice.
   const coordinate = "a".repeat(43);
 
   it("accepts a real P-256 coordinate pair", () => {

@@ -1,6 +1,7 @@
 // The framework-free half of session mode's client: storage, the auth state
 // machine, and the refresh pipeline. `react-session.tsx` is thin React glue
-// over this. No Logto SDK — the server (component) owns all OIDC traffic.
+// over this. No Logto SDK here. The server-side component owns all OIDC
+// traffic.
 
 import type {
   FunctionArgs,
@@ -43,22 +44,22 @@ const ID_TOKEN_SKEW_MS = 30 * 1000;
 const RETRY_DELAYS_MS = [500, 2000];
 /**
  * Backoff for re-presenting a session after a transient refresh failure. The
- * last entry repeats: an outage that outlives the ladder still has to end with
- * the tab signed in, not stranded.
+ * last entry repeats, because an outage that outlives the ladder still has to
+ * end with the tab signed in, not stranded.
  */
 const RECOVERY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
 
-/** Error objects already surfaced through the public auth-error channel. */
+/** Error objects already reported through the public auth-error channel. */
 const REPORTED_AUTH_ERRORS = new WeakSet<Error>();
 
 export type SessionSnapshot = {
   status: "restoring" | "authenticated" | "unauthenticated";
   sessionId: string | null;
-  /** Decoded ID token claims (display only — verification is Convex's job). */
+  /** Decoded ID token claims, for display only. Convex verifies the token. */
   user: LogtoUserClaims | undefined;
 };
 
-/** Structural slice of `ConvexReactClient` the engine needs — stubbed in tests. */
+/** Structural slice of `ConvexReactClient` the engine needs. Tests stub it. */
 export type SessionTransport = {
   action<Action extends FunctionReference<"action">>(
     action: Action,
@@ -70,14 +71,17 @@ export type SessionTransport = {
 export type SessionStorageAdapter = {
   /** Async stores hydrate their synchronous cache here before the engine reads it. */
   prepare?(): Promise<void>;
-  /** Durability barrier: wait for queued writes. Every engine transition awaits it. */
+  /**
+   * Durability barrier that waits for queued writes. Every engine transition
+   * awaits it.
+   */
   flush?(): Promise<void>;
   /**
-   * Sign-out only: reject when a credential this area was asked to delete is
-   * still in the browser.
+   * Sign-out only. Reject when a credential the engine asked this area to
+   * delete is still in the browser.
    *
-   * Deliberately not part of `flush()`. A surviving credential must fail the
-   * sign-out that left it behind — and nothing else. Signing in again and
+   * Kept out of `flush()` on purpose. A surviving credential must fail the
+   * sign-out that left it behind, and nothing else. Signing in again and
    * refreshing are the two ways a user recovers from a storage fault, and both
    * await the barrier, so folding the check into it locks the page out of its
    * own recovery paths for as long as it lives.
@@ -178,8 +182,8 @@ function isMissingSessionAction(error: unknown, name: string): boolean {
   const errorData: unknown =
     error instanceof ConvexError ? error.data : undefined;
   const data = isRecord(errorData) ? errorData : undefined;
-  // The cookie handler answers with this code; a direct Convex call surfaces the
-  // deployment's own "function not found".
+  // The cookie handler answers with this code; a direct Convex call fails with
+  // the deployment's own "function not found".
   if (data?.code === "session_management_unavailable") return true;
   const message = [
     error instanceof Error ? error.message : "",
@@ -214,7 +218,7 @@ export function decodeJwtPayload(
   const payload = parts[1];
   if (payload === undefined) return null;
   // Shared with the component's own ID-token decode so both halves read a
-  // non-ASCII claim the same way — and the same way the Logto SDK does, or
+  // non-ASCII claim the same way. It also matches the Logto SDK's decode, or
   // migrating from bridge mode would start garbling names.
   const decoded = decodeJwtSegment(payload);
   return isRecord(decoded) ? decoded : null;
@@ -225,7 +229,10 @@ function idTokenExpMs(token: string): number {
   return typeof exp === "number" ? exp * 1000 : 0;
 }
 
-/** Terminal ends the session on the client; anything else is retried and never treated as a sign-out. */
+/**
+ * Terminal ends the session on the client. The engine retries anything else
+ * and never treats it as a sign-out.
+ */
 export function sessionErrorKind(error: unknown): "terminal" | "transient" {
   if (error instanceof ConvexError) {
     const data: unknown = error.data;
@@ -248,8 +255,8 @@ function sessionErrorCode(error: unknown): string | null {
  *
  * `forceRefresh` is the escape hatch for a token the *resource server* has
  * stopped accepting. The component caches a minted token until it expires, so
- * without this a rejected one keeps being served for the rest of its lifetime
- * and the caller has no way to say "not that one". It costs a Logto grant:
+ * without this it keeps serving a rejected one for the rest of its lifetime
+ * and the caller has no way to say "not that one". It costs a Logto grant, so
  * reach for it on the failure path, not on every call.
  */
 export type LogtoTokenExchangeOptions = { forceRefresh?: boolean };
@@ -269,19 +276,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * Namespaced browser storage for the three session-mode artifacts:
  *
- * - session token + id (**localStorage**, fixed): shared across tabs and
- *   restarts. Safe there because it's one-time — every use rotates it, the
- *   server stores only its hash, and reuse outside the window kills the session.
+ * - session token + id (localStorage, fixed): shared across tabs and restarts.
+ *   Safe there because it's one-time. Every use rotates it, the server stores
+ *   only its hash, and reuse outside the window kills the session.
  * - ID token (sessionStorage by default): per-tab short bearer; an unexpired
  *   one makes reload a zero-round-trip authenticate.
  * - sign-in transaction stash (sessionStorage, fixed): binds the OIDC `state`
- *   to the tab that started sign-in, so a foreign callback (login CSRF) is
- *   refused client-side.
+ *   to the tab that started sign-in, so the engine refuses a foreign callback
+ *   (login CSRF) client-side.
  *
  * Falls back to per-instance memory when storage throws (private mode, quota),
  * keeping the flow alive within the tab. Failed removals remain pending until
- * a retry reaches browser storage; `flush()` makes explicit sign-out fail loud
- * instead of claiming success while durable credentials survive a reload.
+ * a retry reaches browser storage; `assertCredentialsRemoved()` makes an
+ * explicit sign-out fail loud instead of claiming success while durable
+ * credentials survive a reload.
  */
 /** Artifacts whose durable removal failure must reach the caller. */
 const CREDENTIAL_NAMES = new Set(["session", "idToken"]);
@@ -291,12 +299,13 @@ export class SessionStorageArea {
   private failedBrowserAreas = new Set<Exclude<StorageKind, "memory">>();
   private pendingRemovals = new Map<string, unknown>();
   /**
-   * Keys this instance has positive evidence for in a real browser area — it
-   * either wrote one there or read one back. Only those can leave a *durable*
-   * credential behind, so only their removal failures are worth failing on. A
-   * blocked area (sandboxed iframe, "block all cookies") never stored anything,
-   * and reporting its removal failures would wedge sign-in, sign-out and
-   * refresh forever over credentials that only ever lived in memory.
+   * Keys this instance has positive evidence for in a real browser area,
+   * because it either wrote one there or read one back. Only those can leave a
+   * *durable* credential behind, so only their removal failures are worth
+   * failing on. A blocked area (sandboxed iframe, "block all cookies") never
+   * stored anything, and reporting its removal failures would wedge sign-in,
+   * sign-out and refresh forever over credentials that only ever lived in
+   * memory.
    */
   private durableKeys = new Set<string>();
 
@@ -362,7 +371,7 @@ export class SessionStorageArea {
     } catch {
       // The probe can succeed even when reading the actual key is denied.
       // Trip the circuit breaker and retry against this instance's memory so
-      // subsequent operations never return to the known-broken browser area.
+      // later operations never return to the known-broken browser area.
       this.fallBack(kind);
       raw = this.memoryArea().getItem(key);
     }
@@ -391,7 +400,7 @@ export class SessionStorageArea {
       this.fallBack(kind);
       // The durable copy is now superseded. Another tab builds its own area,
       // reads that value, and presents a session token this one has already
-      // rotated away from — which trips reuse detection and kills the session
+      // rotated away from. That trips reuse detection and kills the session
       // for every tab. Drop it; the memory copy below is the live one.
       this.remove(kind, name);
     }
@@ -404,8 +413,8 @@ export class SessionStorageArea {
     if (kind === "memory" || typeof window === "undefined") return;
     const pendingKey = this.pendingRemovalKey(kind, key);
     try {
-      // Deliberately bypass the circuit breaker: a removal must still be tried
-      // against an area this instance previously gave up on.
+      // Bypass the circuit breaker on purpose. This must still try the removal
+      // against an area the instance gave up on earlier.
       const area =
         kind === "local" ? window.localStorage : window.sessionStorage;
       area.removeItem(key);
@@ -413,16 +422,16 @@ export class SessionStorageArea {
       this.pendingRemovals.delete(pendingKey);
     } catch (error) {
       this.fallBack(kind);
-      // Only a credential that is actually still there is a durable-removal
-      // failure. A spent `txn` stash holds the OIDC `state` string, not a
-      // bearer, so failing sign-out over it would be a false alarm.
+      // Only a credential that is still there is a durable-removal failure. A
+      // spent `txn` stash holds the OIDC `state` string, not a bearer, so
+      // failing sign-out over it would be a false alarm.
       if (CREDENTIAL_NAMES.has(name) && this.survivedRemoval(kind, key)) {
         this.pendingRemovals.set(pendingKey, error);
       }
     }
   }
 
-  /** Did a failed removal actually leave a credential in the browser area? */
+  /** Did a failed removal leave a credential in the browser area? */
   private survivedRemoval(
     kind: Exclude<StorageKind, "memory">,
     key: string,
@@ -453,7 +462,10 @@ export class SessionStorageArea {
     );
   }
 
-  /** The localStorage key session writes land on — for `storage` event filtering. */
+  /**
+   * The localStorage key session writes land on, for `storage` event
+   * filtering.
+   */
   get sessionEventKey(): string {
     return this.key("session");
   }
@@ -514,7 +526,9 @@ export class SessionStorageArea {
     this.remove("session", "txn");
   }
 
-  /** Clear only this tab's bearer — for reacting to a sign-out from another tab. */
+  /**
+   * Clear only this tab's bearer, in reaction to a sign-out from another tab.
+   */
   clearIdToken(): void {
     this.remove(this.tokenStorage, "idToken");
   }
@@ -536,20 +550,21 @@ export type SessionEngineOptions = {
   deviceBinding?: SessionDeviceBinding;
   /**
    * Self-reported description of this client, stamped on the session at sign-in
-   * so a user can recognise it in `listSessions()`. The app supplies it — the
-   * library never sniffs a User-Agent or IP — and it is advisory display data,
-   * never authenticated.
+   * so a user can recognise it in `listSessions()`. The app supplies it; the
+   * library never sniffs a User-Agent or IP. It is advisory display data, never
+   * authenticated.
    *
-   * A getter, not a value: apps often learn the description asynchronously, and
-   * rebuilding the engine to deliver it would restart the mount state machine
-   * mid-callback. It is read once, at the exchange.
+   * A getter, not a value, because apps often learn the description
+   * asynchronously, and rebuilding the engine to deliver it would restart the
+   * mount state machine mid-callback. The engine reads it once, at the
+   * exchange.
    */
   clientDescriptor?: () => LogtoSessionClientDescriptor | undefined;
   /**
-   * The session credential lives somewhere this code cannot delete — the
+   * The session credential lives somewhere this code cannot delete, the
    * HttpOnly cookie of the same-site transport. Sign-out then has no local
-   * fallback: if the server does not revoke, the user is still signed in, so
-   * the failure must reach the caller instead of being reported as success.
+   * fallback. If the server does not revoke, the user is still signed in, so
+   * sign-out must hand the caller the failure instead of reporting success.
    */
   serverHeldCredential?: boolean;
   /** Replace-style navigation; falls back to `location.replace`. */
@@ -558,16 +573,17 @@ export type SessionEngineOptions = {
   authFlow?: SessionAuthFlow;
   onAuthError?: (error: Error) => void;
   /**
-   * Opt-in phase timings for the auth bootstrap. Absent — or a slot holding
-   * `undefined` — means nothing is measured at all. React providers pass a slot
-   * so a handler can arrive on a later render without rebuilding the engine.
+   * Opt-in phase timings for the auth bootstrap. When it is absent, or a slot
+   * holding `undefined`, the engine measures nothing. React providers pass a
+   * slot so a handler can arrive on a later render without rebuilding the
+   * engine.
    */
   onAuthEvent?: LogtoAuthEventSink;
   /** Injectable for tests. */
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   /**
-   * Separate from `sleep` on purpose: the retry backoff inside one action call
+   * Separate from `sleep` on purpose. The retry backoff inside one action call
    * is something a test wants to skip, while the recovery loop is unbounded and
    * a test that skipped its waits would spin.
    */
@@ -581,7 +597,8 @@ const SERVER_SNAPSHOT: SessionSnapshot = {
 };
 
 /**
- * The session-mode auth state machine. One instance per provider mount; framework-free.
+ * The session-mode auth state machine. One instance per provider mount;
+ * framework-free.
  *
  * ```
  * mount
@@ -591,7 +608,8 @@ const SERVER_SNAPSHOT: SessionSnapshot = {
  *  └─ nothing                          → unauthenticated
  * ```
  *
- * Transitions are one-way per mount — no isLoading churn by construction.
+ * Transitions are one-way per mount, so there is no isLoading churn by
+ * construction.
  */
 export class SessionAuthEngine {
   private snapshot: SessionSnapshot;
@@ -608,7 +626,9 @@ export class SessionAuthEngine {
   private storagePreparation: Promise<void> | null = null;
   /** Invalidates async credential work that started before a local sign-out. */
   private authGeneration = 0;
-  /** The last ID token handed to Convex — a forced fetch must never re-serve it. */
+  /**
+   * The last ID token handed to Convex. A forced fetch must never re-serve it.
+   */
   private lastServed: string | null = null;
   private now: () => number;
   private sleep: (ms: number) => Promise<void>;
@@ -644,12 +664,15 @@ export class SessionAuthEngine {
     this.serverSnapshot = this.snapshot;
   }
 
-  /** The localStorage key cross-tab sign-outs land on — for `storage` event filtering. */
+  /**
+   * The localStorage key cross-tab sign-outs land on, for `storage` event
+   * filtering.
+   */
   get sessionEventKey(): string {
     return this.options.storage.sessionEventKey;
   }
 
-  // -- external-store surface --
+  // -- external-store contract --
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -662,7 +685,8 @@ export class SessionAuthEngine {
 
   private setSnapshot(next: SessionSnapshot): void {
     this.snapshot = next;
-    // Snapshot: a listener may subscribe or unsubscribe while being notified.
+    // Iterate over a copy. A listener may subscribe or unsubscribe while the
+    // loop notifies it.
     // oxlint-disable-next-line unicorn/no-useless-spread
     for (const listener of [...this.listeners]) listener();
   }
@@ -758,23 +782,24 @@ export class SessionAuthEngine {
     redirectUri: string,
   ): Promise<void> {
     // Fence the exchange like a refresh. A sign-out that lands while the
-    // authorization code is being redeemed sees no stored session yet, so it
-    // cannot revoke anything; without this the exchange response would install
-    // fresh credentials right after the user signed out.
+    // exchange is redeeming the authorization code sees no stored session yet,
+    // so it cannot revoke anything; without this the exchange response would
+    // install fresh credentials right after the user signed out.
     const generation = this.authGeneration;
     const code = params.get("code") ?? "";
     const state = params.get("state") ?? "";
-    // Login-CSRF binding: only the browser tab that started this sign-in holds
-    // the matching stash. A foreign (attacker-initiated) or replayed callback
-    // is refused without ever calling the exchange.
+    // This is the login-CSRF binding. Only the browser tab that started this
+    // sign-in holds the matching stash. The engine refuses a foreign
+    // (attacker-initiated) or replayed callback without ever calling the
+    // exchange.
     const transaction = this.options.storage.takeTransaction();
     await this.flushStorageReporting();
     if (!transaction || transaction.state !== state) {
       this.reportError(
         new Error(
-          "convex-logto: this sign-in callback doesn't match a sign-in started in this " +
-            "browser tab — refusing to complete it. (A replayed/forged callback URL, or " +
-            "sessionStorage was cleared mid-sign-in.)",
+          "convex-logto: refusing to complete this sign-in callback because it " +
+            "doesn't match a sign-in started in this browser tab. Either the callback " +
+            "URL was replayed or forged, or sessionStorage was cleared mid-sign-in.",
         ),
       );
       await this.restore();
@@ -786,7 +811,7 @@ export class SessionAuthEngine {
       const client = normalizeClientDescriptor(
         this.options.clientDescriptor?.(),
       );
-      // Nothing has been minted yet, so simply abandoning the code is enough.
+      // The server has minted nothing yet, so abandoning the code is enough.
       if (generation !== this.authGeneration) return;
       const result = await this.exchangeCallback({
         code,
@@ -799,7 +824,7 @@ export class SessionAuthEngine {
         await this.revokeAbandonedSession(result.sessionToken);
         return;
       }
-      // Signing in over a live session is ordinary — Logto's SSO cookie makes
+      // Signing in over a live session is ordinary. Logto's SSO cookie makes
       // it a silent redirect, so it is how a user retries anything that looks
       // like a sign-out. The row it replaces would otherwise keep a live Logto
       // grant that no client can reach, and sit in the user's own device list
@@ -812,14 +837,14 @@ export class SessionAuthEngine {
       this.options.storage.writeIdToken(result.idToken);
       await this.flushStorage();
       // The credentials are stored by now, so a sign-out landing during the
-      // flush finds and revokes the session itself. It must not then be
-      // overwritten with an authenticated snapshot built from this exchange.
+      // flush finds and revokes the session itself. This exchange must not
+      // then install an authenticated snapshot over that sign-out.
       if (generation !== this.authGeneration) return;
       this.lastServed = null;
       this.setAuthenticated(result.idToken, "callback");
       if (
         // Never in cookie mode. The stored value there is a marker, not a
-        // credential, and the same-origin sign-out route reads the *cookie* —
+        // credential, and the same-origin sign-out route reads the *cookie*,
         // which the callback just replaced with the new session. Revoking by
         // marker would sign the user straight back out of the session they just
         // created.
@@ -828,12 +853,11 @@ export class SessionAuthEngine {
         superseded.sessionId !== "" &&
         superseded.sessionId !== result.sessionId
       ) {
-        // Awaited, and before the navigation: with no `navigate` prop the next
-        // line is `location.replace`, which tears down an in-flight request —
-        // so fire-and-forget would make the cleanup unreliable in exactly the
-        // default configuration. Bounded by the transport's own deadline, and
-        // reported rather than thrown, so it can delay a sign-in but never fail
-        // one.
+        // Awaited, and before the navigation. With no `navigate` prop the next
+        // line is `location.replace`, which tears down an in-flight request,
+        // so fire-and-forget would make the cleanup unreliable in the default
+        // configuration. Bounded by the transport's own deadline, and reported
+        // rather than thrown, so it can delay a sign-in but never fail one.
         await this.revokeAbandonedSession(
           superseded.token,
           "signed in over an existing session",
@@ -861,19 +885,19 @@ export class SessionAuthEngine {
 
   /**
    * Run the single-use callback exchange, retrying only a failure that proves
-   * nothing was consumed.
+   * the component consumed nothing.
    *
    * The component consumes the transaction row before it contacts Logto, so a
-   * blind retry can only report `transaction_not_found` — replacing whatever
-   * actually went wrong with a stale-callback diagnosis. A `ConvexError` means
-   * the deployment ran the function and answered, so the row is spent: never
-   * retry one.
+   * blind retry can only report `transaction_not_found`, replacing whatever
+   * went wrong with a stale-callback diagnosis. A `ConvexError` means the
+   * deployment ran the function and answered, so the row is spent. Never retry
+   * one.
    *
    * A transport failure is the opposite case. A dropped connection or the
    * transport's own deadline may mean the request never arrived, and losing a
-   * sign-in to one bad packet is worse than an attempt that finds nothing. Retry
-   * once — and if the retry reports the row is gone, the first attempt did land
-   * after all, so report *its* error rather than the stale-callback one.
+   * sign-in to one bad packet is worse than an attempt that finds nothing.
+   * Retry once. If the retry reports the row is gone, the first attempt did
+   * land after all, so report *its* error rather than the stale-callback one.
    */
   private async exchangeCallback(
     args: FunctionArgs<LogtoSessionApi["callback"]>,
@@ -899,14 +923,14 @@ export class SessionAuthEngine {
   }
 
   /**
-   * Drop a component session no client holds a credential for any more — one the
-   * server minted for a sign-in that was abandoned, or one a fresh sign-in
-   * replaced. Without this the row, and the Logto grant behind it, outlive every
-   * credential anyone holds for them.
+   * Drop a component session no client holds a credential for any more. That
+   * is one the server minted for an abandoned sign-in, or one a fresh sign-in
+   * replaced. Without this the row, and the Logto grant behind it, outlive
+   * every credential anyone holds for them.
    *
-   * Never federated and never an RFC 7009 revoke: the component only deletes its
-   * own row, because the Logto grant behind it can be shared with sibling
-   * sessions of the same OP session.
+   * Never federated and never an RFC 7009 revoke. The component only deletes
+   * its own row, because sibling sessions of the same OP session can share the
+   * Logto grant behind it.
    */
   private async revokeAbandonedSession(
     sessionToken: string,
@@ -930,9 +954,10 @@ export class SessionAuthEngine {
   }
 
   /**
-   * Storage was seeded with the server-rendered token, so a restore that reads
-   * it back is an SSR hand-off, not a warm cache from an earlier visit. Telling
-   * them apart is the whole point of `source` — they have different costs.
+   * The constructor seeded storage with the server-rendered token, so a restore
+   * that reads it back is an SSR hand-off, not a warm cache from an earlier
+   * visit. Telling them apart is the whole point of `source`. They have
+   * different costs.
    */
   private cachedTokenSource(cached: string): LogtoAuthEventSource {
     return cached === this.options.initialToken ? "ssr" : "cache";
@@ -955,15 +980,16 @@ export class SessionAuthEngine {
       }
       // Cookie mode can know that a session exists before SSR or a rotation has
       // supplied its stable id. Recover it now instead of authenticating with
-      // reactive revocation silently disabled. Mark the cached token
-      // unacceptable so refreshIdToken actually presents the cookie.
+      // reactive revocation disabled. Mark the cached token unacceptable so
+      // refreshIdToken presents the cookie instead of serving the cache.
       const recovered = await this.refreshIdToken(cached);
       if (recovered !== null) {
         this.setAuthenticated(recovered);
         return;
       }
-      // A transient refresh keeps storage intact: use the still-fresh cached
-      // token as a degraded fallback. Terminal failures already cleared it.
+      // A transient refresh failure keeps storage intact, so use the
+      // still-fresh cached token as a degraded fallback. Terminal failures
+      // already cleared it.
       if (this.options.storage.readSession() !== null) {
         this.setAuthenticated(cached, this.cachedTokenSource(cached));
         return;
@@ -976,8 +1002,8 @@ export class SessionAuthEngine {
         return;
       }
     }
-    // refreshIdToken already flipped state on terminal; make the transient/no-session
-    // paths land unauthenticated too.
+    // refreshIdToken already flipped state on terminal; make the
+    // transient/no-session paths land unauthenticated too.
     if (this.snapshot.status !== "authenticated") this.setUnauthenticated();
   }
 
@@ -1005,8 +1031,9 @@ export class SessionAuthEngine {
       this.lastServed = cached;
       return cached;
     }
-    // Forced means Convex found the current token expiring/rejected — a token
-    // another tab just rotated in satisfies it, the one we last served can't.
+    // Forced means Convex found the current token expiring or rejected. A
+    // token another tab just rotated in satisfies it; the one we last served
+    // can't.
     const token = await this.refreshIdToken(
       forceRefreshToken ? this.lastServed : null,
     );
@@ -1016,9 +1043,9 @@ export class SessionAuthEngine {
         this.setAuthenticated(token);
     } else if (this.snapshot.status === "authenticated") {
       // Convex is about to park at `noAuth`, and it only re-arms when
-      // `ConvexProviderWithAuth` calls `setAuth` again — which needs
+      // `ConvexProviderWithAuth` calls `setAuth` again, which needs
       // `isAuthenticated` to flip. Staying "authenticated" here is what wedged
-      // the tab: the app already reads as signed out, but nothing could ever
+      // the tab. The app already reads as signed out, but nothing could ever
       // undo it.
       this.setUnauthenticated();
     }
@@ -1026,18 +1053,20 @@ export class SessionAuthEngine {
   }
 
   /**
-   * Rotate: session token → fresh ID token (+ next session token). Single-flight
-   * per tab (in-flight merge) and per browser (Web Locks): concurrent refreshes
-   * at Logto's ≥70%-TTL rotation boundary would replay the refresh token and
-   * destroy the grant. `unacceptable` is an ID token that must NOT be served
-   * from cache (the one Convex just rejected).
+   * Rotate the session token into a fresh ID token (plus the next session
+   * token). Single-flight per tab (in-flight merge) and per browser (Web
+   * Locks), because concurrent refreshes at Logto's ≥70%-TTL rotation boundary
+   * would replay the refresh token and destroy the grant. `unacceptable` is an
+   * ID token the engine must not serve from cache (the one Convex just
+   * rejected).
    */
   private refreshIdToken(unacceptable: string | null): Promise<string | null> {
     if (this.inflightRefresh) return this.inflightRefresh;
     const generation = this.authGeneration;
     const run = async (): Promise<string | null> => {
       if (generation !== this.authGeneration) return null;
-      // Re-read inside the lock: another tab may have rotated while we queued.
+      // Re-read inside the lock, because another tab may have rotated while
+      // we queued.
       const cached = this.options.storage.readIdToken();
       if (cached !== null && this.isFresh(cached) && cached !== unacceptable) {
         return cached;
@@ -1058,9 +1087,9 @@ export class SessionAuthEngine {
       }
       if (generation !== this.authGeneration) return null;
       this.events("refresh_started");
-      // Every fenced exit below closes the span it just opened: a consumer that
-      // pairs `refresh_started` with an end phase must never be left holding an
-      // open one because a sign-out raced the refresh.
+      // Every fenced exit below closes the span it just opened. The engine must
+      // never leave a consumer that pairs `refresh_started` with an end phase
+      // holding an open one because a sign-out raced the refresh.
       const abandoned = (): null => {
         this.events("refresh_abandoned");
         return null;
@@ -1087,14 +1116,14 @@ export class SessionAuthEngine {
         const errorKind = sessionErrorKind(error);
         this.events("refresh_failed", { errorKind });
         if (errorKind === "terminal") {
-          // Signed out / revoked / reuse-killed: the session is gone for good.
+          // Signed out, revoked, or reuse-killed. The session is gone for good.
           this.options.storage.clearAll();
           this.setUnauthenticated();
         }
-        // Transient (Logto/Convex unreachable): keep the session token. Nothing
-        // else will re-present it — `ConvexProviderWithAuth` calls
+        // Transient (Logto/Convex unreachable), so keep the session token.
+        // Nothing else will re-present it. `ConvexProviderWithAuth` calls
         // `fetchAccessToken` only while our snapshot says authenticated, and
-        // Convex parks at `noAuth` after a single null — so retry on our own
+        // Convex parks at `noAuth` after a single null, so retry on our own
         // clock. Never a sign-out.
         else this.scheduleRecovery();
         return null;
@@ -1110,8 +1139,8 @@ export class SessionAuthEngine {
 
   signIn(options?: { returnTo?: string }): Promise<void> {
     // Expo can only host one system-browser auth session at a time, and native
-    // storage intentionally has one OAuth transaction slot. Share the entire
-    // flow so a double-tap cannot overwrite its own login-CSRF state. The web
+    // storage has one OAuth transaction slot on purpose. Share the whole flow
+    // so a double-tap cannot overwrite its own login-CSRF state. The web
     // redirect path remains independent and unchanged.
     if (this.options.authFlow === undefined)
       return this.signInReporting(options);
@@ -1139,8 +1168,8 @@ export class SessionAuthEngine {
     if (returnTo !== undefined && !isSafeReturnTo(returnTo)) {
       throw new Error(
         `convex-logto: signIn returnTo must be a same-origin path starting with "/" ` +
-          `(got "${returnTo}") — full URLs and protocol-relative paths are rejected ` +
-          `to prevent open redirects.`,
+          `(got "${returnTo}"). signIn rejects full URLs and protocol-relative ` +
+          `paths to prevent open redirects.`,
       );
     }
     await this.prepareStorage();
@@ -1157,7 +1186,7 @@ export class SessionAuthEngine {
     );
     // Bind the transaction to this tab (see completeCallback).
     // Always spend an abandoned state before considering the new authorize
-    // URL: if Logto ever omits `state`, an old deep link must not match it.
+    // URL. If Logto ever omits `state`, an old deep link must not match it.
     this.options.storage.takeTransaction();
     let authorizationUrl: string;
     try {
@@ -1203,11 +1232,11 @@ export class SessionAuthEngine {
    *
    * Two things this has to do that the in-flow path gets for free.
    *
-   * Storage is prepared first. The cold start this exists for delivers the link
-   * *before* the provider's mount effect — React commits child effects before
-   * parent ones — and the OIDC stash lives in SecureStore, which reads as absent
-   * until `prepare()` has run. Without the await, the deep link normally loses
-   * that race and deletes the very transaction it came to spend.
+   * It prepares storage first. The cold start this exists for delivers the link
+   * *before* the provider's mount effect, because React commits child effects
+   * before parent ones, and the OIDC stash lives in SecureStore, which reads as
+   * absent until `prepare()` has run. Without the await, the deep link usually
+   * loses that race and deletes the very transaction it came to spend.
    *
    * And it shares `signIn`'s single flight, because the documented wiring hands
    * the same URL to both `Linking.getInitialURL()` and the `url` listener, and
@@ -1232,7 +1261,7 @@ export class SessionAuthEngine {
   /**
    * One completion at a time, whichever door the return came through.
    *
-   * Deliberately not `inflightSignIn`: the case this whole path exists for is a
+   * Not `inflightSignIn`, on purpose. The case this whole path exists for is a
    * browser promise that never settles, so waiting on it would hang. This latch
    * only spans a completion, which always finishes.
    */
@@ -1252,10 +1281,10 @@ export class SessionAuthEngine {
   }
 
   /**
-   * `spendOnUnrecognized` separates the two callers. A URL handed back by the
-   * system browser *is* this sign-in's return, so anything unusable about it
-   * still spends the login-CSRF state — there is no callback route to revisit on
-   * native. A deep link is only a candidate: the app forwards every link it
+   * `spendOnUnrecognized` separates the two callers. A URL the system browser
+   * hands back *is* this sign-in's return, so anything unusable about it still
+   * spends the login-CSRF state; there is no callback route to revisit on
+   * native. A deep link is only a candidate. The app forwards every link it
    * receives, and one that carries no OIDC response must leave an in-flight
    * sign-in alone.
    */
@@ -1289,7 +1318,8 @@ export class SessionAuthEngine {
 
     this.options.storage.takeTransaction();
     await this.flushStorageReporting();
-    // `benign` is the user declining at Logto — a completed flow, not a fault.
+    // `benign` is the user declining at Logto. That is a completed flow, not a
+    // fault.
     if (outcome.kind === "error") {
       this.reportError(new Error(outcome.message));
     } else if (outcome.kind === "none") {
@@ -1310,9 +1340,9 @@ export class SessionAuthEngine {
     await this.performSignOut({
       postLogoutRedirectUri: options?.postLogoutRedirectUri,
       federated: options?.federated !== false,
-      // A local credential can be destroyed without the server, so a dead Logto
-      // must not block sign-out. A server-held one cannot: there the revoke
-      // *is* the sign-out.
+      // The client can destroy a local credential without the server, so a
+      // dead Logto must not block sign-out. It cannot destroy a server-held
+      // one; there the revoke *is* the sign-out.
       requireServerSuccess: this.options.serverHeldCredential === true,
       revoke: async (sessionToken, deviceProof, postLogoutRedirectUri) =>
         await this.options.transport.action(this.options.api.signOut, {
@@ -1325,7 +1355,7 @@ export class SessionAuthEngine {
 
   /**
    * The caller's own sessions, for a "where am I signed in" screen. A snapshot,
-   * not a subscription: the credential it authenticates with rotates, so a
+   * not a subscription. The credential it authenticates with rotates, so a
    * reactive query keyed on it would resubscribe on every rotation. Call it
    * again after `revokeSession` or `renameSession`.
    */
@@ -1344,8 +1374,8 @@ export class SessionAuthEngine {
   /**
    * Rename one of the caller's own sessions. Pass `undefined` to clear it.
    * Rejects with a terminal `session_not_found` for an id that is not the
-   * caller's or has already been revoked — the same way the component refuses
-   * to confirm that another subject's session exists.
+   * caller's or is already revoked, the same way the component refuses to
+   * confirm that another subject's session exists.
    */
   async renameSession(
     targetSessionId: string,
@@ -1354,10 +1384,10 @@ export class SessionAuthEngine {
     const action = this.options.api.renameSession;
     if (action === undefined) throw sessionApiUpgradeError("renameSession");
     // Check the length here rather than learn it from the server. The component
-    // reports an over-long label as a *terminal* session error, and terminal is
-    // defined as "this session is gone" — an app that follows that taxonomy
-    // would sign the user out for typing a long device name. Failing locally
-    // also saves a round-trip on an input the user can simply shorten.
+    // reports an over-long label as a *terminal* session error, and terminal
+    // means "this session is gone", so an app that follows that taxonomy would
+    // sign the user out for typing a long device name. Failing locally also
+    // saves a round-trip on an input the user can shorten.
     if (label !== undefined && sessionLabelTooLong(label)) {
       throw new Error(
         `convex-logto: a session label may be at most ${SESSION_LABEL_MAX_LENGTH} characters.`,
@@ -1376,7 +1406,7 @@ export class SessionAuthEngine {
   /**
    * Revoke one of the caller's own sessions, rejecting like `renameSession` for
    * an id that is not the caller's. Revoking the current one leaves this
-   * client's credentials in place — call `signOut()` for that.
+   * client's credentials in place; call `signOut()` for that.
    */
   async revokeSession(targetSessionId: string): Promise<void> {
     const action = this.options.api.revokeSession;
@@ -1388,17 +1418,17 @@ export class SessionAuthEngine {
   }
 
   /**
-   * The current ID token — the Short bearer Convex validates.
+   * The current ID token, the short bearer Convex validates.
    *
-   * Read from storage rather than the snapshot: the snapshot is what React
+   * Read from storage rather than the snapshot. The snapshot is what React
    * rendered, and a rotation that landed since the last render is already in
    * storage. Returns `null` when signed out, or when the stored token has aged
    * out; any Convex call mints a fresh one.
    *
-   * Synchronous, which is what makes it usable in a render — and the reason it
-   * has one caveat. On React Native the SecureStore-backed adapter reads as
-   * empty until it has hydrated, so a call made while the engine is still
-   * `restoring` answers `null` even though a live token exists. Gate on
+   * Synchronous, which is what makes it usable in a render, and also the
+   * reason it has one caveat. On React Native the SecureStore-backed adapter
+   * reads as empty until it has hydrated, so a call made while the engine is
+   * still `restoring` answers `null` even though a live token exists. Gate on
    * `isAuthenticated` (false during restore) and that window is unreachable.
    */
   getIdToken(): string | null {
@@ -1409,10 +1439,10 @@ export class SessionAuthEngine {
   /**
    * What an Organization token authorizes, without the token itself.
    *
-   * Membership and organization *roles* do not need this — Logto puts them in
+   * Membership and organization *roles* do not need this. Logto puts them in
    * the ID token, so `user.organizations` and `user.organization_roles` are
    * already there and cost nothing. Reach for this only for fine-grained
-   * organization **permissions**, which Logto issues nowhere else.
+   * organization *permissions*, which Logto issues nowhere else.
    */
   async getOrganizationTokenClaims(
     organizationId: string,
@@ -1431,8 +1461,8 @@ export class SessionAuthEngine {
   /**
    * What a Resource token authorizes, without the token itself.
    *
-   * The resource must be in `resources` on `logtoSessionApi()`: Logto will not
-   * issue a token for a resource the grant never named.
+   * The resource must be in `resources` on `logtoSessionApi()`, because Logto
+   * will not issue a token for a resource the grant never named.
    */
   async getAccessTokenClaims(
     resource: string,
@@ -1453,9 +1483,9 @@ export class SessionAuthEngine {
    *
    * Available only where the deployment passed `exposeAccessTokens: true`;
    * otherwise this rejects with a terminal error naming the option, rather than
-   * returning claims and letting the missing credential surface as an
+   * returning claims and letting the missing credential show up as an
    * authorization failure somewhere else. Prefer
-   * {@link getOrganizationTokenClaims} — a token in `window` is one more thing
+   * {@link getOrganizationTokenClaims}. A token in `window` is one more thing
    * XSS can steal.
    */
   async getOrganizationToken(
@@ -1490,17 +1520,18 @@ export class SessionAuthEngine {
   }
 
   /**
-   * Logto's `/oidc/me`, fetched by the component.
+   * Logto's `/oidc/me`, which the component fetches.
    *
-   * A round trip, unlike `user`: this is the live profile from Logto rather
+   * A round trip, unlike `user`. This is the live profile from Logto rather
    * than the copy the last ID token froze. Use it after a profile edit.
    */
   async fetchUserInfo(options?: LogtoTokenExchangeOptions): Promise<unknown> {
     const action = this.options.api.fetchUserInfo;
     if (action === undefined) throw sessionApiUpgradeError("fetchUserInfo");
     const credential = await this.sessionCallCredential("fetchUserInfo");
-    // Also an exchange behind the scenes — it mints the opaque token Logto's
-    // userinfo endpoint wants — so it takes the same lock for the same reason.
+    // This is also an exchange behind the scenes. It mints the opaque token
+    // Logto's userinfo endpoint wants, so it takes the same lock for the same
+    // reason.
     return await this.withLock(() =>
       this.retrying(() =>
         this.callSessionAction("fetchUserInfo", () =>
@@ -1532,11 +1563,11 @@ export class SessionAuthEngine {
     // Under the same lock as `refreshIdToken`, and retried like it.
     //
     // The component runs this exchange inside the session's refresh claim, so
-    // it and a refresh cannot both be in flight — the loser gets a transient
+    // it and a refresh cannot both be in flight; the loser gets a transient
     // `refresh_in_flight`. Without the lock the loser is usually the *refresh*,
     // and a refresh that exhausts its retries drops the whole app to
     // unauthenticated until the recovery loop catches up. Serializing them in
-    // the browser removes the case that actually happens; `retrying` covers
+    // the browser removes the case that happens in practice; `retrying` covers
     // the rest (another tab, another device, a queued cron).
     return await this.withLock(() =>
       this.retrying(() => this.dispatchExchange(action, credential, args)),
@@ -1579,8 +1610,8 @@ export class SessionAuthEngine {
   /**
    * The server refuses `includeToken` when the deployment did not opt in, so
    * this only fires for a component that answered without one anyway. Still an
-   * error rather than an empty string: every caller here is about to put the
-   * value in an `Authorization` header.
+   * error rather than an empty string, because every caller here is about to
+   * put the value in an `Authorization` header.
    */
   private requireToken(result: { accessToken?: string }): string {
     if (result.accessToken === undefined) {
@@ -1593,7 +1624,7 @@ export class SessionAuthEngine {
   }
 
   /**
-   * The current session token plus its device proof — the argument prefix every
+   * The current session token plus its device proof, the argument prefix every
    * session-management action authenticates with.
    */
   private async sessionCallCredential(
@@ -1616,7 +1647,7 @@ export class SessionAuthEngine {
   /**
    * Translate "no such function" from a deployment whose app module predates
    * the action into the rolling-upgrade hint, the same way `signOutEverywhere`
-   * does — the server-side check alone can't see a stale re-export.
+   * does. The server-side check alone can't see a stale re-export.
    */
   private async callSessionAction<Result>(
     name: string,
@@ -1640,8 +1671,8 @@ export class SessionAuthEngine {
       postLogoutRedirectUri: options?.postLogoutRedirectUri,
       federated: true,
       // A single-device sign-out is locally complete even if the network is
-      // down. "Everywhere" is not: report failure when the subject-wide
-      // mutation did not run so callers never mistake a partial result for
+      // down. "Everywhere" is not. Report failure when the subject-wide
+      // mutation did not run, so callers never mistake a partial result for
       // success.
       requireServerSuccess: true,
       revoke: async (sessionToken, deviceProof, postLogoutRedirectUri) => {
@@ -1672,8 +1703,8 @@ export class SessionAuthEngine {
       postLogoutRedirectUri: string,
     ) => Promise<{ endSessionUrl?: string }>;
   }): Promise<void> {
-    // Fence immediately, before any async storage preparation or network work:
-    // a refresh that began in the previous generation must never resurrect it.
+    // Fence first, before any async storage preparation or network work. A
+    // refresh that began in the previous generation must never resurrect it.
     this.authGeneration += 1;
     try {
       await this.prepareStorage();
@@ -1702,8 +1733,8 @@ export class SessionAuthEngine {
         deviceProofError = this.asError(error);
       }
     }
-    // Clear before the network call: sign-out must not be blockable by a dead
-    // Logto. The localStorage removal kicks other tabs via the storage event.
+    // Clear before the network call, so a dead Logto cannot block sign-out.
+    // The localStorage removal kicks other tabs via the storage event.
     let cleanupError = this.clearStorageLocally();
     this.lastServed = null;
     this.events("signed_out");
@@ -1723,7 +1754,7 @@ export class SessionAuthEngine {
     let fatalServerError: Error | undefined;
     if (session !== null) {
       // `??` alone would forward an empty string, which every server-side
-      // validator rejects — a caller passing `""` means "use the default".
+      // validator rejects. A caller passing `""` means "use the default".
       const requested = options.postLogoutRedirectUri?.trim();
       postLogoutRedirectUri =
         (requested === undefined || requested === "" ? undefined : requested) ??
@@ -1756,13 +1787,13 @@ export class SessionAuthEngine {
                   );
             this.reportError(fatalServerError);
           } else {
-            // Best effort, but never silent: the server session outlives this
+            // Best effort, but never silent. The server session outlives this
             // sign-out until it expires, and only the app can decide whether
             // that matters enough to retry.
             this.reportError(this.asError(error));
           }
-          // A combined failure is converted into a loud SessionSignOutError
-          // below.
+          // The block below converts a combined failure into a loud
+          // SessionSignOutError.
         }
       }
     }
@@ -1784,8 +1815,9 @@ export class SessionAuthEngine {
         this.reportError(signOutError);
       }
     }
-    // Federated by default: also end Logto's SSO session so the next sign-in
-    // isn't silent. The post sign-out redirect URI must be registered on the app.
+    // Federated by default, which also ends Logto's SSO session so the next
+    // sign-in isn't silent. The post sign-out redirect URI must be registered
+    // on the app.
     let navigationError: Error | undefined;
     if (options.federated && endSessionUrl !== undefined) {
       let navigationUrl: string | undefined;
@@ -1824,19 +1856,19 @@ export class SessionAuthEngine {
    * Re-present the session after a transient refresh failure until it works.
    *
    * Keeping the session token is only useful if something presents it again,
-   * and nothing does: Convex clears its auth config after one `null` and only
-   * `client.setAuth` re-arms it, which `ConvexProviderWithAuth` calls solely
+   * and nothing does. Convex clears its auth config after one `null` and only
+   * `client.setAuth` re-arms it, which `ConvexProviderWithAuth` calls only
    * when `isAuthenticated` flips. So the engine drives the retry itself and
    * flips its own snapshot back on success.
    *
    * Bounded by the session's existence and the auth generation, not by an
-   * attempt count: a five-minute outage must still end with the tab signed in.
+   * attempt count. A five-minute outage must still end with the tab signed in.
    */
   private scheduleRecovery(): void {
-    // Keyed by generation, not a bare flag: a loop left over from before a
+    // Keyed by generation, not a bare flag. A loop left over from before a
     // sign-out sleeps for up to 30s before it notices, and a bare flag would
-    // make that stale loop swallow the arming of a fresh one — stranding the tab
-    // in exactly the way this exists to prevent.
+    // make that stale loop swallow the arming of a fresh one, stranding the tab
+    // in the way this exists to prevent.
     if (this.recoveringFor === this.authGeneration) return;
     const generation = this.authGeneration;
     this.recoveringFor = generation;
@@ -1848,13 +1880,13 @@ export class SessionAuthEngine {
   private async recover(generation: number): Promise<void> {
     for (let attempt = 0; ; attempt += 1) {
       // `Math.min` already clamps to the last entry, so the index is always in
-      // range — no fallback to write, and none to leave silently wrong if the
-      // ladder changes.
+      // range. There is no fallback to write, and none to go wrong unnoticed
+      // if the ladder changes.
       const delay =
         RECOVERY_DELAYS_MS[Math.min(attempt, RECOVERY_DELAYS_MS.length - 1)];
       await this.recoverySleep(delay);
-      // A sign-out, a revocation, or another tab getting there first all end the
-      // retry: there is nothing left to re-present.
+      // A sign-out, a revocation, or another tab getting there first all end
+      // the retry, because there is nothing left to re-present.
       if (generation !== this.authGeneration) return;
       if (this.options.storage.readSession() === null) return;
       const idToken = await this.refreshIdToken(null);
@@ -1869,7 +1901,7 @@ export class SessionAuthEngine {
 
   // -- external events --
 
-  /** Another tab signed out (our localStorage session key was removed). */
+  /** Another tab signed out and removed our localStorage session key. */
   handleExternalSignOut(): void {
     this.authGeneration += 1;
     this.events("signed_out", { source: "cross-tab" });
@@ -1879,30 +1911,34 @@ export class SessionAuthEngine {
   }
 
   /**
-   * Convex accepted the token: the app can run its first authenticated query.
-   * The provider reports it because only Convex knows when it happened.
+   * Convex accepted the token, so the app can run its first authenticated
+   * query. The provider reports it because only Convex knows when it happened.
    */
   reportConvexAuthenticated(): void {
     this.events("convex_authenticated");
   }
 
   /**
-   * Surface a failure the provider detected rather than the engine — today a
-   * broken `sessionValid` subscription. Routed through the same observer as
-   * every other auth error.
+   * Report a failure the provider detected rather than the engine. Today that
+   * is a broken `sessionValid` subscription. It goes through the same observer
+   * as every other auth error.
    */
   reportWatchFailure(error: Error): void {
     this.reportError(error);
   }
 
-  /** The reactive `sessionValid` subscription pushed `false`: the session was revoked. */
+  /**
+   * The reactive `sessionValid` subscription pushed `false`. The session was
+   * revoked.
+   */
   handleRevoked(): void {
     this.authGeneration += 1;
-    // The credential in storage is shared with every tab on this origin, and the
-    // session id this engine watches is its own. Another tab signing in replaces
-    // that credential without telling us, so a revocation of the session we
-    // *used* to hold must not delete the one that took its place — that would
-    // sign every tab out and orphan the session just created. Adopt it instead.
+    // Every tab on this origin shares the credential in storage, and the
+    // session id this engine watches is its own. Another tab signing in
+    // replaces that credential without telling us, so a revocation of the
+    // session we *used* to hold must not delete the one that took its place.
+    // That would sign every tab out and orphan the session just created. Adopt
+    // it instead.
     const stored = this.options.storage.readSession();
     const watched = this.snapshot.sessionId;
     if (
@@ -1959,7 +1995,7 @@ export class SessionAuthEngine {
     try {
       await this.flushStorage();
       // Sign-out is the one caller that must also fail over a credential that
-      // survived removal — see `assertCredentialsRemoved`.
+      // survived removal. See `assertCredentialsRemoved`.
       await this.options.storage.assertCredentialsRemoved?.();
       return clearError;
     } catch (error) {

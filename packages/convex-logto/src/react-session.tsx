@@ -1,6 +1,6 @@
-// The `convex-logto/react-session` entry: session mode's React provider. No
-// Logto SDK import — the server-side component owns all OIDC traffic, so this
-// entry works without installing `@logto/react`.
+// The `convex-logto/react-session` entry is session mode's React provider. It
+// imports no Logto SDK. The server-side component owns all OIDC traffic, so
+// this entry works without installing `@logto/react`.
 
 import {
   ConvexProviderWithAuth,
@@ -66,9 +66,9 @@ export type ConvexLogtoSessionProviderProps = {
    * The module re-exporting `logtoSessionApi(...)`'s functions, e.g. `api.auth`.
    * The provider expects the exact names `signIn` / `callback` / `refresh` /
    * `signOut` / `signOutEverywhere` / `listSessions` / `renameSession` /
-   * `revokeSession` / `sessionValid`. Everything after `signOut` is
-   * feature-detected: omitting one disables that call with a message naming
-   * the export to add, so a rolling upgrade never breaks sign-in.
+   * `revokeSession` / `sessionValid`. The provider feature-detects everything
+   * after `signOut`. Omitting one disables that call with a message naming the
+   * export to add, so a rolling upgrade never breaks sign-in.
    */
   sessionApi: LogtoSessionApi;
   /**
@@ -86,12 +86,12 @@ export type ConvexLogtoSessionProviderProps = {
    */
   navigate?: (to: string) => void;
   /**
-   * Where the short-lived ID token persists. `"session"` (default): per-tab
-   * sessionStorage — an unexpired token can restore without refresh while its
-   * paired component-session marker remains. `"memory"`: strictest, every
-   * reload refreshes. `"local"`: shared across tabs and restarts. By default
-   * the rotating session token lives in localStorage; `cookieTransport` moves
-   * it into an HttpOnly cookie.
+   * Where the short-lived ID token persists. `"session"` (default) is per-tab
+   * sessionStorage, where an unexpired token can restore without refresh while
+   * its paired component-session marker remains. `"memory"` is strictest;
+   * every reload refreshes. `"local"` is shared across tabs and restarts. By
+   * default the rotating session token lives in localStorage;
+   * `cookieTransport` moves it into an HttpOnly cookie.
    */
   tokenStorage?: TokenStorageKind;
   /**
@@ -109,9 +109,9 @@ export type ConvexLogtoSessionProviderProps = {
   /**
    * Self-reported description of this client ("Chrome", "macOS", ...), stamped
    * on the session at sign-in so `listSessions()` can show the user something
-   * recognisable. The app supplies it — the library never sniffs a User-Agent or
-   * IP — and it is advisory display data, never authenticated. Safe to pass as
-   * an inline object: only the three field values affect the engine.
+   * recognisable. The app supplies it; the library never sniffs a User-Agent or
+   * IP. It is advisory display data, never authenticated. Safe to pass as an
+   * inline object, because only the three field values affect the engine.
    */
   clientDescriptor?: LogtoSessionClientDescriptor;
   /** Fresh ID token returned by `handler.getInitialToken(request)` during SSR. */
@@ -128,12 +128,12 @@ export type ConvexLogtoSessionProviderProps = {
    * Called when starting or finishing sign-in fails recoverably (a failed
    * action, stale/replayed/forged callback, or Logto unreachable), or opted-in
    * device-key storage fails. This makes `void signIn()` safe for event
-   * handlers; errors are also logged to the console.
+   * handlers; the provider also logs errors to the console.
    */
   onAuthError?: (error: Error) => void;
   /**
-   * Opt-in phase timings for the auth bootstrap — `bootstrap_start` through
-   * `convex_authenticated`, plus refresh, revocation and sign-out. Absent means
+   * Opt-in phase timings: `bootstrap_start` through `convex_authenticated` for
+   * the auth bootstrap, plus refresh, revocation and sign-out. Absent means
    * nothing is measured or emitted. See [`LogtoAuthEvent`](./auth-events).
    */
   onAuthEvent?: LogtoAuthEventHandler;
@@ -141,7 +141,7 @@ export type ConvexLogtoSessionProviderProps = {
 };
 
 /**
- * Session mode: Convex holds the Logto refresh token server-side (Traditional
+ * Session mode. Convex holds the Logto refresh token server-side (Traditional
  * Web app); the browser holds only a short-lived ID token and a rotating
  * application session token. Requires the session component
  * (`app.use(logto)` in `convex/convex.config.ts`) and `logtoSessionApi(...)`
@@ -190,12 +190,12 @@ export function ConvexLogtoSessionProvider({
   // The engine must survive re-renders, but `navigate`/`onAuthError` are often
   // inline arrows with a fresh identity each render. They go through refs so
   // the engine stays stable and still calls the latest one. The client
-  // descriptor rides along for a stronger reason: apps usually learn it
+  // descriptor rides along for a stronger reason. Apps usually learn it
   // asynchronously, and rebuilding the engine to deliver it would restart the
   // mount state machine, abandoning an in-flight callback exchange and leaving
-  // the tree signed out with a live session on the server.
-  // Same reason for `cookieTransport={{ fetch: (u, i) => fetch(u, i) }}`: a
-  // documented option, and an inline arrow changes identity on every render.
+  // the tree signed out with a live session on the server. The same applies to
+  // `cookieTransport={{ fetch: (u, i) => fetch(u, i) }}`, a documented option
+  // whose inline arrow changes identity on every render.
   const navigateRef = useRef(navigate);
   const onAuthErrorRef = useRef(onAuthError);
   const clientDescriptorRef = useRef(clientDescriptor);
@@ -227,7 +227,7 @@ export function ConvexLogtoSessionProvider({
   // reload) hands back a different string every time. Rebuilding the engine
   // for that abandons an in-flight exchange, spends the callback's single-use
   // transaction under its replacement, and renders `isAuthenticated: false`
-  // with `isLoading: false` for a full re-auth round trip: a real signed-out
+  // with `isLoading: false` for a full re-auth round trip, a real signed-out
   // flash. The engine reads them in its constructor, during this render,
   // because its first snapshot has to match what the server rendered.
   /* oxlint-disable react-hooks/exhaustive-deps -- see above */
@@ -257,7 +257,7 @@ export function ConvexLogtoSessionProvider({
         ? createCookieSessionMarker(storage.readSession(), initialSessionId)
         : undefined,
       // The credential is an HttpOnly cookie only the server can expire, so a
-      // failed revoke is a failed sign-out — not something to swallow.
+      // failed revoke is a failed sign-out, not something to swallow.
       serverHeldCredential: usesCookieTransport,
       deviceBinding: deviceBinding
         ? createSessionDeviceBinding(namespace)
@@ -269,7 +269,7 @@ export function ConvexLogtoSessionProvider({
         else window.location.replace(to);
       },
       onAuthError: (error) => onAuthErrorRef.current?.(error),
-      // Always wired, always through the ref: making this conditional would put
+      // Always wired, always through the ref. Making this conditional would put
       // the handler's presence in the memo's dependencies, and an app that
       // enables telemetry from an effect would rebuild the engine mid-mount.
       // The cost when no handler is set is one ref read per phase.
@@ -292,7 +292,7 @@ export function ConvexLogtoSessionProvider({
   useEffect(() => {
     engine.start();
     const onStorage = (event: StorageEvent) => {
-      // Another tab signed out: its localStorage removal lands here.
+      // Another tab signed out, and its localStorage removal lands here.
       if (event.key === engine.sessionEventKey && event.newValue === null) {
         engine.handleExternalSignOut();
       }
@@ -319,7 +319,7 @@ export function ConvexLogtoSessionProvider({
 
 function clientNamespace(client: ConvexReactClient): string {
   // `ConvexReactClient.url` exists on every version this package supports, but
-  // stay defensive: an empty namespace only costs cross-app isolation on the
+  // stay defensive. An empty namespace only costs cross-app isolation on the
   // same origin.
   const url = (client as { url?: unknown }).url;
   return typeof url === "string" ? url : "";
@@ -351,14 +351,14 @@ function useAuthFromSession() {
 }
 
 /**
- * `convex_authenticated` is the phase an app actually cares about — the first
- * moment an authenticated query can run — and only Convex knows when it
- * happens. Always mounted: whether anything is measured is decided per event by
- * the handler slot, so an `onAuthEvent` passed on a later render still works.
+ * `convex_authenticated` is the phase an app cares about, the first moment an
+ * authenticated query can run, and only Convex knows when it happens. Always
+ * mounted. The handler slot decides per event whether anything is measured,
+ * so an `onAuthEvent` passed on a later render still works.
  */
 function ConvexAuthPhaseWatcher({ engine }: { engine: SessionAuthEngine }) {
   const { isAuthenticated } = useConvexAuth();
-  // Keyed by engine, not a bare boolean: a replaced engine emits its own
+  // Keyed by engine, not a bare boolean. A replaced engine emits its own
   // `bootstrap_start`, and a `reported` that survived it would leave that span
   // open forever.
   const reportedFor = useRef<SessionAuthEngine | null>(null);
@@ -371,7 +371,7 @@ function ConvexAuthPhaseWatcher({ engine }: { engine: SessionAuthEngine }) {
 }
 
 /**
- * Reactive revocation: subscribe to the session's liveness; the moment the
+ * Reactive revocation. Subscribes to the session's liveness; the moment the
  * server deletes the session row (sign-out elsewhere, reuse detection, a
  * webhook revocation), Convex pushes `false` and auth drops in real time.
  */
@@ -385,10 +385,10 @@ function RevocationWatcher() {
   const sessionId = snapshot.sessionId;
   const hasSessionId = sessionId !== null && sessionId.length > 0;
   // `useQueries`, not `useQuery`, because `useQuery` rethrows a query error
-  // during render and this component is a sibling of `{children}` — above every
+  // during render and this component is a sibling of `{children}`, above every
   // error boundary the app can install. A frontend deployed ahead of its Convex
-  // functions would otherwise blank the page for every signed-in user instead of
-  // merely losing reactive revocation. Here the error arrives as a value.
+  // functions would otherwise blank the page for every signed-in user instead
+  // of losing reactive revocation. Here the error arrives as a value.
   const queries = useMemo(() => {
     const request: RequestForQueries = {};
     if (hasSessionId) {
@@ -399,7 +399,7 @@ function RevocationWatcher() {
   const valid: unknown = useQueries(queries).valid;
   // The engine dedupes by Error identity, but the wrapper below is rebuilt on
   // every effect run, so that dedupe cannot cover it. Track the query error
-  // itself — the object `useQueries` keeps stable — so a remount or a re-run
+  // itself, the object `useQueries` keeps stable, so a remount or a re-run
   // triggered by a neighbouring dependency cannot report the same fault twice.
   const reportedFailure = useRef<unknown>(null);
   useEffect(() => {
@@ -408,7 +408,7 @@ function RevocationWatcher() {
       reportedFailure.current = valid;
       engine.reportWatchFailure(
         new Error(
-          "convex-logto: reactive revocation is off — the sessionValid query failed. " +
+          "convex-logto: reactive revocation is off. The sessionValid query failed. " +
             "Sessions still expire on their own schedule.",
           { cause: valid },
         ),
@@ -427,7 +427,7 @@ export type LogtoSessionAuth = {
   /** Decoded ID token claims (sub, email, name, ...), once authenticated. Display only. */
   user: LogtoUserClaims | undefined;
   /**
-   * Start sign-in: one round-trip to mint the sign-in URL, then a full-page
+   * Start sign-in. One round-trip to mint the sign-in URL, then a full-page
    * redirect to Logto and back to the provider's `callbackPath`. `returnTo`
    * (a same-origin path starting with `/`) is where the user lands after
    * sign-in completes; it overrides the provider's `afterSignIn`. Initiation
@@ -435,9 +435,9 @@ export type LogtoSessionAuth = {
    */
   signIn: (options?: { returnTo?: string }) => Promise<void>;
   /**
-   * Sign out: deletes the component Session and its server-held refresh token,
-   * clears this browser's storage (other tabs follow via the storage event), then —
-   * unless `federated: false` — ends Logto's SSO session and returns to
+   * Sign out. Deletes the component Session and its server-held refresh token,
+   * clears this browser's storage (other tabs follow via the storage event),
+   * then, unless `federated: false`, ends Logto's SSO session and returns to
    * `postLogoutRedirectUri` (default `window.location.origin`, which you must
    * register as a **Post sign-out redirect URI**).
    *
@@ -459,9 +459,9 @@ export type LogtoSessionAuth = {
   }) => Promise<void>;
   /**
    * The caller's own sessions, for a "where am I signed in" screen. A snapshot,
-   * not a subscription — the session token it authenticates with rotates — so
-   * call it again after `renameSession` / `revokeSession`. `truncated` means the
-   * subject has more sessions than the page returned.
+   * not a subscription, because the session token it authenticates with
+   * rotates; call it again after `renameSession` / `revokeSession`.
+   * `truncated` means the subject has more sessions than the page returned.
    */
   listSessions: () => Promise<{
     sessions: LogtoSessionSummary[];
@@ -470,7 +470,7 @@ export type LogtoSessionAuth = {
   /**
    * Name one of the caller's own sessions (pass `undefined` to clear it).
    * Rejects with a terminal `session_not_found` when the id is not the caller's
-   * or is already revoked — the component refuses to confirm that another
+   * or is already revoked. The component refuses to confirm that another
    * subject's session exists.
    */
   renameSession: (
@@ -480,22 +480,22 @@ export type LogtoSessionAuth = {
   /**
    * Revoke one of the caller's own sessions; that device drops on its next
    * reactive revocation tick, and an unknown id rejects like `renameSession`.
-   * Revoking the current session does not clear this browser's credentials —
-   * call `signOut` for that, and note that a device which still holds a live
-   * Logto SSO cookie can start a new sign-in.
+   * Revoking the current session does not clear this browser's credentials;
+   * call `signOut` for that. A device which still holds a live Logto SSO
+   * cookie can start a new sign-in.
    */
   revokeSession: (targetSessionId: string) => Promise<void>;
   /**
-   * The current ID token — the Short bearer Convex validates. `null` when
+   * The current ID token, the short bearer Convex validates. `null` when
    * signed out, when the stored one has aged out, or while the engine is still
-   * restoring — so read it under `isAuthenticated`, which is false until the
+   * restoring, so read it under `isAuthenticated`, which is false until the
    * restore finishes.
    */
   getIdToken: () => string | null;
   /**
    * What an Organization token authorizes, without the token itself.
    *
-   * Membership and organization *roles* need none of this: Logto puts them in
+   * Membership and organization *roles* need none of this. Logto puts them in
    * the ID token, so `user.organizations` and `user.organization_roles` are
    * already here for free. This is for fine-grained organization
    * **permissions**, which Logto issues nowhere but an Organization token.
@@ -507,7 +507,7 @@ export type LogtoSessionAuth = {
   ) => Promise<LogtoResourceTokenClaims>;
   /**
    * What a Resource token authorizes. The resource must be listed in
-   * `resources` on `logtoSessionApi()` — Logto will not issue a token for a
+   * `resources` on `logtoSessionApi()`; Logto will not issue a token for a
    * resource the grant never named.
    */
   getAccessTokenClaims: (
@@ -670,11 +670,11 @@ export type {
   SessionSignOutServerStatus,
   TokenStorageKind,
 } from "./session-client";
-// A value, not a type: `instanceof` is how an app tells a sign-out that could
-// not durably wipe its credentials apart from one that simply failed. The
+// A value, not a type. `instanceof` is how an app tells a sign-out that could
+// not durably wipe its credentials apart from one that failed outright. The
 // browser engine throws the same class the native one does, and
-// `convex-logto/native-session` has always exported it — a web app reduced to
-// matching on `error.name` for the identical failure is exactly the entry-point
-// drift this package keeps having to undo.
+// `convex-logto/native-session` has always exported it. A web app reduced to
+// matching on `error.name` for the identical failure is the entry-point drift
+// this package keeps having to undo.
 export { SessionSignOutError } from "./session-client";
 export type { LogtoSessionCookieTransportOptions } from "./session-cookie";

@@ -19,7 +19,7 @@ export type LogtoOidcProvider = {
   applicationID: string;
 };
 
-/** @internal Shared with session.ts — not part of the public API. */
+/** @internal Shared with session.ts. Not part of the public API. */
 export function readEndpointAndAppId(options: LogtoAuthConfigOptions = {}): {
   endpoint: string;
   appId: string;
@@ -44,7 +44,8 @@ export function readEndpointAndAppId(options: LogtoAuthConfigOptions = {}): {
  * Build the Convex auth provider entry for a Logto app. Reads `LOGTO_ENDPOINT`
  * and `LOGTO_APP_ID` unless you pass them. The OIDC `domain` is `${endpoint}/oidc`;
  * Convex discovers the JWKS and signing algorithm from there, so there is no
- * algorithm or JWKS URL to configure. See the README for why the ID token is used.
+ * algorithm or JWKS URL to configure. See the README for why this validates the
+ * ID token.
  *
  * @example
  * // convex/auth.config.ts
@@ -55,7 +56,8 @@ export function logtoAuthConfig(
   options: LogtoAuthConfigOptions = {},
 ): LogtoOidcProvider {
   const { endpoint, appId } = readEndpointAndAppId(options);
-  // `endpoint` is already trimmed and trailing-slash-stripped by readEndpointAndAppId.
+  // readEndpointAndAppId already trimmed `endpoint` and stripped its trailing
+  // slash.
   return {
     domain: buildLogtoEndpointUrl(endpoint, ""),
     applicationID: appId,
@@ -81,7 +83,7 @@ export type LogtoConfigQueryRef = FunctionReference<
  * A public Convex query that serves `{ endpoint, appId, allowInsecureHttp? }`
  * from this deployment's env/options, so the frontend can fetch its Logto
  * config instead of carrying its own copy. Configure Logto in one place per
- * environment — the Convex deployment.
+ * environment, the Convex deployment.
  *
  * @example
  * // convex/logto.ts

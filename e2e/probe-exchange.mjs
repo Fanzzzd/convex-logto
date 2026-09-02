@@ -1,6 +1,6 @@
-// What does the token exchange actually do, end to end through the component?
+// What does the token exchange do, end to end through the component?
 //
-// A probe, not a regression: it asks the deployment questions whose answers are
+// A probe, not a regression. It asks the deployment questions whose answers are
 // not known yet and prints findings. It found two of them the first time it ran.
 //
 //   set -a; . ./.env.e2e; set +a
@@ -9,13 +9,13 @@
 //   node probe-exchange.mjs 2>&1
 //
 // The app must export `exchangeToken` and `fetchUserInfo` from
-// `logtoSessionApi(...)`, and — for the organization half — request
-// `ORGANIZATIONS_SCOPE`. Running it *without* that scope is itself informative:
-// it is the configuration that used to leave the session unusable.
+// `logtoSessionApi(...)`. For the organization half it must also request
+// `ORGANIZATIONS_SCOPE`. Running it *without* that scope is itself informative,
+// because that is the configuration that used to leave the session unusable.
 //
-// Nothing here asks for a token string (`includeToken` is never set), so no
-// credential is printed. The ID token's claim *names* are, because which claims
-// a scope produces is the question.
+// Nothing here asks for a token string (`includeToken` is never set), so this
+// prints no credential. It does print the ID token's claim *names*, because
+// which claims a scope produces is the question.
 import { chromium } from "playwright-core";
 
 const appUrl = need("E2E_APP_URL").replace(/\/+$/, "");
@@ -55,8 +55,8 @@ try {
     { timeout: 45_000 },
   );
 
-  // Which claims the configured scopes actually produced. Membership and roles
-  // arriving here is the whole reason an organization *token* is rarely needed.
+  // Which claims the configured scopes produced. Membership and roles arriving
+  // here is the whole reason an app rarely needs an organization *token*.
   const idToken = await page.evaluate(() => {
     const key = Object.keys(sessionStorage).find((candidate) =>
       candidate.endsWith(":idToken"),
@@ -105,7 +105,7 @@ try {
       { sessionToken, organizationId },
     ],
     [
-      // Expected to fail: organization permissions are not OIDC scopes, so a
+      // Expected to fail. Organization permissions are not OIDC scopes, so a
       // refresh grant can never hold one to narrow by. See ADR 0003.
       "organization token, narrowed by a permission",
       "auth:exchangeToken",

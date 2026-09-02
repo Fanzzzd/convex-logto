@@ -1,25 +1,25 @@
 // Answer, against a real Logto, the questions the organization-token design
-// cannot be settled without (issue #206):
+// depends on (issue #206):
 //
-//   1. Do organization membership and organization *roles* really arrive in the
-//      ID token, or does reading a role require an organization token?
+//   1. Do organization membership and organization *roles* arrive in the ID
+//      token, or does reading a role require an organization token?
 //   2. Does the organization-token grant return an `id_token` alongside the
 //      organization access token?
-//   3. Does it rotate the refresh token — and if it does, is a *failed* grant
-//      (a resource Logto will not issue for) still a spend?
+//   3. Does it rotate the refresh token? If it does, is a *failed* grant (a
+//      resource Logto will not issue for) still a spend?
 //   4. Must a resource be named at authorization time, and is it the `resource`
 //      parameter that matters or the resource's scope?
 //
 // (3) is the one that decides the shape of the feature. Session mode's central
-// invariant is that a Logto refresh token is never presented twice, enforced by
-// a single claimed `refresh` grant. If the organization grant rotates, it is a
-// second consumer of that token and must go through the same claim.
+// invariant is that nothing presents a Logto refresh token twice; a single
+// claimed `refresh` grant enforces it. If the organization grant rotates, it is
+// a second consumer of that token and must go through the same claim.
 //
-// Rotation is normally invisible: Logto only rotates a *confidential* client's
+// Rotation is normally invisible. Logto only rotates a *confidential* client's
 // refresh token once it is past 70% of its lifetime, which no fresh token is.
 // So the rotation phases run against the **public** SPA client instead, where
-// the same rule rotates on every grant — the one configuration in which the
-// question is directly observable rather than inferred.
+// the same rule rotates on every grant. That is the one configuration in which
+// the question is observable rather than inferred.
 //
 //   node probe-org-tokens.mjs
 //
@@ -28,10 +28,11 @@
 //
 //   LOGTO_M2M_APP_ID, LOGTO_M2M_APP_SECRET, optionally LOGTO_ADMIN_ENDPOINT.
 //
-// Prints findings to **stderr**, never tokens: every token here is a live
+// Prints findings to **stderr**, never tokens. Every token here is a live
 // credential, and a terminal is a scrollback buffer. The decoded claims go to
-// `.probe-org-tokens.json` (mode 0600, gitignored), written after every finding
-// so a phase that fails late does not discard what the earlier phases cost.
+// `.probe-org-tokens.json` (mode 0600, gitignored). The script rewrites that
+// file after every finding, so a phase that fails late does not discard what
+// the earlier phases cost.
 
 import { chmodSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -172,9 +173,9 @@ async function findPaged(call, path, match, { pageSize = 100, maxPages = 50 } = 
 }
 
 /**
- * Everything below is find-or-create for the same reason provision.mjs is: this
- * gets rerun while the questions are being refined, and a probe that only works
- * on a clean tenant is a probe that works once.
+ * Everything below is find-or-create for the same reason provision.mjs is.
+ * People rerun this while the questions are still changing, and a probe that
+ * only works on a clean tenant is a probe that works once.
  */
 async function ensureOrganization(call, userId) {
   const org =
@@ -263,11 +264,12 @@ async function ensureResource(call, userId) {
       body: JSON.stringify({ scopeIds: [scope.id] }),
     });
   } catch (error) {
-    // 422 is "already assigned", which is the desired state. Anything else —
-    // an expired management token, a role deleted between the find and the
-    // write — would leave the user without the scope, and finding (4) below
-    // reads an `invalid_target` as evidence about the *resource parameter*.
-    // Swallowing that would turn a broken setup into a confident wrong answer.
+    // 422 is "already assigned", which is the desired state. Anything else,
+    // such as an expired management token or a role deleted between the find
+    // and the write, would leave the user without the scope, and finding (4)
+    // below reads an `invalid_target` as evidence about the *resource
+    // parameter*. Swallowing that would turn a broken setup into a confident
+    // wrong answer.
     if (!(error instanceof ManagementApiError) || error.status !== 422) throw error;
   }
 
@@ -307,7 +309,7 @@ async function rotationSetting(call, appId) {
     ?.rotateRefreshToken;
   if (after !== true) {
     throw new Error(
-      `could not enable rotateRefreshToken on ${appId}: it reads back as ${JSON.stringify(after)}`,
+      `could not enable rotateRefreshToken on ${appId}. It reads back as ${JSON.stringify(after)}`,
     );
   }
   return { was: before, effective: true, changed: true };
@@ -319,7 +321,7 @@ async function tokenRequest(client, params) {
   const headers = { "Content-Type": "application/x-www-form-urlencoded" };
   const body = new URLSearchParams(params);
   if (client.secret === undefined) {
-    // A public client authenticates by identity alone — which is also the
+    // A public client authenticates by identity alone. That is also the
     // property that makes oidc-provider rotate on every grant.
     body.set("client_id", client.appId);
   } else {
@@ -339,9 +341,9 @@ async function tokenRequest(client, params) {
 /**
  * Drive a real sign-in to get an authorization code.
  *
- * The redirect target is fulfilled with a stub rather than a running app: the
- * only thing wanted from it is the query string, and requiring an app to be up
- * would couple this probe to the example's build.
+ * A stub fulfils the redirect target instead of a running app. The only thing
+ * this needs from it is the query string, and requiring an app to be up would
+ * couple this probe to the example's build.
  */
 async function authorizationCode(client, { resource, scopes = [] } = {}) {
   const verifier = randomBytes(32).toString("base64url");
@@ -369,31 +371,31 @@ async function authorizationCode(client, { resource, scopes = [] } = {}) {
     // Wait on the *request* to the redirect URI, not on the navigation
     // completing. Nothing is listening on that port, so whether the redirect
     // "loads" depends on a stub route that has proven unreliable across
-    // Logto's interstitials — but the query string, which is the only thing
-    // wanted here, is already on the request either way.
+    // Logto's interstitials. The query string, which is the only thing needed
+    // here, is already on the request either way.
     const redirected = page.waitForRequest(
       (request) => request.url().startsWith(client.redirectUri),
       { timeout: 90_000 },
     );
     // Closing the browser rejects a still-pending wait. Without this, that
     // rejection races the *real* error out of the process and reports
-    // "target closed" instead of whatever actually went wrong.
+    // "target closed" instead of whatever went wrong.
     redirected.catch(() => {});
-    // Keep the stub anyway: a fulfilled 200 avoids a browser error page, which
+    // Keep the stub anyway. A fulfilled 200 avoids a browser error page, which
     // makes `E2E_HEADED=1` watchable.
     await context.route(`${client.redirectUri}*`, (route) =>
       route.fulfill({ status: 200, contentType: "text/html", body: "<p>captured</p>" }),
     );
-    // Retried once: this probe spends an authorization grant per phase, and
-    // losing the whole run to one slow TLS handshake wastes evidence rather
-    // than reporting anything.
+    // One retry, because this probe spends an authorization grant per phase,
+    // and losing the whole run to one slow TLS handshake wastes evidence
+    // without reporting anything.
     try {
       await page.goto(authUrl.toString(), { timeout: 60_000 });
     } catch {
       await page.goto(authUrl.toString(), { timeout: 60_000 });
     }
-    // A returning user has an SSO cookie and never sees these, so the sign-in
-    // form is raced against the redirect rather than waited for.
+    // A returning user has an SSO cookie and never sees these, so this races
+    // the sign-in form against the redirect rather than waiting for it.
     await Promise.race([
       redirected,
       (async () => {
@@ -440,9 +442,9 @@ assertReportIsIgnored();
  * Refuse to write a report git would track.
  *
  * The ignore rule for this file lives in the repository's `.gitignore`, and a
- * `.gitignore` is per-branch: check out a branch that predates the rule, run
+ * `.gitignore` is per-branch. Check out a branch that predates the rule, run
  * `git add -A`, and a dump of decoded ID token claims lands in a commit. That
- * is not hypothetical — it happened once. Checking costs one subprocess at
+ * is not hypothetical. It happened once. Checking costs one subprocess at
  * startup and turns a silent commit into a refusal that says why.
  */
 function assertReportIsIgnored() {
@@ -452,8 +454,8 @@ function assertReportIsIgnored() {
       cwd: fileURLToPath(new URL(".", import.meta.url)),
     });
   } catch (error) {
-    // Exit code 1 means "not ignored". Anything else — git missing, not a
-    // repository at all — is not this check's business, and refusing then
+    // Exit code 1 means "not ignored". Anything else, such as git missing or
+    // not a repository at all, is not this check's business, and refusing then
     // would make the probe unrunnable outside a checkout.
     if (error?.status !== 1) return;
     console.error(
@@ -469,7 +471,7 @@ function persist() {
   report.findings = findings;
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
   // `mode` only applies when Node *creates* the file. A report left behind by
-  // an earlier run — or by a `--out` path someone made themselves — keeps
+  // an earlier run, or by a `--out` path someone made themselves, keeps
   // whatever permissions it already had, and this file holds decoded ID token
   // claims, including the user's email.
   chmodSync(reportPath, 0o600);
@@ -478,8 +480,9 @@ function persist() {
 function finding(question, answer, detail) {
   findings.push({ question, answer, detail });
   console.error(`\n  ${question}\n  → ${answer}${detail ? `\n    ${detail}` : ""}`);
-  // Written as it is learned: a later phase drives a browser and can time out,
-  // and the evidence above it cost real authorization grants to collect.
+  // Persisted as soon as it is learned. A later phase drives a browser and can
+  // time out, and the evidence above it cost real authorization grants to
+  // collect.
   persist();
 }
 
@@ -487,10 +490,10 @@ function finding(question, answer, detail) {
  * One refresh-token grant, in a chain.
  *
  * Each grant may consume the token it was given, so a *failed* grant leaves the
- * chain in an unknown state: on the failure path this drops the token rather
- * than letting the next call present something Logto may already have spent —
+ * chain in an unknown state. On the failure path this drops the token rather
+ * than letting the next call present something Logto may already have spent,
  * which would trip reuse detection and answer a different question than the one
- * being asked. Chains that mean to test that deliberately do it explicitly.
+ * being asked. Chains that mean to test that do it explicitly.
  */
 function chain(client, initialRefreshToken, phase) {
   let refreshToken = initialRefreshToken;
@@ -499,7 +502,7 @@ function chain(client, initialRefreshToken, phase) {
     async grant(label, extra = {}) {
       if (refreshToken === null) {
         throw new Error(
-          `${label}: the chain has no usable refresh token — a previous grant failed.`,
+          `${label}: the chain has no usable refresh token because a previous grant failed.`,
         );
       }
       const before = fingerprint(refreshToken);
@@ -582,7 +585,7 @@ async function signIn(client, label, options) {
   }
   if (!exchanged.body.refresh_token) {
     throw new Error(
-      `${label}: no refresh_token — is offline_access granted to the ${client.label} app?`,
+      `${label}: no refresh_token. Is offline_access granted to the ${client.label} app?`,
     );
   }
   report.phases[label] = {
@@ -624,9 +627,9 @@ try {
   persist();
   console.error(
     `probing organization ${org.id} and resource ${resource.indicator}\n` +
-      `  confidential app ${CONFIDENTIAL.appId} — rotateRefreshToken ` +
+      `  confidential app ${CONFIDENTIAL.appId}, rotateRefreshToken ` +
       `${confidentialRotation.changed ? "set to true" : "already true"}\n` +
-      `  public app       ${PUBLIC.appId} — rotateRefreshToken ` +
+      `  public app       ${PUBLIC.appId}, rotateRefreshToken ` +
       `${publicRotation.changed ? "set to true" : "already true"}`,
   );
 
@@ -659,7 +662,7 @@ try {
     organization_id: org.id,
   });
   await phase1.chain.grant("confidential: plain refresh, after the organization one");
-  // Last in this phase on purpose: it is expected to fail, and a failed grant
+  // Last in this phase on purpose. Logto should reject it, and a failed grant
   // ends the chain rather than handing a possibly-spent token to a successor.
   await phase1.chain.grant("confidential: resource never named at sign-in", {
     resource: resource.indicator,
@@ -687,18 +690,18 @@ try {
   );
 
   finding(
-    "Q4. What makes a resource askable — the `resource` parameter or its scope?",
+    "Q4. What makes a resource askable, the `resource` parameter or its scope?",
     [
       `resource parameter alone: ${withResourceParamOnly ? "WORKS" : "rejected"}`,
       `scope alone: ${withScopeOnly ? "WORKS" : "rejected"}`,
     ].join(", "),
-    "Both were also rejected when neither was requested (phase 1), so whichever " +
-      "of these two works is the one that has to be configured before sign-in.",
+    "Logto also rejected both in phase 1, when neither was requested, so " +
+      "whichever of these two works is the one to configure before sign-in.",
   );
 
   // -- Phase 4: the public client, where rotation is observable --------------
   //
-  // oidc-provider rotates unconditionally for a client whose token-endpoint
+  // oidc-provider rotates on every grant for a client whose token-endpoint
   // auth method is `none`. Everything above runs in the regime where rotation
   // is real but rare; this is the regime where it is visible on every grant.
 
@@ -719,13 +722,13 @@ try {
     rotationByGrant.join(", "),
     "Measured on the public client, where oidc-provider's rule rotates on every " +
       "grant. A confidential client runs the same rule, gated on 70% of the " +
-      "refresh token's lifetime — same handler, same blindness to grant type.",
+      "refresh token's lifetime. Same handler, same blindness to grant type.",
   );
 
   // -- Phase 5: is a *failed* grant still a spend? ---------------------------
   //
-  // Deliberately the dangerous chain, isolated in its own sign-in so a grant
-  // this destroys cannot affect any answer above.
+  // This is the dangerous chain on purpose, isolated in its own sign-in so a
+  // grant it destroys cannot affect any answer above.
 
   const phase5 = await signIn(PUBLIC, "phase5", { scopes: ORG_SCOPES });
   const spentProbe = phase5.chain.token();
@@ -735,8 +738,8 @@ try {
     resource: resource.indicator,
   });
   if (rejected.ok) {
-    // The premise did not hold: this grant was meant to be refused. Replaying
-    // the token now would fail because it was *legitimately* rotated, and
+    // The premise did not hold. Logto was meant to refuse this grant. Replaying
+    // the token now would fail because Logto rotated it *legitimately*, and
     // reporting that as "a rejected grant spends the token" would be a
     // confident inversion of the answer.
     report.grants["public: intended-failure grant unexpectedly succeeded"] = {
@@ -746,11 +749,11 @@ try {
     };
     finding(
       "Q3b. Does a grant that Logto rejects still spend the refresh token?",
-      "UNANSWERED — the grant meant to be rejected succeeded",
-      "The resource was not named at sign-in, so Logto should have answered " +
+      "UNANSWERED. The grant Logto was meant to reject succeeded",
+      "The sign-in did not name the resource, so Logto should have answered " +
         "`invalid_target`. It issued a token instead, which means this " +
         "deployment reaches resources differently and the experiment needs a " +
-        "target it genuinely refuses.",
+        "target it refuses.",
     );
   } else {
     const after = await tokenRequest(PUBLIC, {
@@ -769,8 +772,8 @@ try {
     finding(
       "Q3b. Does a grant that Logto rejects still spend the refresh token?",
       after.ok
-        ? "NO — the same token still works afterwards"
-        : `YES — replaying it answers ${after.status} ${after.body.error ?? ""}`,
+        ? "NO. The same token still works afterwards"
+        : `YES. Replaying it answers ${after.status} ${after.body.error ?? ""}`,
       `The rejected grant was ${rejected.status} ${rejected.body.error ?? ""}. ` +
         "This decides whether a failed exchange may release the claim or must " +
         "leave it to age.",
@@ -780,7 +783,7 @@ try {
   persist();
   console.error(`\n\nFull decoded claims → ${reportPath} (mode 0600, gitignored).`);
   console.error(
-    "Read them before designing anything: the findings above are the summary,\n" +
-      "the file is the evidence. Everything is on stderr — redirect with 2>.",
+    "Read them before designing anything. The findings above are the summary,\n" +
+      "the file is the evidence. Everything is on stderr. Redirect with 2>.",
   );
 }

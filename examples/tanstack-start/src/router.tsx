@@ -1,8 +1,8 @@
 // Convex's canonical TanStack Start wiring (ConvexQueryClient + TanStack Query +
 // SSR integration), with convex-logto layered on top via the router's `InnerWrap`.
 //
-// The Convex client is owned by the ConvexQueryClient; we pass that same client
-// into convex-logto so auth and queries share one socket.
+// The ConvexQueryClient owns the Convex client; we pass that same client into
+// convex-logto so auth and queries share one socket.
 import { ConvexQueryClient } from "@convex-dev/react-query";
 import { QueryClient } from "@tanstack/react-query";
 import { createRouter as createTanStackRouter } from "@tanstack/react-router";
@@ -14,7 +14,8 @@ import type { useLogtoAuth } from "convex-logto/react";
 // `beforeLoad` guards read auth from router context, but Start builds the context
 // once. Hold the live auth in a mutable object the AuthBoundary keeps current,
 // then `router.invalidate()` re-runs the guards. `auth` stays undefined until the
-// client-side bridge effect runs — i.e. through SSR and the first client paint.
+// client-side bridge effect runs, which means through SSR and the first client
+// paint.
 type LogtoAuth = ReturnType<typeof useLogtoAuth>;
 export type AuthHolder = { auth: LogtoAuth | undefined };
 
@@ -33,7 +34,7 @@ export function getRouter() {
 
   const convexQueryClient = new ConvexQueryClient(CONVEX_URL, {
     // Convex otherwise refetches a fresh token the instant it confirms the
-    // cached one, which costs a Logto refresh grant on every page load — and in
+    // cached one, which costs a Logto refresh grant on every page load, and in
     // session mode a session-token rotation with it. Experimental in
     // convex@1.44.
     initialAuthTokenReuse: true,

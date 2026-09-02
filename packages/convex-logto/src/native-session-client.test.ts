@@ -679,7 +679,7 @@ describe("native storage faults", () => {
     );
     await expect(storage.prepare()).resolves.toBeUndefined();
     expect(storage.readSession()?.token).toBe("session-token-old");
-    // Never deleted: the value is unreadable now, not gone.
+    // Never deleted, because the value is unreadable now, not gone.
     expect(secureStore.deleteItemAsync).not.toHaveBeenCalled();
   });
 
@@ -696,8 +696,8 @@ describe("native storage faults", () => {
   });
 
   it("keeps reporting a credential that survived its delete", async () => {
-    // Unlike a write fault, this one is not consumed by the flush that reports
-    // it: the credential is still on the device, so sign-out has not happened
+    // Unlike a write fault, the flush that reports this one does not consume
+    // it. The credential is still on the device, so sign-out has not happened
     // and every later flush must keep saying so.
     const secureStore = fakeSecureStore();
     await seedSession(secureStore, freshToken());

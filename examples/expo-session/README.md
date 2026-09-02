@@ -1,15 +1,15 @@
 # convex-logto native session mode + Expo (React Native)
 
-Session mode on React Native: your Convex deployment is the OAuth client (a Logto
-**Traditional Web** app), so the Logto refresh token never reaches the device. A
-Convex component holds it, rotates a session token with the app, and pushes
+In session mode on React Native, your Convex deployment is the OAuth client (a
+Logto Traditional Web app), so the Logto refresh token never reaches the device.
+A Convex component holds it, rotates a session token with the app, and pushes
 revocation reactively. The app bundle carries **no Logto config at all**, not
 even the endpoint, and **no Logto SDK**: no `@logto/rn`, no
 `@react-native-async-storage/async-storage`. Auth uses the
-**`convex-logto/native-session`** entry on top of `expo-secure-store` and
+`convex-logto/native-session` entry on top of `expo-secure-store` and
 `expo-web-browser`.
 
-Contrast with [`examples/expo`](../expo), which is *bridge* mode: that one embeds
+Contrast with [`examples/expo`](../expo), which is *bridge* mode. That one embeds
 `@logto/rn`, pulls `{ endpoint, appId }` from the backend, and lets the device
 hold the Logto refresh token itself. Both validate the same OIDC ID token, so
 `convex/auth.config.ts` is identical; everything else differs.
@@ -72,7 +72,7 @@ native projects from `app.json`; the pieces it generates are the iOS
 ## What to look at
 
 - `convex/convex.config.ts`: installs the session component (`app.use(logto)`).
-- `convex/auth.ts`: the entire server surface: one `logtoSessionApi(...)` call,
+- `convex/auth.ts`: the entire server side, one `logtoSessionApi(...)` call,
   byte-identical to the web session example's. One server, both platforms.
 - `App.tsx`: `ConvexLogtoSessionProvider` with `redirectUri` and the advisory
   `clientDescriptor`, plus the `Sessions` panel (`listSessions()` /
@@ -84,20 +84,21 @@ native projects from `app.json`; the pieces it generates are the iOS
 
 - **No callback route.** `signIn()` opens the system browser and resolves when the
   deep link returns; the exchange happens in place, so there is no screen to add.
-- **SecureStore only, never a downgrade.** The rotating session token, the OAuth
-  state, and the short-lived ID token are all encrypted by SecureStore, namespaced
-  per Convex deployment. If SecureStore is unavailable the provider fails loudly
+- **SecureStore only, never a downgrade.** SecureStore encrypts the rotating
+  session token, the OAuth state, and the short-lived ID token, namespaced per
+  Convex deployment. If SecureStore is unavailable the provider fails loudly
   rather than falling back to unencrypted storage.
 - **Cold start with no round-trip.** A still-valid ID token in SecureStore
-  authenticates immediately on launch while its paired session marker remains; an
-  orphaned bearer is cleared. `<AuthLoading>` covers the refresh when it expired.
+  authenticates immediately on launch while its paired session marker remains;
+  the provider clears an orphaned bearer. `<AuthLoading>` covers the refresh when
+  it expired.
 - **Reactive revocation.** The provider subscribes to `sessionValid`, so signing
   out on another device (or a Logto `User.Deleted` webhook) drops this app's auth
   live, not at the next token expiry.
 - **No device binding.** Native credential persistence is already bound to the OS
   keystore, so the `deviceBinding` option that exists on web is intentionally
   absent here.
-- **`EXPO_PUBLIC_CONVEX_URL`**: Expo only exposes `EXPO_PUBLIC_*` to the bundle,
+- **`EXPO_PUBLIC_CONVEX_URL`.** Expo only exposes `EXPO_PUBLIC_*` to the bundle,
   and it is the single value this app needs.
 
 > **Want webhook-driven revocation?** `registerLogtoWebhook(http, ..., { sessions: components.logto })`

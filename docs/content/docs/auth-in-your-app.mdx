@@ -10,7 +10,7 @@ auth, so you get **all** the standard ways to react to auth state:
 - **Convex's `<Authenticated>` / `<Unauthenticated>` / `<AuthLoading>`** and **`useConvexAuth()`** from `convex/react`, which work unchanged.
 
 `isAuthenticated` / `isLoading` from `useLogtoAuth()` come from `useConvexAuth()`,
-so they're **authoritative**: `isAuthenticated` is `true` only once Convex has
+so they're **authoritative**. `isAuthenticated` is `true` only once Convex has
 accepted the token. Gate on these and there's no flash of the wrong state.
 
 ## Storing data for a user
@@ -28,7 +28,7 @@ export const createPost = mutation({
   handler: async (ctx, { body }) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("unauthenticated");
-    await ctx.db.insert("posts", { body, authorId: identity.subject }); // ← the link
+    await ctx.db.insert("posts", { body, authorId: identity.subject }); // the link
   },
 });
 ```
@@ -108,9 +108,9 @@ const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
 function InnerApp() {
   const auth = useLogtoAuth();
 
-  // Re-run every route's beforeLoad when the authn outcome flips (loading→settled,
-  // sign in/out). Key on the primitive booleans so it fires on exactly those changes,
-  // not on every token refresh or profile (`user`) update.
+  // Re-run every route's beforeLoad when the authn outcome flips (loading to
+  // settled, sign in or out). Key on the primitive booleans so it fires on those
+  // changes only, not on every token refresh or profile (`user`) update.
   useEffect(() => {
     void router.invalidate();
   }, [auth.isLoading, auth.isAuthenticated]);
@@ -145,7 +145,7 @@ const rootRoute = createRootRouteWithContext<RouterAuthContext>()({
   component: () => <Outlet />,
 });
 
-// Protected layout route: guarded outside render, in beforeLoad.
+// Protected layout route, guarded outside render in beforeLoad.
 const authedRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: "_authed",
@@ -159,8 +159,8 @@ const authedRoute = createRoute({
 
 export const router = createRouter({
   routeTree: rootRoute.addChildren([signinRoute, authedRoute.addChildren([dashboardRoute])]),
-  context: { auth: undefined! }, // real value injected by <RouterProvider context>
-  defaultPendingMs: 0, // show pendingComponent immediately while auth settles
+  context: { auth: undefined! }, // <RouterProvider context> injects the real value
+  defaultPendingMs: 0, // no delay before pendingComponent while auth settles
 });
 ```
 
@@ -171,8 +171,8 @@ A few things here are load-bearing:
   signed-in user on every reload, and bounce a just-returned user mid sign-in
   callback. The bridge keeps `isLoading` `true` across that whole validation
   window, so the guard waits instead of redirecting.
-- **The `router.invalidate()` effect is required**; it's what re-runs the guard
-  when auth resolves. Depend on `[auth.isLoading, auth.isAuthenticated]`.
+- **Keep the `router.invalidate()` effect.** It re-runs the guard when auth
+  resolves. Depend on `[auth.isLoading, auth.isAuthenticated]`.
 - **Give the route a `pendingComponent`** (with `defaultPendingMs: 0`) so the
   loading window shows it instead of a flash of protected content.
 - **Pass `navigate`** to the provider so post-sign-in is a soft router navigation.

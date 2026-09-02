@@ -15,13 +15,13 @@ the issuer's discovery document and JWKS itself, so you never set an algorithm o
 a JWKS URL.
 
 There is one catch. Convex's OIDC verifier accepts only **RS256** and **EdDSA**
-signatures, but Logto signs with **ES384** by default, and a mismatched
-signature is rejected silently: sign-in completes, yet `getUserIdentity()`
-returns `null`. The fix is a one-time, tenant-level key rotation: in the Logto Console, open
-**Tenant settings → OIDC configs**, click **Rotate private keys**, and choose
-**RSA** as the signing algorithm. Logto keeps the old key during a transition, so
-existing sessions stay signed in. After rotating, the discovery document advertises
-`RS256` and Convex accepts the token.
+signatures, but Logto signs with **ES384** by default, and Convex rejects a
+mismatched signature without reporting it. Sign-in completes, yet
+`getUserIdentity()` returns `null`. The fix is a one-time, tenant-level key
+rotation. In the Logto Console, open **Tenant settings → OIDC configs**, click
+**Rotate private keys**, and choose **RSA** as the signing algorithm. Logto keeps
+the old key during a transition, so existing sessions stay signed in. After
+rotating, the discovery document advertises `RS256` and Convex accepts the token.
 
 ## Refresh via offline_access
 
@@ -33,7 +33,7 @@ requests the `offline_access` scope by default.
 Convex's client fetches an auth token twice on every page load. It sends the one
 your app already has, waits for the server to confirm it, and then, by default,
 throws it away and asks for a fresh one. The second fetch is `forceRefreshToken`,
-which this library is obliged to honour: it means "the token you last gave me
+which this library is obliged to honour. It means "the token you last gave me
 will not do."
 
 That costs a **Logto token-endpoint round trip on every page load**, in both
@@ -41,8 +41,7 @@ modes. In bridge mode the Logto SDK spends a refresh grant; in session mode your
 deployment does, and rotates the session token with it. None of it is needed
 when the token in hand is fresh and the server just said so.
 
-Convex has an option for exactly this. Turn it on where you construct the
-client:
+Convex has an option for this. Turn it on where you construct the client:
 
 ```ts
 const convex = new ConvexReactClient(CONVEX_URL, {
@@ -50,23 +49,23 @@ const convex = new ConvexReactClient(CONVEX_URL, {
 });
 ```
 
-Now the confirmed token is kept and a refresh is scheduled before it expires,
-which is what makes a warm page load reach an authenticated render without
-touching the network at all. Every example in this repository sets it.
+Now the client keeps the confirmed token and schedules a refresh before it
+expires, which is what makes a warm page load reach an authenticated render
+without touching the network at all. Every example in this repository sets it.
 
-It is marked experimental in `convex@1.44` and may change; that is the only
-reason it is not the default here.
+Convex marks it experimental in `convex@1.44` and it may change; that is the
+only reason it is not the default here.
 
 ### What you give up
 
-That per-page-load round trip was doing one useful thing by accident: it asked
+That per-page-load round trip was doing one useful thing by accident. It asked
 Logto whether the grant was still alive. Reusing the cached token skips the
 question, so a session revoked *at Logto*, by an admin ending it, a password
 change, or another device signing out everywhere, goes unnoticed until the token
 expires. With Logto's default one-hour ID token, that is a window of up to an
 hour of page loads.
 
-In **session mode** that window is closed by something better: the provider
+In **session mode** the provider closes that window with something better. It
 subscribes to `sessionValid`, so a revocation lands on the open tab live,
 without a reload and without asking Logto. Turn the option on.
 
@@ -83,10 +82,10 @@ or use [session mode](/docs/session-mode).
 `ConvexLogtoProvider` is safe to render on the server. Until the backend config
 loads it mounts an inert Logto client and reports "loading", so children render
 under Convex's `<AuthLoading>` and nothing touches `window` during SSR or the
-first client paint, no stub or mount-gate. In TanStack Start, render the same
-single `<ConvexLogtoProvider>` you'd use in a SPA. In the Next.js App Router the
-component that imports it must still be `"use client"` (its hooks and the
-sign-in / sign-out actions use `window`), but that's the only boundary.
+first client paint. You need no stub or mount gate. In TanStack Start, render
+the same single `<ConvexLogtoProvider>` you'd use in a SPA. In the Next.js App
+Router the component that imports it must still be `"use client"` (its hooks and
+the sign-in / sign-out actions use `window`), but that's the only boundary.
 
 ## ESM-only `convex-logto/react`
 

@@ -43,10 +43,10 @@ describe("RBAC example", () => {
     const t = makeT();
     const asAlice = t.withIdentity(ALICE);
 
-    // Signed in (valid token) but brand new to THIS app: no row yet.
+    // Signed in (valid token) but brand new to THIS app, so no row yet.
     expect(await asAlice.query(api.users.myProfile)).toEqual({ onboarded: false });
 
-    // The onboarding mutation creates the row FROM THE LOGGED-IN STATE — it never
+    // The onboarding mutation creates the row FROM THE LOGGED-IN STATE. It never
     // waits on a `User.Created` webhook (which won't fire for a pre-existing user).
     await asAlice.mutation(api.users.completeOnboarding, { role: "user" });
 
@@ -75,10 +75,10 @@ describe("RBAC example", () => {
     ).rejects.toThrow("forbidden");
   });
 
-  test("the webhook never creates a row — only an authenticated mutation does", async () => {
+  test("the webhook never creates a row, only an authenticated mutation does", async () => {
     const t = makeT();
 
-    // A sync event for a user who hasn't onboarded: nothing to sync, no row created.
+    // A sync event for a user who hasn't onboarded. Nothing to sync, no row created.
     await t.mutation(
       internal.logto.sync,
       hook("User.Data.Updated", {
@@ -113,7 +113,7 @@ describe("RBAC example", () => {
 
     expect(await asAlice.query(api.users.myProfile)).toMatchObject({
       onboarded: true,
-      role: "admin", // still admin — the webhook only wrote name/email
+      role: "admin", // still admin. The webhook only wrote name/email
       name: "Alice Renamed",
     });
   });
@@ -123,7 +123,7 @@ describe("RBAC example", () => {
     const asAlice = t.withIdentity(ALICE);
     await asAlice.mutation(api.users.completeOnboarding, { role: "admin" });
 
-    // Suspension events carry only id + isSuspended — name/email must survive.
+    // Suspension events carry only id + isSuspended. name/email must survive.
     await t.mutation(
       internal.logto.sync,
       hook("User.SuspensionStatus.Updated", {
@@ -192,8 +192,8 @@ describe("RBAC example", () => {
     const asAlice = t.withIdentity(ALICE);
     await asAlice.mutation(api.users.completeOnboarding, { role: "user" });
 
-    // `data: {}` carries no id, so it contradicts nothing — same information as
-    // the documented `data: null` shape. Refusing it would drop a
+    // `data: {}` carries no id, so it contradicts nothing. It carries the same
+    // information as the documented `data: null` shape. Refusing it would drop a
     // signature-verified deletion, and Logto does not retry a 4xx.
     await t.mutation(
       internal.logto.sync,

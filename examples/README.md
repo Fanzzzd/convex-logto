@@ -10,7 +10,7 @@ Each is a standalone app; see its README to run it.
 | [`tanstack-router-spa`](./tanstack-router-spa) | TanStack Router (SPA): declarative gating + `beforeLoad` route guards (auth outside render), **plus a webhook-synced users table with role-based access (RBAC)**. |
 | [`tanstack-start`](./tanstack-start) | TanStack Start (SSR): one SSR-safe provider + `beforeLoad` route guards. |
 | [`nextjs`](./nextjs) | Next.js App Router: client provider boundary + callback route. |
-| [`expo`](./expo) | Expo (React Native): native auth via `convex-logto/native`: deep-link sign-in, no callback route. |
+| [`expo`](./expo) | Expo (React Native): native auth via `convex-logto/native`. Deep-link sign-in, no callback route. |
 | [`expo-session`](./expo-session) | Expo (React Native) **session mode**: server-held refresh token, SecureStore-only credentials, and the "where am I signed in" session list, no Logto SDK on the device. |
 
 > The webhook user-sync and RBAC shown in `tanstack-router-spa` are **framework-agnostic**;

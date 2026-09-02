@@ -3,15 +3,15 @@ title: Quick start
 description: Wire Logto auth into a Convex + Vite React app end to end, in six steps.
 ---
 
-The **Vite + React** happy path: copy-pasteable, top to bottom, and your Convex
+The **Vite + React** happy path, top to bottom. Copy it as is and your Convex
 functions will see a signed-in user. On **TanStack Router / Start, Next.js, or Expo**?
-Steps 1–3 are identical; the provider and callback differ; see
+Steps 1 to 3 are the same; the provider and callback differ; see
 [Integrations](/docs/vite).
 
 <Callout type="warn">
-**Before you start: rotate the Logto signing key to RSA.** Convex only accepts ID
+**Before you start, rotate the Logto signing key to RSA.** Convex only accepts ID
 tokens signed with **RS256** (or EdDSA). Logto signs with **ES384** by default, which
-Convex rejects _silently_: sign-in looks like it works, but
+Convex rejects without an error. Sign-in looks like it works, but
 `ctx.auth.getUserIdentity()` returns `null`. In the Logto Console open **Tenant
 settings → OIDC configs → Rotate private keys** and choose **RSA**. One-time, per
 tenant; Logto keeps the old key during a transition, so existing sessions stay signed in.
@@ -23,7 +23,8 @@ tenant; Logto keeps the old key during a transition, so existing sessions stay s
 pnpm add convex-logto @logto/react
 ```
 
-`convex` and `react` are peers you already have. (React Native? See [Expo](/docs/react-native).)
+`convex` and `react` are peers you already have. For React Native, see
+[Expo](/docs/react-native).
 
 ## 1. Create a Logto app
 
@@ -31,7 +32,7 @@ In Logto Console → **Applications** → **Create application** → under
 **Single page app** pick your framework (e.g. **React**), **not** a
 **Third-party app**. A third-party app is for letting *other people's* apps sign
 in through your Logto; it withholds the `profile` / `email` scopes this package
-requests, so sign-in fails with `invalid_scope`. The app type can't be changed
+requests, so sign-in fails with `invalid_scope`. You can't change the app type
 after creation, so if you picked third-party, create a new Single page app.
 
 Note the **endpoint** (e.g. `https://auth.example.com`) and the **App ID**, and
@@ -46,7 +47,7 @@ so remember to add both.
 
 ## 2. Set the config
 
-On your Convex deployment (used by `auth.config.ts` to validate tokens):
+On your Convex deployment (which `auth.config.ts` reads to validate tokens):
 
 ```bash
 npx convex env set LOGTO_ENDPOINT https://auth.example.com
@@ -63,11 +64,12 @@ VITE_LOGTO_APP_ID=your-app-id
 
 The endpoint may include a reverse-proxy path prefix, but it must be the Logto
 base URL (not the trailing `/oidc` issuer URL) and must not contain credentials,
-a query, or a fragment. HTTPS is required in production; loopback HTTP works for
-local development. If an existing self-hosted deployment is unavoidably served
-over non-loopback HTTP, add `allowInsecureHttp: true` to `logtoAuthConfig`, the
-static provider `config` (or `logtoConfigQuery`), and `logtoSessionApi` where
-used. This is an explicit compatibility escape hatch, not a recommended setup.
+a query, or a fragment. The library requires HTTPS in production; loopback HTTP
+works for local development. If an existing self-hosted deployment can only be
+reached over non-loopback HTTP, add `allowInsecureHttp: true` to
+`logtoAuthConfig`, the static provider `config` (or `logtoConfigQuery`), and
+`logtoSessionApi` where used. This is a compatibility escape hatch, not a
+recommended setup.
 
 ## 3. Wire Convex
 
@@ -106,8 +108,9 @@ Prefer resolving the config at runtime from the Convex deployment instead (e.g.
 multi-tenant, one frontend artifact for many environments)? Export
 `logtoConfigQuery()` from `convex/logto.ts` and pass
 `configQuery={api.logto.config}` in place of `config`; the provider renders the
-`fallback` prop while it loads. Static `config` is the default: it removes a
-config round-trip from first paint, so sign-in is interactive immediately.
+`fallback` prop while it loads. Static `config` is the default because it
+removes a config round trip from first paint, so sign-in is interactive on the
+first render.
 </Callout>
 
 <Callout>
@@ -118,9 +121,9 @@ lives, the env var name, and whether you pass `navigate`); see
 
 ## 5. Add a callback route
 
-`signIn()` lands on `/callback`. The provider finishes the OIDC code exchange
-automatically; the route just needs to render. In a plain Vite app with no router,
-render a callback view when the path matches:
+`signIn()` lands on `/callback`. The provider finishes the OIDC code exchange;
+the route just needs to render. In a plain Vite app with no router, render a
+callback view when the path matches:
 
 ```tsx title="src/App.tsx"
 if (window.location.pathname === "/callback") return <p>Finishing sign in…</p>;
@@ -152,9 +155,9 @@ provider logs the failure and delivers it to `onAuthError`, even though
 **Post sign-out redirect URI** from step 1). Pass
 `signOut({ postLogoutRedirectUri: "https://app.com/bye" })` to land somewhere
 else; just register that URI too. Don't follow it with a **hard** navigation of
-your own (`location.href = ...`): it resolves once the browser has been told to
-leave for Logto, not once it has arrived, and a second full-page navigation
-supersedes the request that ends the Logto session.
+your own (`location.href = ...`). `signOut()` resolves once it has told the
+browser to leave for Logto, not once the browser has arrived, and a second
+full-page navigation supersedes the request that ends the Logto session.
 
 In any Convex function, the Logto identity is already there:
 

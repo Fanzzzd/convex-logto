@@ -1,23 +1,24 @@
 // Opt-in phase timings for the auth bootstrap, shared by both modes.
 //
-// The question this answers is "how long did the user actually wait before the
-// first authenticated query, and which phase regressed?". Without it the only
-// view is a devtools waterfall on someone else's machine. It is deliberately
-// small: phase names, a monotonic elapsed time, and the little context that
+// The question this answers is "how long did the user wait before the first
+// authenticated query, and which phase regressed?". Without it the only view
+// is a devtools waterfall on someone else's machine. It is deliberately small:
+// phase names, a monotonic elapsed time, and the little context that
 // distinguishes a fast path from a slow one. No tokens, no user identity, no
-// URLs — an event is safe to forward to an analytics backend as-is.
+// URLs. An event is safe to forward to an analytics backend as-is.
 
 /**
- * `bootstrap_start` is emitted once per provider mount; every other phase's
- * `elapsedMs` is measured from it.
+ * The emitter sends `bootstrap_start` once per provider mount and measures
+ * every other phase's `elapsedMs` from it.
  *
- * - `config_loaded` — bridge mode only: `configQuery` resolved, so the Logto SDK
- *   can mount. Session mode has no such fetch.
- * - `session_restored` / `unauthenticated` — the mount state machine settled.
- * - `convex_authenticated` — Convex accepted the token. This is the one that
- *   marks "the first authenticated query can run"; everything before it is
- *   setup.
- * - the `refresh_*` phases bracket a token refresh, including the silent ones
+ * - `config_loaded` is bridge mode only. `configQuery` resolved, so the Logto
+ *   SDK can mount. Session mode has no such fetch.
+ * - `session_restored` / `unauthenticated` mean the mount state machine
+ *   settled.
+ * - `convex_authenticated` means Convex accepted the token. This is the one
+ *   that marks "the first authenticated query can run"; everything before it
+ *   is setup.
+ * - The `refresh_*` phases bracket a token refresh, including the silent ones
  *   that happen long after mount. Exactly one of `refresh_succeeded`,
  *   `refresh_failed`, or `refresh_abandoned` follows every `refresh_started`,
  *   so a consumer pairing them never records a span that stays open.
@@ -31,12 +32,18 @@ export type LogtoAuthPhase =
   | "refresh_started"
   | "refresh_succeeded"
   | "refresh_failed"
-  /** A sign-out or revocation landed mid-refresh, so its result was discarded. */
+  /**
+   * A sign-out or revocation landed mid-refresh, so the engine discarded its
+   * result.
+   */
   | "refresh_abandoned"
   | "revoked"
   | "signed_out";
 
-/** Where a restored credential came from — the difference between a fast and a slow mount. */
+/**
+ * Where a restored credential came from. The difference between a fast and a
+ * slow mount.
+ */
 export type LogtoAuthEventSource =
   | "cache"
   | "refresh"
@@ -49,21 +56,24 @@ export type LogtoAuthEvent = {
   /** Milliseconds since `bootstrap_start`, from a monotonic clock where available. */
   elapsedMs: number;
   source?: LogtoAuthEventSource;
-  /** For `refresh_failed`: whether the session is gone or the attempt is retryable. */
+  /**
+   * For `refresh_failed`, whether the session is gone or the attempt is
+   * retryable.
+   */
   errorKind?: "terminal" | "transient";
 };
 
 export type LogtoAuthEventHandler = (event: LogtoAuthEvent) => void;
 
 /**
- * A live handler slot — shaped like a React ref on purpose, so a provider can
+ * A live handler slot, shaped like a React ref on purpose, so a provider can
  * hand one straight to the engine.
  *
- * A provider cannot pass the handler itself: an inline arrow changes identity
+ * A provider cannot pass the handler itself. An inline arrow changes identity
  * every render, and rebuilding the engine mid-session would drop the auth
  * state. Reading through a slot keeps the engine stable while still honouring
- * `onAuthEvent` appearing, changing, or going away on a later render — and
- * while it holds `undefined`, nothing is measured.
+ * `onAuthEvent` appearing, changing, or going away on a later render. While
+ * the slot holds `undefined`, the emitter measures nothing.
  */
 export type LogtoAuthEventHandlerSlot = {
   readonly current: LogtoAuthEventHandler | undefined;
@@ -78,7 +88,7 @@ export type AuthEventEmitter = (
   detail?: Omit<LogtoAuthEvent, "phase" | "elapsedMs">,
 ) => void;
 
-/** No handler: a no-op the engine can call unconditionally. */
+/** No handler. A no-op the engine can call unconditionally. */
 export const NO_AUTH_EVENTS: AuthEventEmitter = () => {};
 
 function monotonicNow(): number {
@@ -86,14 +96,15 @@ function monotonicNow(): number {
 }
 
 /**
- * Build an emitter whose `elapsedMs` counts from `bootstrap_start` — the event,
- * not the construction of the emitter, which can happen an arbitrary React
- * commit earlier.
+ * Build an emitter whose `elapsedMs` counts from the `bootstrap_start` event,
+ * not from the construction of the emitter, which can happen an arbitrary
+ * React commit earlier.
  *
- * Opting out costs nothing: with no handler in the sink, an emit returns before
- * it reads the clock or allocates an event. A throwing handler is contained
- * here — telemetry must never be able to fail an authentication, so it is
- * reported to the console and otherwise ignored.
+ * Opting out costs nothing. With no handler in the sink, an emit returns before
+ * it reads the clock or allocates an event. The emitter contains a throwing
+ * handler here, because telemetry must never be able to fail an
+ * authentication, so it reports the error to the console and otherwise
+ * ignores it.
  */
 export function createAuthEventEmitter(
   sink: LogtoAuthEventSink | undefined,
@@ -108,7 +119,7 @@ export function createAuthEventEmitter(
     if (handler === undefined) return;
     const at = now();
     // A handler attached after the bootstrap counts from the first event it
-    // sees: that is the only baseline it can honestly have.
+    // sees. That is the only baseline it can honestly have.
     if (phase === "bootstrap_start" || start === undefined) start = at;
     try {
       handler({ phase, elapsedMs: at - start, ...detail });

@@ -32,7 +32,7 @@ import { normalizeLogtoPublicConfig } from "./component/endpoint";
 
 /**
  * Bridges Logto's ID token into the `useAuth` shape `ConvexProviderWithAuth`
- * expects — the React Native counterpart of `useAuthFromLogto` in `react.tsx`.
+ * expects. The React Native counterpart of `useAuthFromLogto` in `react.tsx`.
  *
  * `@logto/rn` exposes `getIdToken()` (the raw JWT Convex validates) just like the
  * web SDK, but differs in ways the bridge accounts for:
@@ -69,9 +69,9 @@ function useAuthFromLogto() {
         if (idToken === null) tokenFailure?.onFailed();
         return idToken;
       } catch {
-        // The refresh token expired or Logto is unreachable: report "no token" so
-        // Convex transitions cleanly to unauthenticated instead of surfacing a
-        // rejection (which is how a returning user's stale session should resolve).
+        // The refresh token expired or Logto is unreachable. Report "no token"
+        // so Convex moves to unauthenticated instead of seeing a rejection,
+        // which is how a returning user's stale session should resolve.
         tokenFailure?.onFailed();
         return null;
       }
@@ -83,11 +83,11 @@ function useAuthFromLogto() {
   // `isAuthenticated` we report goes false→true. `@logto/rn` latches its own
   // flag true and never moves it, so without folding the failure in here the
   // provider stays disarmed for the life of the process and Sign in cannot
-  // recover it — the token never fails *again*, so nothing re-triggers.
+  // recover it. The token never fails *again*, so nothing re-triggers.
   const failed = tokenFailure?.failed ?? false;
 
-  // The SDK genuinely going unauthenticated and back (a sign-out, then a fresh
-  // sign-in) is a recovery too, and it happens without anyone calling `onRetry`.
+  // The SDK going unauthenticated and back (a sign-out, then a fresh sign-in)
+  // is a recovery too, and it happens without anyone calling `onRetry`.
   const previouslyAuthenticated = useRef(isAuthenticated);
   useEffect(() => {
     const recovered = !previouslyAuthenticated.current && isAuthenticated;
@@ -150,7 +150,7 @@ const AuthErrorContext = createContext<((error: Error) => void) | undefined>(
   undefined,
 );
 
-/** Reports a recoverable auth error: loud in the console, surfaced to `onAuthError`. */
+/** Reports a recoverable auth error to the console and to `onAuthError`. */
 function reportAuthError(
   onAuthError: ((error: Error) => void) | undefined,
   error: Error,
@@ -172,9 +172,10 @@ export type ConvexLogtoProviderProps = {
   /** Your `ConvexReactClient`. */
   client: ConvexReactClient;
   /**
-   * Native sign-in callback URI — your `app.json` `scheme` plus a path, e.g.
-   * `io.logto://callback`. Must be registered as a Redirect URI on the Logto app.
-   * `useLogtoAuth().signIn()` uses this; pass an argument to `signIn` to override.
+   * Native sign-in callback URI: your `app.json` `scheme` plus a path, e.g.
+   * `io.logto://callback`. Register it as a Redirect URI on the Logto app.
+   * `useLogtoAuth().signIn()` uses this; pass an argument to `signIn` to
+   * override.
    */
   redirectUri: string;
   /** Extra scopes. `openid`, `profile`, `offline_access`, and `email` are always included. */
@@ -182,8 +183,8 @@ export type ConvexLogtoProviderProps = {
   /** API resource indicators to request, if any. */
   resources?: string[];
   /**
-   * A splash rendered while `configQuery` loads (that mode only — with static
-   * `config` there is no loading phase). Children — and the Convex provider —
+   * A splash rendered while `configQuery` loads (that mode only; with static
+   * `config` there is no loading phase). Children, and the Convex provider,
    * mount only once `{ endpoint, appId }` is known. Default `null`. Convex's
    * `<AuthLoading>` then covers the sign-in handshake from inside your app, not
    * from `fallback` (which renders before Convex is mounted).
@@ -193,8 +194,8 @@ export type ConvexLogtoProviderProps = {
    * Opt-in phase timings for the auth bootstrap. Absent (the default), nothing
    * is measured or emitted. See [`LogtoAuthEvent`](./auth-events).
    *
-   * Native bridge mode emits `bootstrap_start`, `convex_authenticated`, and —
-   * only with `configQuery` — `config_loaded`: `@logto/rn` owns the credential
+   * Native bridge mode emits `bootstrap_start`, `convex_authenticated`, and,
+   * only with `configQuery`, `config_loaded`. `@logto/rn` owns the credential
    * lifecycle, so the settle and refresh phases belong to session mode.
    */
   onAuthEvent?: LogtoAuthEventHandler;
@@ -202,9 +203,9 @@ export type ConvexLogtoProviderProps = {
    * Called when sign-in or sign-out fails recoverably (Logto unreachable, the
    * user dismissing the system browser, an expired session). `@logto/rn`
    * rejects rather than storing the error, so without this a `void signIn()` in
-   * an `onPress` — the documented pattern — is an unhandled rejection and
-   * nothing else. A failed sign-out matters as much: the SDK reaches Logto
-   * before clearing tokens, so the user stays signed in.
+   * an `onPress`, the documented pattern, is an unhandled rejection and nothing
+   * else. A failed sign-out matters as much. The SDK reaches Logto before
+   * clearing tokens, so the user stays signed in.
    */
   onAuthError?: (error: Error) => void;
   children: ReactNode;
@@ -214,7 +215,7 @@ export type ConvexLogtoProviderProps = {
        * Your Logto public config, statically: `{ endpoint, appId,
        * allowInsecureHttp? }`. Both OAuth values are public (the client id is
        * not a secret). Non-loopback HTTP requires that explicit opt-in; HTTPS
-       * is the default. This is the fastest path: no config round-trip.
+       * is the default. This is the fastest path, with no config round-trip.
        */
       config: LogtoPublicConfig;
       configQuery?: never;
@@ -223,7 +224,7 @@ export type ConvexLogtoProviderProps = {
       config?: never;
       /**
        * Reference to the query exported from `logtoConfigQuery()`, e.g.
-       * `api.logto.config` — fetches `{ endpoint, appId }` from the Convex
+       * `api.logto.config`. Fetches `{ endpoint, appId }` from the Convex
        * deployment at runtime. Prefer static `config` unless you need
        * runtime-resolved config.
        */
@@ -232,11 +233,11 @@ export type ConvexLogtoProviderProps = {
 );
 
 /**
- * Wires Logto to Convex on React Native / Expo: pulls `{ endpoint, appId }` from
- * the backend (`configQuery`), mounts `@logto/rn`, and bridges the ID token into
- * Convex. No hand-rolled `useAuth`, no JWT template, no JWKS URL.
+ * Wires Logto to Convex on React Native / Expo. Pulls `{ endpoint, appId }`
+ * from the backend (`configQuery`), mounts `@logto/rn`, and bridges the ID
+ * token into Convex. No hand-rolled `useAuth`, no JWT template, no JWKS URL.
  *
- * Unlike the web provider there is **no callback route to add** — `@logto/rn`'s
+ * Unlike the web provider there is **no callback route to add**. `@logto/rn`'s
  * `signIn` opens the system browser and resolves when the deep link returns.
  *
  * @example
@@ -343,7 +344,7 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
   }
 
   // Hold the fallback until the config is known, then mount the tree once (with
-  // static `config` this is immediate — there is no loading phase at all).
+  // static `config` this is immediate; there is no loading phase at all).
   if (!resolved) return <>{fallback}</>;
 
   return (
@@ -364,8 +365,8 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
 }
 
 /**
- * `convex_authenticated` is the phase that matters to an app — the first moment
- * an authenticated query can run — and only Convex knows when it arrives.
+ * `convex_authenticated` is the phase that matters to an app, the first moment
+ * an authenticated query can run, and only Convex knows when it arrives.
  */
 function ConvexAuthPhaseWatcher({ events }: { events: AuthEventEmitter }) {
   const { isAuthenticated } = useConvexAuth();
@@ -383,7 +384,7 @@ export type LogtoAuth = {
   isLoading: boolean;
   /**
    * Decoded ID token claims (sub, email, name, ...), once authenticated.
-   * Display only — a Convex function reads the same claims through
+   * Display only. A Convex function reads the same claims through
    * `ctx.auth.getUserIdentity()`, which is where they are trustworthy.
    */
   user: LogtoUserClaims | undefined;
@@ -392,16 +393,16 @@ export type LogtoAuth = {
    * returns. Defaults the redirect to the provider's `redirectUri`; pass one
    * explicitly to override (must be registered on the Logto app).
    *
-   * Takes an options object like every other entry — the native override is a
+   * Takes an options object like every other entry. The native override is a
    * redirect URI rather than the web's `returnTo`, because there is no in-app
    * route to come back to until the deep link lands.
    */
   signIn: (options?: { redirectUri?: string }) => Promise<void>;
   /**
-   * Sign out: revokes the tokens and clears local storage. Unlike the web, it
-   * does not open the browser — `@logto/rn` skips the federated sign-out flow by
-   * default — so the Logto SSO session in the system browser may persist and a
-   * later sign-in can be seamless.
+   * Sign out. Revokes the tokens and clears local storage. Unlike the web, it
+   * does not open the browser, because `@logto/rn` skips the federated sign-out
+   * flow by default, so the Logto SSO session in the system browser may persist
+   * and a later sign-in can skip the prompt.
    */
   signOut: (options?: { postLogoutRedirectUri?: string }) => Promise<void>;
 };
@@ -426,7 +427,7 @@ export function useLogtoAuth(): LogtoAuth {
     if (isAuthenticated) {
       getIdTokenClaims()
         // Narrowed through the same gate session mode uses, so both modes hand
-        // back one type — the SDK's `IdTokenClaims` is an interface with no
+        // back one type. The SDK's `IdTokenClaims` is an interface with no
         // index signature, which is what makes a custom claim unreachable here.
         .then((claims) => {
           if (active) setUser(asUserClaims(claims));
@@ -453,13 +454,13 @@ export function useLogtoAuth(): LogtoAuth {
       try {
         if (!uri) {
           throw new Error(
-            "convex-logto: signIn needs a redirect URI on native — pass one to " +
+            "convex-logto: signIn needs a redirect URI on native. Pass one to " +
               "signIn() or set `redirectUri` on <ConvexLogtoProvider> (e.g. " +
               '"io.logto://callback").',
           );
         }
         await signIn(uri);
-        // After, never before: a background fetch racing the browser sheet could
+        // After, never before. A background fetch racing the browser sheet could
         // re-arm Convex against a token that is still broken, and setting it back
         // to failed would then be the *stale* write. Once `signIn` resolves the
         // SDK holds fresh tokens, so this is the point where retrying is honest.

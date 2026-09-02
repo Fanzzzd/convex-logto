@@ -7,22 +7,22 @@ import { App } from "./App";
 
 const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL as string, {
   // Convex otherwise refetches a fresh token the instant it confirms the cached
-  // one, which costs a Logto refresh grant on every page load — and in session
+  // one, which costs a Logto refresh grant on every page load, and in session
   // mode a session-token rotation with it. Experimental in convex@1.44.
   initialAuthTokenReuse: true,
 });
 
-// Session mode: no Logto SDK, no Logto config in the bundle. The provider
-// talks to your Convex functions (api.auth = logtoSessionApi re-exports);
-// Convex holds the Logto refresh token server-side, the browser holds only a
-// short-lived ID token and a rotating application session token.
+// Session mode means no Logto SDK and no Logto config in the bundle. The
+// provider talks to your Convex functions (api.auth = logtoSessionApi
+// re-exports); Convex holds the Logto refresh token server-side, the browser
+// holds only a short-lived ID token and a rotating application session token.
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ConvexLogtoSessionProvider
       client={convex}
       sessionApi={api.auth}
       // Advisory, app-supplied device description shown by listSessions(). The
-      // library never sniffs a User-Agent — this is exactly what you pass.
+      // library never sniffs a User-Agent. This is exactly what you pass.
       clientDescriptor={{ platform: "web", browser: "this browser" }}
       // Sign-in and sign-out reject rather than storing the error, so without
       // this an offline sign-out is an unhandled rejection and nothing else.

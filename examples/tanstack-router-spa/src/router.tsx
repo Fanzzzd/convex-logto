@@ -62,12 +62,12 @@ const callbackRoute = createRoute({
   component: () => <p>Finishing sign in…</p>,
 });
 
-// Protected layout: its `beforeLoad` redirects unauthenticated users to /signin.
+// Protected layout. Its `beforeLoad` redirects unauthenticated users to /signin.
 const authedRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: "_authed",
   beforeLoad: ({ context }) => {
-    if (context.auth.isLoading) return; // still settling — don't redirect yet
+    if (context.auth.isLoading) return; // still settling, don't redirect yet
     if (!context.auth.isAuthenticated) throw redirect({ to: "/signin" });
   },
   pendingComponent: () => <p>Checking access…</p>,
@@ -95,7 +95,7 @@ export const router = createRouter({
     callbackRoute,
     authedRoute.addChildren([dashboardRoute, adminRoute]),
   ]),
-  // Real auth is injected via <RouterProvider context>; this only satisfies the type.
+  // <RouterProvider context> injects the real auth; this only satisfies the type.
   context: { auth: undefined! },
   // Show pendingComponent immediately while auth settles.
   defaultPendingMs: 0,

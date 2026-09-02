@@ -2,9 +2,9 @@
  * A successful bounded body read or the controlled reason it stopped.
  *
  * The buffer is pinned to `ArrayBuffer` rather than the default
- * `ArrayBufferLike`: every caller hands these bytes to `crypto.subtle`, whose
- * `BufferSource` parameter excludes `SharedArrayBuffer`. TypeScript 7's lib
- * definitions enforce that; 5.x accepted the wider type.
+ * `ArrayBufferLike`, because every caller hands these bytes to `crypto.subtle`,
+ * whose `BufferSource` parameter excludes `SharedArrayBuffer`. TypeScript 7's
+ * lib definitions enforce that; 5.x accepted the wider type.
  */
 export type BoundedBodyResult =
   | { ok: true; bytes: Uint8Array<ArrayBuffer> }
@@ -37,8 +37,8 @@ async function cancelStream(
 /**
  * Read an HTTP body without ever retaining more than `maxBytes` of chunks.
  *
- * `Content-Length` is only an early-rejection hint: a missing or dishonest
- * header never bypasses the byte count performed while the stream is read.
+ * `Content-Length` is only an early-rejection hint. A missing or dishonest
+ * header never bypasses the byte count kept while the stream is read.
  */
 export async function readBoundedBody(
   source: BodySource,

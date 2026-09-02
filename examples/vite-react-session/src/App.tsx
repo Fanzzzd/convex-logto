@@ -37,8 +37,8 @@ function Me() {
   );
 }
 
-// "Where am I signed in": a snapshot, not a subscription — the session token it
-// authenticates with rotates, so reload it after every mutation instead.
+// "Where am I signed in" is a snapshot, not a subscription. The session token
+// it authenticates with rotates, so reload it after every mutation instead.
 function Sessions() {
   const { listSessions, renameSession, revokeSession } = useLogtoAuth();
   const [sessions, setSessions] = useState<LogtoSessionSummary[] | null>(null);
@@ -76,9 +76,9 @@ function Sessions() {
         {sessions.map((session) => (
           <li key={session.sessionId}>
             {session.label ?? "Unnamed"}
-            {session.current ? " — this device" : ""}
+            {session.current ? ", this device" : ""}
             {session.client
-              ? ` — ${Object.values(session.client).join(" / ")}`
+              ? `, ${Object.values(session.client).join(" / ")}`
               : ""}{" "}
             <small>
               last used {new Date(session.lastRefreshedAt).toLocaleString()}
@@ -119,7 +119,7 @@ function Sessions() {
               </button>
             )}{" "}
             {/* Revoking the current session leaves this browser's credentials
-                in place — "Sign out" is the button for that. */}
+                in place. "Sign out" is the button for that. */}
             <button onClick={() => run(revokeSession(session.sessionId))}>
               Revoke
             </button>
@@ -135,7 +135,8 @@ function SignedIn() {
   return (
     <>
       {/* The provider's `onAuthError` reports the failure; swallowing the
-          rejection here just keeps it from also surfacing unhandled. */}
+          rejection here just keeps it from also becoming an unhandled
+          rejection. */}
       <button onClick={() => void signOut().catch(() => {})}>
         Sign out ({String(user?.email ?? user?.sub ?? "user")})
       </button>{" "}
@@ -158,7 +159,7 @@ function SignIn() {
 }
 
 export function App() {
-  // No callback component needed: the provider finishes the exchange on
+  // No callback component needed. The provider finishes the exchange on
   // /callback and replace-navigates back into the app by itself.
   // Gate on Convex's own auth state so queries never run before auth settles.
   return (

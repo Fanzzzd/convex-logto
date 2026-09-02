@@ -146,7 +146,7 @@ type RouteHandler = (
 ) => Promise<Response>;
 
 function harness(options?: {
-  /** What `recordWebhookDelivery` reports: a fresh claim by default. */
+  /** What `recordWebhookDelivery` reports. A fresh claim by default. */
   delivery?: { claimed: boolean; completed: boolean };
   killSidError?: Error;
   customPath?: string;
@@ -341,10 +341,10 @@ describe("Logto back-channel logout", () => {
   });
 
   it("redoes the revocation for a claim that never completed", async () => {
-    // A claim proves a delivery started. If its revocation never committed —
-    // the mutation failed and the release failed too — answering 200 would
-    // leave the user signed in through a completed OIDC logout for the whole
-    // dedupe window. Revocation is idempotent, so redo it.
+    // A claim proves a delivery started. If its revocation never committed
+    // because the mutation failed and the release failed too, answering 200
+    // would leave the user signed in through a completed OIDC logout for the
+    // whole dedupe window. Revocation is idempotent, so redo it.
     const { endpoint, handler, handlers, calls, runMutation, runAction } =
       harness({ delivery: { claimed: false, completed: false } });
     const token = await logoutToken({ endpoint });

@@ -3,7 +3,7 @@
 `convex-logto` on TanStack Start, following Convex's canonical Start wiring
 (`ConvexQueryClient` + TanStack Query + `setupRouterSsrQueryIntegration`) with
 `ConvexLogtoProvider` layered on top. Shows both auth patterns from the SPA
-example: declarative `<Authenticated>` gating **and** a `beforeLoad` route guard
+example: declarative `<Authenticated>` gating and a `beforeLoad` route guard
 reading auth from router context.
 
 ## Run
@@ -29,13 +29,13 @@ reading auth from router context.
 
 > In this monorepo the dependency is `convex-logto: workspace:*`. Standalone, run `npm i convex-logto @logto/react`.
 
-## How SSR is handled
+## How SSR works
 
-The provider is **SSR-safe**: `ConvexLogtoProvider` mounts the Logto + Convex tree
-from the first render using an inert loading client, so children render immediately
-under Convex's `<AuthLoading>` and nothing touches `window` on the server. So this
-example has **no hand-written client boundary, stub, or mount-gate**; the same
-`<ConvexLogtoProvider>` you'd write for a SPA works on the server too.
+The provider is SSR-safe. `ConvexLogtoProvider` mounts the Logto + Convex tree
+with an inert loading client from the first render, so children render under
+Convex's `<AuthLoading>` at once and nothing touches `window` on the server. So
+this example has **no hand-written client boundary, stub, or mount-gate**; the
+same `<ConvexLogtoProvider>` you'd write for a SPA works on the server too.
 
 - **`src/router.tsx`** is Convex's canonical Start setup; the router's `InnerWrap`
   renders `src/auth.tsx`'s `AuthBoundary`.
@@ -44,21 +44,22 @@ example has **no hand-written client boundary, stub, or mount-gate**; the same
   `<AuthLoading>` shell renders; the client hydrates and auth settles. Server and
   first client render match, so there's no hydration mismatch.
 - The `<Authenticated>/<Unauthenticated>/<AuthLoading>` components and the
-  `useLogtoAuth()` buttons read the provider's context directly: no mount-gating,
-  the same component code as the SPA example.
+  `useLogtoAuth()` buttons read the provider's context directly, with no
+  mount-gating and the same component code as the SPA example.
 
 ## The two auth patterns
 
 1. **Declarative** (`src/DeclarativeGate.tsx`): `<Authenticated>` /
    `<Unauthenticated>` / `<AuthLoading>` from `convex/react`, unchanged.
 2. **`beforeLoad` route guard** (`src/routes/_authed.tsx`): protects `/dashboard`
-   outside of render. Start builds the router context once, so auth is carried in
-   a **mutable holder** on the context that `AuthBoundary`'s `RouterAuthBridge`
-   keeps pointed at the live `useLogtoAuth()` result, calling `router.invalidate()` on every auth
-   change to re-run the guards. This is the Start equivalent of the SPA's
-   `<RouterProvider context={{ auth }}>` + `RouterWithAuth`.
+   outside of render. Start builds the router context once, so the context
+   carries auth in a mutable holder that `AuthBoundary`'s `RouterAuthBridge`
+   keeps pointed at the live `useLogtoAuth()` result, calling
+   `router.invalidate()` on every auth change to re-run the guards. This is the
+   Start equivalent of the SPA's `<RouterProvider context={{ auth }}>` +
+   `RouterWithAuth`.
 
-`navigate` is wired to the router (`router.navigate`), so post-sign-in is a soft
-navigation rather than a full reload. The OIDC redirect lands on
+`AuthBoundary` wires `navigate` to the router (`router.navigate`), so post-sign-in
+is a soft navigation rather than a full reload. The OIDC redirect lands on
 `src/routes/callback.tsx`, which just renders while the provider finishes the
 code exchange.

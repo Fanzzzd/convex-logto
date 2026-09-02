@@ -1,9 +1,9 @@
 // Type-level coverage for `logtoSync`. Named `.test-d.ts` so `tsc --noEmit`
 // (the `check-types` script) type-checks it, while `vitest run` and the tsup
-// build both ignore it. The point: the `ctx as GenericMutationCtx<DataModel>`
-// cast inside logtoSync must keep `ctx.db` typed to the caller's DataModel —
-// a refactor that degrades it to `any` makes the @ts-expect-error below unused,
-// and `tsc` then fails.
+// build both ignore it. The `ctx as GenericMutationCtx<DataModel>` cast inside
+// logtoSync must keep `ctx.db` typed to the caller's DataModel. A refactor that
+// degrades it to `any` makes the @ts-expect-error below unused, and `tsc` then
+// fails.
 import { defineSchema, defineTable } from "convex/server";
 import type { DataModelFromSchemaDefinition } from "convex/server";
 import { v } from "convex/values";
@@ -22,8 +22,8 @@ logtoSync<DataModel>({
     // A table in the DataModel is queryable...
     void ctx.db.query("users");
     // ...and one that isn't is a type error. If `ctx.db` ever degrades to `any`,
-    // this stops erroring and the directive goes unused → `tsc` fails.
-    // @ts-expect-error — "posts" is not a table in this DataModel
+    // this stops erroring, the directive goes unused, and `tsc` fails.
+    // @ts-expect-error: "posts" is not a table in this DataModel
     void ctx.db.query("posts");
 
     expectTypeOf(user).toEqualTypeOf<LogtoUserEntity>();

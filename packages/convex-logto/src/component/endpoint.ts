@@ -1,5 +1,6 @@
 // Shared URL policy for the public config helpers, browser/native adapters, and
-// the session component. Keep this module V8-safe: the component imports it.
+// the session component. Keep this module V8-safe, because the component
+// imports it.
 
 export type LogtoEndpointPolicy = {
   /**
@@ -16,7 +17,7 @@ export type LogtoPublicEndpointConfig = LogtoEndpointPolicy & {
 };
 
 function endpointError(message: string): Error {
-  return new Error(`convex-logto: invalid Logto endpoint — ${message}`);
+  return new Error(`convex-logto: invalid Logto endpoint. ${message}`);
 }
 
 function isLoopbackHostname(hostname: string): boolean {
@@ -44,18 +45,18 @@ export function normalizeLogtoEndpoint(
     url = new URL(input);
   } catch {
     throw endpointError(
-      `expected an absolute https: URL (or loopback http: URL).`,
+      `Expected an absolute https: URL (or loopback http: URL).`,
     );
   }
 
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     throw endpointError(
-      `expected an https: URL (or loopback http: URL), not ${url.protocol || "that scheme"}.`,
+      `Expected an https: URL (or loopback http: URL), not ${url.protocol || "that scheme"}.`,
     );
   }
   if (url.username !== "" || url.password !== "") {
     throw endpointError(
-      "embedded username/password credentials are forbidden.",
+      "Embedded username/password credentials are forbidden.",
     );
   }
   // URL.search/hash do not preserve an empty `?`/`#`, so inspect the original
@@ -66,7 +67,7 @@ export function normalizeLogtoEndpoint(
     input.includes("?") ||
     input.includes("#")
   ) {
-    throw endpointError("query strings and fragments are forbidden.");
+    throw endpointError("Query strings and fragments are forbidden.");
   }
   if (
     url.protocol === "http:" &&
@@ -74,7 +75,7 @@ export function normalizeLogtoEndpoint(
     policy.allowInsecureHttp !== true
   ) {
     throw endpointError(
-      "non-loopback HTTP is insecure; use HTTPS or explicitly set allowInsecureHttp: true.",
+      "Non-loopback HTTP is insecure; use HTTPS or set allowInsecureHttp: true.",
     );
   }
 
@@ -83,14 +84,14 @@ export function normalizeLogtoEndpoint(
   try {
     decodedPathname = decodeURIComponent(pathname);
   } catch {
-    // Preserve URL's encoded pathname; malformed percent escapes are rejected
-    // by downstream servers rather than being interpreted as `/oidc` here.
+    // Preserve URL's encoded pathname. Downstream servers reject malformed
+    // percent escapes; this code does not try to read them as `/oidc`.
   }
   const decodedSegments = decodedPathname.replace(/\\/g, "/").split("/");
   const decodedLastSegment = decodedSegments[decodedSegments.length - 1] ?? "";
   if (decodedLastSegment.toLowerCase() === "oidc") {
     throw endpointError(
-      'use the Logto base URL, not the issuer URL ending in "/oidc".',
+      'Use the Logto base URL, not the issuer URL ending in "/oidc".',
     );
   }
 
@@ -120,7 +121,7 @@ export function buildLogtoEndpointUrl(
   oidcPath: string,
   searchParams?: URLSearchParams,
 ): string {
-  // The compatibility decision is made at the public config seam. Revalidate
+  // The public config seam makes the compatibility decision. Revalidate
   // all structural safety properties here without losing an accepted HTTP
   // self-hosted endpoint as it crosses into the component.
   const normalized = normalizeLogtoEndpoint(endpoint, {
@@ -135,8 +136,8 @@ export function buildLogtoEndpointUrl(
 }
 
 /**
- * Independently validate an absolute URL immediately before browser/native
- * navigation. Authorization and end-session URLs legitimately carry queries.
+ * Validate an absolute URL on its own, right before browser/native navigation.
+ * Authorization and end-session URLs carry queries by design.
  */
 export function normalizeHttpNavigationUrl(
   value: string,

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 //
-// `@logto/rn` does not proxy its errors the way the web SDK does — `signIn` and
-// `signOut` reject — and the documented pattern is `void signIn()` in an
+// `@logto/rn` does not proxy its errors the way the web SDK does. `signIn` and
+// `signOut` reject, and the documented pattern is `void signIn()` in an
 // `onPress`. These cover what an app can observe when either one fails: the
 // failure reaches `onAuthError` and the console *before* the promise rejects,
 // which it still does.

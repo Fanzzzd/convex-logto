@@ -591,7 +591,7 @@ function expectRefreshClaimReleased(
 
 /**
  * The refresh token may already have been rotated remotely, so the claim must
- * stay in place: the next presentation then ages into `claim-expired` instead
+ * stay in place. The next presentation then ages into `claim-expired` instead
  * of spending the same token a second time.
  */
 function expectRefreshClaimRetained(
@@ -793,8 +793,8 @@ describe("bounded token endpoint", () => {
   it("keeps every session when LOGTO_ENDPOINT drifts from Logto's issuer", async () => {
     // The operator repointed the deployment at a new custom domain while Logto
     // still issues the old `iss`. Credentials are fine, so Logto refreshes and
-    // rotates happily — deleting the row here would destroy every session in
-    // the deployment, one refresh at a time.
+    // rotates without complaint. Deleting the row here would destroy every
+    // session in the deployment, one refresh at a time.
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -809,7 +809,7 @@ describe("bounded token endpoint", () => {
       await expect(promise).rejects.toMatchObject({
         data: { kind: "transient", code: "id_token_mismatch" },
       });
-      // One mutation, not two: it stores the rotation *and* releases the claim.
+      // One mutation, not two. It stores the rotation *and* releases the claim.
       // Persisting without releasing would age into `claim-expired`, which
       // deletes the session this path exists to preserve; releasing without
       // persisting would re-present a superseded token and trip Logto's reuse
@@ -876,8 +876,9 @@ describe("bounded token endpoint", () => {
   });
 
   it("keeps a non-token 2xx terminal on the sign-in path", async () => {
-    // Sign-in cannot retry — the authorization code is spent either way — so
-    // the exchange must not inherit refresh's "unknown outcome, retry later".
+    // Sign-in cannot retry, because the authorization code is spent either
+    // way, so the exchange must not inherit refresh's "unknown outcome, retry
+    // later".
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response("<html>checking your browser</html>", {
         headers: { "Content-Type": "text/html" },
@@ -908,7 +909,7 @@ describe("bounded token endpoint", () => {
 
   it("rejects a malformed device key before spending the code", async () => {
     // A key that can never produce a valid proof should fail the sign-in it was
-    // offered to, not one refresh later — and never after the authorization code
+    // offered to, not one refresh later, and never after the authorization code
     // has bought a grant no one would hold.
     const runMutation = vi.fn();
     await expect(
@@ -936,7 +937,7 @@ describe("bounded token endpoint", () => {
   it("reports Logto's own rejection on the sign-in path, terminally", async () => {
     // `classifyTokenEndpointFailure` calls this transient for refresh's sake.
     // Here the transaction is already consumed, so a retry can only report
-    // `transaction_not_found` — and the operator never learns their client
+    // `transaction_not_found`, and the operator never learns their client
     // secret is wrong.
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ error: "invalid_client" }), {
@@ -973,7 +974,7 @@ describe("bounded token endpoint", () => {
 
   it("releases the claim when Logto answered but rotated nothing", async () => {
     // Logto rotates a confidential-client refresh token only at >=70% TTL, so
-    // most refreshes return none — the stored token stays current, which is what
+    // most refreshes return none. The stored token stays current, which is what
     // makes releasing the claim safe.
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
@@ -997,7 +998,7 @@ describe("bounded token endpoint", () => {
           >,
         ),
       ).toBe("lib:abandonRefreshWithRotation");
-      // No rotation to store, so none is sent — the stored token stays current.
+      // No rotation to store, so none is sent. The stored token stays current.
       expect(runMutation.mock.calls[1]?.[1]).not.toHaveProperty("refreshToken");
     } finally {
       fetchSpy.mockRestore();
@@ -1939,7 +1940,7 @@ describe("gc revocation watermarks", () => {
   type Row = Record<string, unknown> & { _id: string };
 
   /**
-   * A small index-aware fake for the whole `gc` mutation: the watermark sweep
+   * A small index-aware fake for the whole `gc` mutation. The watermark sweep
    * needs a chained `eq(...).lte(...)`, which the refresh harness above does
    * not model.
    */
@@ -2290,7 +2291,7 @@ const listRow = (
 });
 
 /**
- * Index-aware fake for the session-management handlers: `by_subject_createdAt`
+ * Index-aware fake for the session-management handlers. `by_subject_createdAt`
  * needs `gt` plus descending order, and the revocation markers must be
  * queryable so a logically-revoked row can be proven invisible.
  */
@@ -2380,7 +2381,7 @@ function sessionListHarness(
       },
     }),
     normalizeId: (_table: string, id: string) =>
-      // Only ids this deployment could have minted normalize — a foreign id is
+      // Only ids this deployment could have minted normalize. A foreign id is
       // rejected before any read, exactly as Convex does.
       id.startsWith("session-") ? id : null,
     get: (id: string) =>

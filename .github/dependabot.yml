@@ -11,8 +11,8 @@ updates:
         update-types:
           - minor
           - patch
-      # React and React DOM must be the exact same version — React throws
-      # "Incompatible React versions" at runtime otherwise — so they can only
+      # React and React DOM must be the exact same version. React throws
+      # "Incompatible React versions" at runtime otherwise, so they can only
       # move together.
       react:
         patterns:
@@ -23,14 +23,14 @@ updates:
       # @tanstack/react-start pins an *exact* @tanstack/react-router (1.168.46
       # depends on react-router 1.170.29), so bumping either one alone installs
       # a second copy of the router. The app's `createFileRoute` then comes from
-      # a build the Start plugin never augmented and loses the `server` option —
+      # a build the Start plugin never augmented and loses the `server` option,
       # which is how #97 and #98 both failed `docs#check-types`. They can only
       # move together.
       #
       # @tanstack/react-router-ssr-query rides along with a *floor* on
       # @tanstack/query-core (ssr-query-core 1.169.2 needs >= 5.102.0, for
       # `dehydrateQuery`), so a router bump can need a query bump in the same
-      # PR: #231 built against the old query-core and failed on that import.
+      # PR. #231 built against the old query-core and failed on that import.
       tanstack-router:
         patterns:
           - "@tanstack/react-router"
@@ -40,14 +40,14 @@ updates:
           - "@tanstack/router-plugin"
           - "@tanstack/react-query"
           - "@tanstack/query-*"
-      # Same shape: fumadocs-ui peer-depends on an *exact* fumadocs-core
+      # Same shape. fumadocs-ui peer-depends on an *exact* fumadocs-core
       # (16.10.2 requires core 16.10.2), and fumadocs-mdx tracks core's range.
       # A caret keeps them aligned within a major; across one it would not.
       fumadocs:
         patterns:
           - fumadocs-*
     ignore:
-      # Expo SDK modules are versioned in lockstep with the SDK: `expo@56`
+      # Expo versions its SDK modules in lockstep with the SDK. `expo@56`
       # bundles `expo-crypto@~56.0.4`, and a module from another SDK breaks the
       # native build while still typechecking, so CI cannot catch it. Upgrade
       # the whole SDK with `npx expo install --fix` instead.
@@ -55,22 +55,22 @@ updates:
       - dependency-name: expo-*
       - dependency-name: react-native
       - dependency-name: "@expo/*"
-      # Also SDK-pinned, just not under an `expo` name: `expo@56` bundles
+      # Also SDK-pinned, just not under an `expo` name. `expo@56` bundles
       # async-storage 2.2.0 (see expo/bundledNativeModules.json). Nothing in CI
       # builds native code, so a bump to 3.x goes green while
       # `npx expo install --check` would reject it.
       - dependency-name: "@react-native-async-storage/async-storage"
       # TypeScript 7 typechecks this workspace, but tsup 8.5.1 bundles
-      # rollup-plugin-dts 6.1.1, which crashes against it — and because it is
-      # bundled, a pnpm override cannot replace it. Revisit when tsup ships with
+      # rollup-plugin-dts 6.1.1, which crashes against it. Because tsup bundles
+      # it, a pnpm override cannot replace it. Revisit when tsup ships with
       # rollup-plugin-dts >= 6.5 (issue #102).
       - dependency-name: typescript
         update-types:
           - version-update:semver-major
-      # @types/node describes the Node major this workspace actually runs on —
-      # 22, in `ci.yml` and `release.yml`. A newer major types APIs the runtime
-      # does not have, so a script could typecheck green here and throw on the
-      # runner. Bump it deliberately when the workflows move to a new Node.
+      # @types/node describes the Node major this workspace runs on, 22 in
+      # `ci.yml` and `release.yml`. A newer major types APIs the runtime does
+      # not have, so a script could typecheck green here and throw on the
+      # runner. Bump it by hand when the workflows move to a new Node.
       - dependency-name: "@types/node"
         update-types:
           - version-update:semver-major
