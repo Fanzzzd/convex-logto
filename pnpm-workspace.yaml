@@ -2,3 +2,11 @@ packages:
   - packages/*
   - docs
   - examples/*
+
+# Resolve only versions published at least three days ago (minutes). This is
+# the gate Dependabot applies when it regenerates the lockfile, so a local
+# `pnpm update` that pulled a fresher version would leave every open
+# Dependabot PR unable to rebase until that version aged past it. It also
+# keeps a package published minutes ago, the shape of a hijacked release, out
+# of the lockfile. `pnpm install --frozen-lockfile` is unaffected.
+minimumReleaseAge: 4320
