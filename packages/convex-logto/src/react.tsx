@@ -16,6 +16,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useInsertionEffect,
   useMemo,
   useRef,
   useState,
@@ -153,9 +154,10 @@ function useAuthFromLogto() {
     isLoading,
     authFlowPending,
   );
-  useEffect(() => {
-    if (shouldSettle) setSettled(true);
-  }, [shouldSettle]);
+  // Latched during render, the way React documents for remembering a fact
+  // from an earlier render: it re-runs this component before committing, so
+  // the settled frame commits once instead of once plus an effect re-render.
+  if (shouldSettle && !settled) setSettled(true);
 
   // Merge concurrent fetches of the same kind into one in-flight promise, so
   // StrictMode double-invokes and overlapping WS auth attempts can't stack
@@ -296,20 +298,20 @@ function LogtoCallback({
       onResolved();
       return;
     }
-    // The user cancelled / there was no session — just return to the app.
+    // The user cancelled / there was no session: just return to the app.
+    // `done` is not set here; it only gates <CodeExchange>, which a benign or
+    // error outcome never mounts.
     if (outcome.kind === "benign") {
       resolved.current = true;
-      setDone(true);
       onResolved();
       goAfterSignIn();
       return;
     }
     // A setup error (e.g. invalid_scope): recoverable, not fatal. Report and
-    // return to the app logged out, instead of throwing during render — a throw
+    // return to the app logged out, instead of throwing during render. A throw
     // would blank any tree without an error boundary above the provider.
     if (outcome.kind === "error") {
       resolved.current = true;
-      setDone(true);
       reportAuthError(onAuthError, new Error(outcome.message));
       onResolved();
       goAfterSignIn();
@@ -527,13 +529,17 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
   }
 
   // Opt-in phase timings. The emitter is built once per mount and reads the
-  // handler through a ref, so an inline arrow never rebuilds anything — and
+  // handler through a ref, so an inline arrow never rebuilds anything, and
   // while the ref is empty (no `onAuthEvent`) an emit costs nothing.
   const onAuthEventRef = useRef(onAuthEvent);
-  // Assigned during render, not in an effect: child effects run before the
-  // parent's, so the `convex_authenticated` watcher below would emit into a
-  // ref that still held the previous render's handler.
-  onAuthEventRef.current = onAuthEvent;
+  // An insertion effect, because React runs every insertion effect of a
+  // commit before any passive effect. The `convex_authenticated` watcher below
+  // is a child, and a child's passive effect runs before this component's, so
+  // a passive effect here would hand it the previous render's handler.
+  useInsertionEffect(() => {
+    onAuthEventRef.current = onAuthEvent;
+  });
+  // oxlint-disable-next-line react/refs -- the emitter reads the ref at emit time, from effects and handlers, never during render
   const events = useMemo(() => createAuthEventEmitter(onAuthEventRef), []);
   useEffect(() => {
     events("bootstrap_start");
@@ -664,6 +670,7 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
             onResolved={endCallbackFlow}
           />
         ) : null}
+        {/* oxlint-disable-next-line react/hooks -- `useAuth` is a prop that takes a hook; that is Convex's API. */}
         <ConvexProviderWithAuth client={client} useAuth={useAuthFromLogto}>
           <ConvexAuthPhaseWatcher events={events} />
           {children}
@@ -728,6 +735,10 @@ export function useLogtoAuth(): LogtoAuth {
           if (active) setUser(undefined);
         });
     } else {
+      // Deriving `user` from `isAuthenticated` instead would show the previous
+      // user's claims for a frame on the next sign-in, until the fetch above
+      // replaces them. Clearing them costs one render, at sign-out.
+      // oxlint-disable-next-line react/set-state-in-effect -- see above
       setUser(undefined);
     }
     return () => {

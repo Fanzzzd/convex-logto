@@ -9,6 +9,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ConvexLogtoProvider, useLogtoAuth } from "./native";
+import type { LogtoAuthEvent } from "./auth-events";
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -41,6 +42,7 @@ type ReportedAuth = {
 };
 let reportedAuth: ReportedAuth | null = null;
 
+let convexAuthenticated = false;
 vi.mock("convex/react", () => ({
   // The real provider calls `useAuth` and stops asking for a token after one
   // `null`. Calling it here is what makes the bridge's own contract observable.
@@ -54,7 +56,10 @@ vi.mock("convex/react", () => ({
     reportedAuth = useAuth();
     return children;
   },
-  useConvexAuth: () => ({ isLoading: false, isAuthenticated: false }),
+  useConvexAuth: () => ({
+    isLoading: false,
+    isAuthenticated: convexAuthenticated,
+  }),
 }));
 
 type AuthApi = ReturnType<typeof useLogtoAuth>;
@@ -65,23 +70,31 @@ function ApiProbe() {
 }
 
 let root: Root | null = null;
+function providerTree(
+  onAuthError?: (error: Error) => void,
+  onAuthEvent?: (event: LogtoAuthEvent) => void,
+) {
+  return (
+    <ConvexLogtoProvider
+      client={{} as never}
+      config={{ endpoint: "https://example.logto.app", appId: "app123" }}
+      redirectUri="io.logto://callback"
+      {...(onAuthError ? { onAuthError } : {})}
+      {...(onAuthEvent ? { onAuthEvent } : {})}
+    >
+      <ApiProbe />
+    </ConvexLogtoProvider>
+  );
+}
 async function renderProvider(onAuthError?: (error: Error) => void) {
   root = createRoot(document.createElement("div"));
   await act(async () => {
-    root!.render(
-      <ConvexLogtoProvider
-        client={{} as never}
-        config={{ endpoint: "https://example.logto.app", appId: "app123" }}
-        redirectUri="io.logto://callback"
-        {...(onAuthError ? { onAuthError } : {})}
-      >
-        <ApiProbe />
-      </ConvexLogtoProvider>,
-    );
+    root!.render(providerTree(onAuthError));
   });
 }
 
 beforeEach(() => {
+  convexAuthenticated = false;
   mockLogto.signIn.mockReset().mockResolvedValue(undefined);
   mockLogto.signOut.mockReset().mockResolvedValue(undefined);
   mockLogto.getIdToken.mockReset().mockResolvedValue(undefined);
@@ -192,4 +205,19 @@ it("a sign-in that fails leaves Convex disarmed", async () => {
     await capturedApi!.signIn().catch(() => {});
   });
   expect(reportedAuth?.isAuthenticated).toBe(false);
+});
+
+it("a handler passed on the render that authenticates sees convex_authenticated", async () => {
+  // Same commit-order contract as the web bridge: the child watcher's passive
+  // effect runs before the provider's, so the provider publishes the handler
+  // from an insertion effect.
+  const events: LogtoAuthEvent[] = [];
+  await renderProvider();
+
+  convexAuthenticated = true;
+  await act(async () => {
+    root!.render(providerTree(undefined, (event) => events.push(event)));
+  });
+
+  expect(events.map((event) => event.phase)).toEqual(["convex_authenticated"]);
 });

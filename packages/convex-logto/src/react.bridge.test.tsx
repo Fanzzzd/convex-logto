@@ -10,6 +10,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConvexLogtoProviderProps } from "./react";
 import { ConvexLogtoProvider, useLogtoAuth } from "./react";
+import type { LogtoAuthEvent } from "./auth-events";
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -51,6 +52,7 @@ type CapturedAuth = {
 };
 let capturedAuth: CapturedAuth | null = null;
 
+let convexAuthenticated = false;
 vi.mock("convex/react", () => ({
   ConvexProviderWithAuth: ({
     useAuth,
@@ -62,7 +64,10 @@ vi.mock("convex/react", () => ({
     capturedAuth = useAuth();
     return children;
   },
-  useConvexAuth: () => ({ isLoading: false, isAuthenticated: false }),
+  useConvexAuth: () => ({
+    isLoading: false,
+    isAuthenticated: convexAuthenticated,
+  }),
 }));
 
 // --- harness ----------------------------------------------------------------
@@ -121,6 +126,7 @@ function setUrl(url: string) {
 }
 
 beforeEach(() => {
+  convexAuthenticated = false;
   setUrl("http://localhost:3000/");
   mockLogto.isAuthenticated = false;
   mockLogto.isLoading = false;
@@ -557,4 +563,34 @@ it("a forced fetch is never satisfied by a plain in-flight fetch", async () => {
   await expect(plain).resolves.toBe("plain-token");
   await expect(forced).resolves.toBe("forced-token");
   expect(mockLogto.clearAccessToken).toHaveBeenCalledTimes(1);
+});
+
+it("a handler passed on the render that authenticates sees convex_authenticated", async () => {
+  // The watcher that reports the phase is a child, and a child's passive
+  // effect runs before the provider's. The provider has to publish the new
+  // handler before any passive effect of that commit, or the phase an app
+  // measures against is lost to the previous render's empty slot.
+  const events: LogtoAuthEvent[] = [];
+  await renderProvider();
+
+  convexAuthenticated = true;
+  await rerenderProvider({ onAuthEvent: (event) => events.push(event) });
+
+  expect(events.map((event) => event.phase)).toEqual(["convex_authenticated"]);
+});
+
+it("latches on the first settle and ignores the SDK's later isLoading churn", async () => {
+  // `@logto/react` toggles `isLoading` around every SDK call. Forwarding that
+  // to Convex after the first settle would flicker the identity on each one.
+  mockLogto.isLoading = true;
+  await renderProvider();
+  expect(capturedAuth?.isLoading).toBe(true);
+
+  mockLogto.isLoading = false;
+  await rerenderProvider();
+  expect(capturedAuth?.isLoading).toBe(false);
+
+  mockLogto.isLoading = true;
+  await rerenderProvider();
+  expect(capturedAuth?.isLoading).toBe(false);
 });
