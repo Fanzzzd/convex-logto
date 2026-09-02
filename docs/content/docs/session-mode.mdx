@@ -667,7 +667,7 @@ unreachable.
 | `navigate` | hard replace | Your router's navigate for soft post-sign-in navigation. |
 | `tokenStorage` | `"session"` | Where the ID token persists: `"session"` (per-tab; a fresh token restores without refresh only while its paired component-session marker remains), `"memory"` (strictest), `"local"`. The provider clears orphan ID tokens. |
 | `deviceBinding` | `false` | Bind refresh and revocation operations to a non-extractable IndexedDB-held ECDSA key. Cannot be combined with `cookieTransport`. |
-| `cookieTransport` | none | `{ endpoint?, fetch?, deviceBinding? }`: move the rotating session token into a persistent same-site HttpOnly cookie whose 190-day lifetime renews on every rotation. The reserved `deviceBinding` flag only activates the shared incompatibility assertion. |
+| `cookieTransport` | none | `{ endpoint?, fetch?, deviceBinding? }`. Moves the rotating session token into a persistent same-site HttpOnly cookie whose 190-day lifetime renews on every rotation. The reserved `deviceBinding` flag only activates the shared incompatibility assertion. |
 | `initialToken` / `initialSessionId` | none | Paired values from `handler.getInitialToken(request)` for authenticated SSR/hydration. |
 | `reactiveRevocation` | `true` | Subscribe to session liveness and drop auth live on revocation. |
 | `onAuthError` | none | Sign-in initiation and callback failures, plus opted-in device-key storage failures. The provider reports initiation failures before `signIn()` rejects, so `void signIn()` remains observable. |

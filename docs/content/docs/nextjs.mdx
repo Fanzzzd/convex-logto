@@ -110,9 +110,9 @@ Route Handlers, Server Actions, and the proxy (`middleware` before Next 16).
 Next.js would drop the rotated cookie, leaving the browser holding a superseded
 token. The browser eventually presents that token outside the reuse window, the
 component reads it as token reuse, and that kills the session. Use
-`readLogtoIdTokenCookie` below instead;
-`getInitialToken()` is still the right call **inside** a Route Handler, Server
-Action, or the proxy, where you can forward its headers.
+`readLogtoIdTokenCookie` below instead; `getInitialToken()` is still the right
+call **inside** a Route Handler, Server Action, or the proxy, where you can
+forward its headers.
 </Callout>
 
 ### Server-side rendering
@@ -167,8 +167,7 @@ Two consequences worth knowing before you turn it on:
 
 - The browser attaches a cookie to **every** same-origin request, so the ID
   token reaches access logs and proxies that an `Authorization` header does not.
-  That is the
-  custody trade-off, and it is why this is opt-in; see
+  That is the custody trade-off, and it is why this is opt-in; see
   [ADR 0002](https://github.com/Fanzzzd/convex-logto/blob/main/docs/adr/0002-token-custody.md).
 - The cookie is only as fresh as the last client-side refresh. If you want every
   server render to have a live token, refresh in the **proxy** (Next 16's rename

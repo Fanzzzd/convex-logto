@@ -192,16 +192,16 @@ truncates the advisory `client` descriptor to 32 code points per field.
 
 The generated `callback`, `refresh`, `signOut`, and `signOutEverywhere` actions
 also accept optional device-binding fields that `ConvexLogtoSessionProvider`
-sends (`devicePublicKey` and `deviceProof`). A bound
-Session verifies proof before refresh or revocation state changes. Existing
-callers and unbound Sessions do not send them and retain the unbound behavior.
+sends (`devicePublicKey` and `deviceProof`). A bound Session verifies proof
+before refresh or revocation state changes. Existing callers and unbound
+Sessions do not send them and retain the unbound behavior.
 
 ### `createLogtoSessionCookieHandler(opts)`
 
 Builds the [session mode cookie transport](/docs/session-mode#httponly-cookie-transport-optional)
 as a standard `(Request) => Promise<Response>` handler. Options are:
 
-- `sessionApi`: the same `api.auth` module passed to the provider;
+- `sessionApi`: the same `api.auth` module you pass to the provider;
 - `action(reference, args)`: calls the referenced public Convex action;
 - `allowedOrigins`: non-empty exact browser-origin allowlist;
 - `basePath`: default `/api/logto-session`;
@@ -213,16 +213,14 @@ as a standard `(Request) => Promise<Response>` handler. Options are:
   [`readLogtoIdTokenCookie`](#readlogtoidtokencookiesource).
 
 The six final path segments are `sign-in`, `callback`, `token`, `sign-out`,
-`sessions`, and `tokens`.
-Calls require POST, `x-convex-logto-csrf: 1`, and an allowed `Origin`;
-approved preflights receive credentialed CORS headers. The handler streams
-bodies through a 64 KiB limit and returns `413` for an oversized request.
-`signOutEverywhere` uses
-an internal selector on the existing `sign-out` route rather than a route of its
-own; `sessions` multiplexes `list` / `rename` / `revoke`, and `tokens`
-multiplexes `exchange` / `userinfo`, on an `op` field the same
-way. The `sessions` route never clears the cookie; revoking another device must
-not sign this one out. The cookie is fixed to
+`sessions`, and `tokens`. Calls require POST, `x-convex-logto-csrf: 1`, and an
+allowed `Origin`; approved preflights receive credentialed CORS headers. The
+handler streams bodies through a 64 KiB limit and returns `413` for an oversized
+request. `signOutEverywhere` uses an internal selector on the existing
+`sign-out` route rather than a route of its own; `sessions` multiplexes `list` /
+`rename` / `revoke`, and `tokens` multiplexes `exchange` / `userinfo`, on an
+`op` field the same way. The `sessions` route never clears the cookie; revoking
+another device must not sign this one out. The cookie is fixed to
 `__Host-convex-logto-session=<encoded-token>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=16416000`
 and rolls on every successful token rotation. Each roll renews the 190-day
 maximum age, matching the component's idle-session garbage collection window.
@@ -264,11 +262,12 @@ inside the function you call enforces revocation, as it does everywhere else.
 
 The handler **skips rather than clears** an ID token that is already expired,
 is not a JWT, or is too large for a cookie (over 3 KiB encoded). The previous
-cookie expires on its own instead of a size problem becoming a sign-out. Every exit that
-expires the session cookie expires this one with it: sign-out on success *and* on
-failure, and a terminal `/token` refresh. That holds even when `idTokenCookie` is
-off, so turning it off never strands a live token. Neither cookie is reachable
-from JavaScript, so a half-cleared pair is one nothing on the client can finish.
+cookie expires on its own instead of a size problem becoming a sign-out. Every
+exit that expires the session cookie expires this one with it: sign-out on
+success *and* on failure, and a terminal `/token` refresh. That holds even when
+`idTokenCookie` is off, so turning it off never strands a live token. Neither
+cookie is reachable from JavaScript, so a half-cleared pair is one nothing on
+the client can finish.
 
 Cookie transport and device binding cannot be combined. HttpOnly makes the
 session token unavailable to the JavaScript-held signing key, and cookie
@@ -545,11 +544,11 @@ There is no callback component to add; the provider completes the exchange on
 `callbackPath` and replace-navigates into the app itself.
 
 With `deviceBinding`, the provider fails with an error if IndexedDB is
-unavailable, sends only the public key during callback, and signs each rotating session token
-before refresh or revocation. Key eviction makes the next protected operation
-terminal and causes a clean re-authentication; unbound Sessions remain the
-default and are unaffected. See
-the [session-mode threat model and DBSC re-evaluation note](/docs/session-mode#device-binding-optional).
+unavailable, sends only the public key during callback, and signs each rotating
+session token before refresh or revocation. Key eviction makes the next
+protected operation terminal and causes a clean re-authentication; unbound
+Sessions remain the default and are unaffected. See the
+[session-mode threat model and DBSC re-evaluation note](/docs/session-mode#device-binding-optional).
 
 ### `useLogtoAuth()` (session)
 
@@ -577,8 +576,9 @@ Logto, not once it has arrived. The local credentials are already gone at that
 point, so the UI reads "signed out" while the request that ends the *Logto*
 session is still in flight. Issuing a **hard** navigation of your own after
 `await signOut()` supersedes it: `window.location.assign(...)`,
-`location.href = ...`, a full page load. The SSO session then survives a sign-out that looked
-like it worked. Logto signs the next visitor to that browser straight back in.
+`location.href = ...`, a full page load. The SSO session then survives a
+sign-out that looked like it worked. Logto signs the next visitor to that
+browser straight back in.
 
 A router `push`/`replace` is a soft, same-document navigation and is safe. If
 you need a hard one, pass the destination as `postLogoutRedirectUri` and let the

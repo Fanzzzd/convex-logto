@@ -28,7 +28,7 @@ export const createPost = mutation({
   handler: async (ctx, { body }) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("unauthenticated");
-    await ctx.db.insert("posts", { body, authorId: identity.subject }); // ← the link
+    await ctx.db.insert("posts", { body, authorId: identity.subject }); // the link
   },
 });
 ```

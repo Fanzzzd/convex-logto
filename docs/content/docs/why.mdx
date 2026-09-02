@@ -21,14 +21,14 @@ maintainer publishes. Logto's argument against them is that you can run it
 yourself, on your own data; if that is not an argument you need, take the
 first-party path.
 
-**You need organization *permissions*, and organization roles are not enough.** Logto issues
-fine-grained organization permissions only in an organization token, audienced
-`urn:logto:organization:{id}`, which Convex will not accept as a request
-credential. Membership and organization roles work here (they ride in the ID
-token); permissions do not. See [the token custody
+**You need organization *permissions*, and organization roles are not
+enough.** Logto issues fine-grained organization permissions only in an
+organization token, audienced `urn:logto:organization:{id}`, which Convex will
+not accept as a request credential. Membership and organization roles work here
+(they ride in the ID token); permissions do not. See [the token custody
 ADR](https://github.com/Fanzzzd/convex-logto/blob/main/docs/adr/0002-token-custody.md).
 
-## What bridge mode actually saves you
+## What bridge mode saves you
 
 Not that much, and it is worth being clear about it. Convex accepts any OIDC
 provider through `auth.config.ts`, so wiring Logto by hand is a real option. What
@@ -46,7 +46,7 @@ you would write yourself:
 If bridge mode were all this package did, "just write it yourself" would be
 reasonable advice.
 
-## What is actually hard to write yourself
+## What is hard to write yourself
 
 **[Session mode](/docs/session-mode).** The Logto refresh token lives in a Convex
 component, in tables your own app code cannot read; the browser holds a
@@ -85,11 +85,11 @@ loss.
 - **One source of truth per environment.** The Convex deployment serves its own
   Logto config to the frontend.
 - **Bridge and session mode present the same ID token to Convex**, so identity,
-  webhook sync, and environments are identical downstream, and moving between
+  webhook sync, and environments are the same downstream, and moving between
   them is an import change.
 
 ## Status
 
-Pre-1.0, so breaking changes land in minor versions until 1.0.
-The [roadmap issue](https://github.com/Fanzzzd/convex-logto/issues/35) tracks
-what "1.0" means and what is still missing.
+Pre-1.0, so breaking changes land in minor versions until 1.0. The
+[roadmap issue](https://github.com/Fanzzzd/convex-logto/issues/35) tracks what
+"1.0" means and what is still missing.

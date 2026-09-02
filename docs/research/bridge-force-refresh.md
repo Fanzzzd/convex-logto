@@ -6,11 +6,11 @@
 
 ## 结论先行
 
-1. **当前 bridge 的 forceRefresh 路径是正确的，无需修复。** `clearAccessToken()` 清空整个 access token map 后，`getAccessToken()`（无参）必然缓存 miss，带 refresh token 打 token endpoint；响应里的新 `id_token` 会被 `@logto/client` 验签后写入 storage，随后 `getIdToken()` 从 storage 读到的就是**新** ID token。整条链在客户端源码层逐行成立（见下文 §2–§4）。
+1. **当前 bridge 的 forceRefresh 路径是正确的，无需修复。** `clearAccessToken()` 清空整个 access token map 后，`getAccessToken()`（无参）必然缓存 miss，带 refresh token 打 token endpoint；响应里的新 `id_token` 会被 `@logto/client` 验签后写入 storage，随后 `getIdToken()` 从 storage 读到的就是**新** ID token。整条链在客户端源码层逐行成立（见下文 §2 到 §4）。
 2. **`clearAccessToken()` 是必要前置，不是多余动作。** 不清缓存时 `#getAccessToken` 会在缓存 access token 未过期时短路返回（[client.ts:542-544](https://github.com/logto-io/js/blob/e9d307c9ebfc8a9a7af85b6491314fa84eb8b681/packages/client/src/client.ts#L542-L544)），不打 endpoint、ID token 不轮换，那才违反 Convex 的强刷 contract。
 3. **服务端必定在响应里带新 `id_token`。** Logto core 的 refresh_token grant 无条件调用 `issueIdToken`，只要 grant scope 含 `openid` 就签发新 ID token 并放进响应体；`@logto/client` 的 `normalizeLogtoConfig` 默认强制加入 `openid`（`includeReservedScopes` 默认 true），`convex-logto` 不覆盖该默认。是否带 `resource` 参数不影响此判断（`issueIdToken` 用 grant 级 scope，不用 resource 过滤后的 access token scope）。
 4. **refresh token 缺失/过期时失败模式是干净的。** SDK 抛 `LogtoClientError('not_authenticated')` 或 token endpoint 返回 400；`@logto/react` 的 `proxy` 包装把异常吞掉并返回 `undefined`，于是 bridge 的 `if (!(await getAccessToken())) return null` 命中，Convex 转为未认证，不会把过期 ID token 回传给 Convex。
-5. **`@logto/client` 公开 API 没有显式「刷新 ID token」的方法。** 全类中除 `#handleSignInCallback`（登录回调）外，唯一写入新 ID token 的路径就是 `getAccessTokenByRefreshToken`，而它只能经 `getAccessToken` / `getOrganizationToken` 触达。当前 bridge 序列就是公开 API 下的规范（也是唯一）做法。
+5. **`@logto/client` 公开 API 没有显式"刷新 ID token"的方法。** 全类中除 `#handleSignInCallback`（登录回调）外，唯一写入新 ID token 的路径就是 `getAccessTokenByRefreshToken`，而它只能经 `getAccessToken` / `getOrganizationToken` 触达。当前 bridge 序列就是公开 API 下的规范（也是唯一）做法。
 6. 残余风险都很小且已标注（§7）：理论上的微秒级并发竞态、`clearAccessToken` 清掉全部 resource/org token 的性能副作用、以及服务端版本差异（本文以 Logto core master pin 的 fork 为准，未逐版本回溯）。
 
 ## 调研版本边界
@@ -44,7 +44,7 @@ async #clearAccessToken(): Promise<void> {
 
 [client.ts:534-555](https://github.com/logto-io/js/blob/e9d307c9ebfc8a9a7af85b6491314fa84eb8b681/packages/client/src/client.ts#L534-L555)（`#getAccessToken(resource?, organizationId?)`，无参即两者皆 `undefined`）：
 
-1. 门卫：`isAuthenticated()` = `Boolean(await this.getIdToken())`（[client.ts:166-168](https://github.com/logto-io/js/blob/e9d307c9ebfc8a9a7af85b6491314fa84eb8b681/packages/client/src/client.ts#L166-L168)），只查 ID token **存在性**，不查过期。所以「ID token 已过期但还在 storage」的强刷场景能通过门卫继续走刷新，不会死锁；反之 ID token 被清空（已登出）时抛 `LogtoClientError('not_authenticated')`。
+1. 门卫：`isAuthenticated()` = `Boolean(await this.getIdToken())`（[client.ts:166-168](https://github.com/logto-io/js/blob/e9d307c9ebfc8a9a7af85b6491314fa84eb8b681/packages/client/src/client.ts#L166-L168)），只查 ID token **存在性**，不查过期。所以"ID token 已过期但还在 storage"的强刷场景能通过门卫继续走刷新，不会死锁；反之 ID token 被清空（已登出）时抛 `LogtoClientError('not_authenticated')`。
 2. 用 `buildAccessTokenKey()`（无参 → key 为 `"@"`）查 map；**缓存命中且未过期时短路返回**（[client.ts:542-544](https://github.com/logto-io/js/blob/e9d307c9ebfc8a9a7af85b6491314fa84eb8b681/packages/client/src/client.ts#L542-L544)）。bridge 已在上一步清空 map，因此这里必然 miss。
 3. miss 后落入 `getAccessTokenByRefreshToken(undefined, undefined)`（[client.ts:554](https://github.com/logto-io/js/blob/e9d307c9ebfc8a9a7af85b6491314fa84eb8b681/packages/client/src/client.ts#L554)）。
 
@@ -53,7 +53,7 @@ async #clearAccessToken(): Promise<void> {
 - 无 refresh token → 抛 `LogtoClientError('not_authenticated', 'Refresh token not found')`（[client.ts:448-450](https://github.com/logto-io/js/blob/e9d307c9ebfc8a9a7af85b6491314fa84eb8b681/packages/client/src/client.ts#L448-L450)）。
 - 否则调 `fetchTokenByRefreshToken({ clientId, tokenEndpoint, refreshToken, resource: undefined, organizationId: undefined })`（[client.ts:456-465](https://github.com/logto-io/js/blob/e9d307c9ebfc8a9a7af85b6491314fa84eb8b681/packages/client/src/client.ts#L456-L465)）。`@logto/js` 侧只有 `resource` 为真值才附 `resource` 参数（[fetch-token.ts:101-103](https://github.com/logto-io/js/blob/e9d307c9ebfc8a9a7af85b6491314fa84eb8b681/packages/js/src/core/fetch-token.ts#L101-L103)），因此这是一次**纯 OIDC 的 `grant_type=refresh_token` POST**（[fetch-token.ts:91-123](https://github.com/logto-io/js/blob/e9d307c9ebfc8a9a7af85b6491314fa84eb8b681/packages/js/src/core/fetch-token.ts#L91-L123)）。也不带 `scope` 参数（bridge 不传 `scopes` 选项）→ 服务端按 refresh token 的全部 scope 处理。
 
-即：**无 resource 时不是「无事可做」，它请求的是 OIDC/userinfo 用途的默认 access token，这正是强制 endpoint 往返的载体。**
+也就是说，**无 resource 时它请求的是 OIDC/userinfo 用途的默认 access token，这正是强制 endpoint 往返的载体。**
 
 ## 3. 响应中的新 ID token 会被存储，`getIdToken()` 返回新值
 
@@ -97,7 +97,7 @@ Logto core（[logto-io/logto master `packages/core/package.json`](https://github
 
 关键机制在 `@logto/react` 层：`useLogto()` 返回的每个方法都过 `proxy` 包装，`catch` 里只 `handleError(error, …)`（写入 context 的 `error` 状态 + `console.error`），**不 rethrow，函数返回 `undefined`**（[react/src/hooks/index.ts:113-129](https://github.com/logto-io/js/blob/e9d307c9ebfc8a9a7af85b6491314fa84eb8b681/packages/react/src/hooks/index.ts#L113-L129)；`getAccessToken`/`getIdToken`/`clearAccessToken` 分别在 [134/138/148 行](https://github.com/logto-io/js/blob/e9d307c9ebfc8a9a7af85b6491314fa84eb8b681/packages/react/src/hooks/index.ts#L134-L148) 被包装）。
 
-于是 bridge 的 `if (!(await getAccessToken())) return null;`（react.tsx:76）正好接住所有失败：Convex 收到 `null` → 干净转为未认证，符合其 contract；不会出现「强刷失败却把过期 ID token 交回去」的循环。顺带说明：web 端 bridge 自己的 `try/catch`（react.tsx:71-84）实际接不到这三个调用的异常（proxy 已吞），是无害的兜底；native 端它是必要的（见 §6）。
+于是 bridge 的 `if (!(await getAccessToken())) return null;`（react.tsx:76）正好接住所有失败：Convex 收到 `null` → 干净转为未认证，符合其 contract；不会出现"强刷失败却把过期 ID token 交回去"的循环。顺带说明：web 端 bridge 自己的 `try/catch`（react.tsx:71-84）实际接不到这三个调用的异常（proxy 已吞），是无害的兜底；native 端它是必要的（见 §6）。
 
 ## 6. `native.tsx` 同构确认（@logto/rn → @logto/client@3.1.2）
 
@@ -105,7 +105,7 @@ Logto core（[logto-io/logto master `packages/core/package.json`](https://github
 
 ## 7. 残余不确定性（诚实标注）
 
-1. **服务端版本覆盖面。** §4 的服务端证据 pin 在 Logto core master（v1.42.0）所用 fork commit；自托管旧版 Logto 用的是更早的 node-oidc-provider（fork 或上游），本次未逐版本回溯。「refresh grant 在 scope 含 `openid` 时签发新 id_token」是 node-oidc-provider 上游长期行为（OIDC Core §12.2 允许），预期跨版本稳定，但这是推断而非逐版本验证。
+1. **服务端版本覆盖面。** §4 的服务端证据 pin 在 Logto core master（v1.42.0）所用 fork commit；自托管旧版 Logto 用的是更早的 node-oidc-provider（fork 或上游），本次未逐版本回溯。"refresh grant 在 scope 含 `openid` 时签发新 id_token"是 node-oidc-provider 上游长期行为（OIDC Core §12.2 允许），预期跨版本稳定，但这是推断而非逐版本验证。
 2. **理论并发竞态。** `getAccessToken` 被 `memoize`（client.ts:97）：若 app 代码恰好在 bridge `clearAccessToken()` 完成前发起了一次会走缓存命中路径的 `getAccessToken()`，bridge 随后的调用会合并到那个 in-flight promise，拿到清缓存前的旧 access token 而不打 endpoint → 该次强刷不轮换 ID token。窗口是几个 microtask 量级，且 `convex-logto` 自身在 web 链路里没有其他 `getAccessToken` 调用方；记录备查，不构成当前 bug。
 3. **性能副作用（非正确性）。** `clearAccessToken()` 清的是整个 map：若 app 另行缓存了 resource/organization token，每次 Convex 强刷都会连带清掉它们，下次使用需各自再打一次 refresh grant。当前 convex-logto 默认场景（无 resource）不受影响。
 4. 本次为纯源码级验证，未针对该路径补充 live 端到端观测（仓库现有 48 个测试全部通过，但无 forceRefresh 专项用例，可作为后续 ticket 07 的测试补强点）。
@@ -115,5 +115,5 @@ Logto core（[logto-io/logto master `packages/core/package.json`](https://github
 1. `clearAccessToken()` 清整个 accessTokenMap + 持久化项，不碰 idToken/refreshToken（§1）。
 2. 无参 `getAccessToken()` 不短路（map 已被清空）：带 refresh token 打 token endpoint，请求不含 `resource`/`scope` 参数（§2）。
 3. 响应含新 `id_token`（服务端恒返回，§4），客户端验签后 `setIdToken` 存入 storage，后续 `getIdToken()` 返回新值（§3）。
-4. 链条**确实轮换** ID token，不存在「强刷返回旧 token」的失败模式；`@logto/client` 也没有显式 refresh-ID-token API，当前序列即公开 API 下的规范做法（结论先行 #1/#5）。
+4. 链条**确实轮换** ID token，不存在"强刷返回旧 token"的失败模式；`@logto/client` 也没有显式 refresh-ID-token API，当前序列即公开 API 下的规范做法（结论先行 #1/#5）。
 5. refresh token 缺失/过期 → SDK 抛错 → react proxy 吞错返回 undefined → bridge 返回 null → Convex 干净登出（§5）。

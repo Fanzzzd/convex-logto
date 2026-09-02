@@ -7,8 +7,8 @@
 
 ## 结论先行
 
-1. **Convex bridge 与会话存储是两个不同模块。** `ConvexProviderWithAuth0`、`ConvexProviderWithClerk`、`ConvexProviderWithAuthKit` 都不保存长期凭证；它们只向上游 SDK 要一枚短期 JWT，再交给通用 `ConvexProviderWithAuth`。因此，不能用“Convex 官方也这样集成”来证明某一种 token storage 是安全默认。
-2. **直连 Convex WebSocket 时，浏览器 JavaScript 必须在某个时刻拿到 JWT。** Convex 的认证不是把应用域 Cookie 自动附到 WebSocket，而是客户端发送协议级 `Authenticate` 消息。`HttpOnly` 可以保护长期会话根或 refresh token，但不能同时做到“JWT 永不进入 JS”又让浏览器直接连接 Convex；后者需要把 Convex 访问也代理到 BFF。
+1. **Convex bridge 与会话存储是两个不同模块。** `ConvexProviderWithAuth0`、`ConvexProviderWithClerk`、`ConvexProviderWithAuthKit` 都不保存长期凭证；它们只向上游 SDK 要一枚短期 JWT，再交给通用 `ConvexProviderWithAuth`。因此，不能用"Convex 官方也这样集成"来证明某一种 token storage 是安全默认。
+2. **直连 Convex WebSocket 时，浏览器 JavaScript 必须在某个时刻拿到 JWT。** Convex 的认证方式是客户端发送协议级 `Authenticate` 消息，应用域 Cookie 不会自动附到 WebSocket。`HttpOnly` 可以保护长期会话根或 refresh token，但不能同时做到"JWT 永不进入 JS"又让浏览器直接连接 Convex；后者需要把 Convex 访问也代理到 BFF。
 3. **生态里不存在统一的 `localStorage` 默认。**
    - Convex 官方 Auth0 示例和纯 React `@convex-dev/auth` 确实使用 `localStorage`，优先 reload/跨 tab 体验。
    - Clerk 和 WorkOS 生产架构把长期会话根放在跨域 `HttpOnly` Cookie，只让短期 JWT 进入 JS。
@@ -32,7 +32,7 @@
 
 版本号用于锁定本次结论，不表示建议在本任务中升级依赖。
 
-## 先看共同底座：Convex WebSocket JWT bridge 做了什么
+## 先看共用的部分：Convex WebSocket JWT bridge 做了什么
 
 ### 认证成功以 Convex 后端确认为准
 
@@ -42,7 +42,7 @@
 - `isAuthenticated`
 - `fetchAccessToken({ forceRefreshToken })`
 
-它先调用 `client.setAuth(fetchAccessToken)`，但只有 Convex 后端接受 JWT、返回 identity transition 后，`useConvexAuth().isAuthenticated` 才会变成 `true`。所以 UI 权限门控应该看 Convex 的状态，而不是只看 Logto/Auth0/Clerk/WorkOS 的本地登录状态。Convex 的 [WorkOS under-the-hood 文档](https://docs.convex.dev/auth/authkit/#under-the-hood) 也明确描述了“取 token → 交给 Convex → 后端验签 → 客户端收到确认”的链路。
+它先调用 `client.setAuth(fetchAccessToken)`，但只有 Convex 后端接受 JWT、返回 identity transition 后，`useConvexAuth().isAuthenticated` 才会变成 `true`。所以 UI 权限门控应该看 Convex 的状态，而不是只看 Logto/Auth0/Clerk/WorkOS 的本地登录状态。Convex 的 [WorkOS under-the-hood 文档](https://docs.convex.dev/auth/authkit/#under-the-hood) 也明确描述了"取 token → 交给 Convex → 后端验签 → 客户端收到确认"的链路。
 
 Provider 用一个位于其他子组件之前的 effect 调 `setAuth`，并把清理 auth 的 effect 放在子组件之后，目的是让 query 的订阅/退订顺序保持正确。它不会因为认证还在初始化就卸载整个业务子树；安全内容通过 `AuthLoading` / `Authenticated` 状态门控。
 
@@ -55,7 +55,7 @@ Provider 用一个位于其他子组件之前的 effect 调 `setAuth`，并把�
 - 可把**长期凭证**留在 `HttpOnly` Cookie；
 - 可把给 Convex 的**短期 JWT**只放内存，并尽量缩短有效期；
 - 但只要浏览器直连 Convex，短期 JWT 就必须短暂地对 JS 可用；
-- 若要求“任何 bearer JWT 都不进入 JS”，必须由同源 BFF 代理数据访问，不能再使用当前浏览器直连 Convex 的模型。
+- 若要求"任何 bearer JWT 都不进入 JS"，必须由同源 BFF 代理数据访问，不能再使用当前浏览器直连 Convex 的模型。
 
 ### 默认 bootstrap 会先试 cache，再强刷一次
 
@@ -71,7 +71,7 @@ Convex 1.43 的认证状态机默认做三步：先取可能缓存的 token，�
 
 ## 凭证位置总表
 
-表中的“长期凭证”指能维持完整登录会话、反复换取短期 JWT 的材料；“短期 JWT”指直接交给 Convex 的 bearer token。
+表中的"长期凭证"指能维持完整登录会话、反复换取短期 JWT 的材料；"短期 JWT"指直接交给 Convex 的 bearer token。
 
 | 集成 / 拓扑 | 长期凭证 | 给 Convex 的短期 JWT | Cookie 属性与 JS 可见性 | reload 后的恢复路径 |
 |---|---|---|---|---|
@@ -98,7 +98,7 @@ Convex 官方 [Auth0 安装示例](https://docs.convex.dev/auth/auth0#configure-
 >
 ```
 
-因此，“Convex 官方 Auth0 quickstart 用了 localStorage”是事实；但这不是 Auth0 自身最安全的默认。Auth0 的[官方 token storage 指南](https://dev.auth0.com/docs/secure/security-guidance/data-security/token-storage) 推荐 SPA SDK，默认把 token 放内存，并解释 `localStorage` 是为跨 reload/跨 tab 持久性接受 XSS 可读风险的备选。其[官方源码](https://github.com/auth0/auth0-spa-js/blob/9992f878bca44badd494316521e4bd591caabe74/src/global.ts)也把 cache location 默认设为 memory；[`LocalStorageCache`](https://github.com/auth0/auth0-spa-js/blob/9992f878bca44badd494316521e4bd591caabe74/src/cache/cache-localstorage.ts)只是显式可选实现。
+因此，"Convex 官方 Auth0 quickstart 用了 localStorage"是事实；但这不是 Auth0 自身最安全的默认。Auth0 的[官方 token storage 指南](https://dev.auth0.com/docs/secure/security-guidance/data-security/token-storage) 推荐 SPA SDK，默认把 token 放内存，并解释 `localStorage` 是为跨 reload/跨 tab 持久性接受 XSS 可读风险的备选。其[官方源码](https://github.com/auth0/auth0-spa-js/blob/9992f878bca44badd494316521e4bd591caabe74/src/global.ts)也把 cache location 默认设为 memory；[`LocalStorageCache`](https://github.com/auth0/auth0-spa-js/blob/9992f878bca44badd494316521e4bd591caabe74/src/cache/cache-localstorage.ts)只是显式可选实现。
 
 Convex bridge 本身很薄：[源码](https://github.com/get-convex/convex-backend/blob/ace28270172bf82db6d308708bb4cc9feb8292e9/npm-packages/convex/src/react-auth0/ConvexProviderWithAuth0.tsx)调用 `getAccessTokenSilently({ detailedResponse: true })`，返回其中的 `id_token`；Convex 要求强刷时把 `cacheMode` 切到 `off`。
 
@@ -115,7 +115,7 @@ Convex bridge 本身很薄：[源码](https://github.com/get-convex/convex-backe
 
 ### 2. Convex 官方 `ConvexProviderWithClerk`
 
-Clerk 的领先点不是笼统的“用了 Cookie”，而是把长期与短期凭证拆开。Clerk 的[官方架构说明](https://clerk.com/docs/guides/how-clerk-works/overview#clerk-s-cookies-tokens-in-detail)给出：
+Clerk 的领先点是把长期与短期凭证拆开。Clerk 的[官方架构说明](https://clerk.com/docs/guides/how-clerk-works/overview#clerk-s-cookies-tokens-in-detail)给出：
 
 - 长期 `__client`：位于 Clerk Frontend API 域，`HttpOnly`、`SameSite=Lax`，是会话恢复根；
 - 短期 `__session`：位于应用域，约 60 秒，非 `HttpOnly`，因为客户端 SDK 需要读取并作为 header/JWT 使用；
@@ -146,7 +146,7 @@ WorkOS React SDK 的[官方源码](https://github.com/workos/authkit-js/blob/391
 
 启动时，SDK 看到 `workos-has-session` marker 后先执行 refresh，得到内存 access token 和 user；这意味着生产安全默认通常要付一次网络 RTT，相关逻辑见 [`create-client.ts`](https://github.com/workos/authkit-js/blob/391f328f66bc7aed194ba0fab521021babf72b6a/src/create-client.ts#L115-L143)。
 
-当前 `@convex-dev/workos@0.0.3` bridge 调用 `getAccessToken()`，却没有把 Convex 的 `forceRefreshToken` 映射成 WorkOS 的 `getAccessToken({ forceRefresh: true })`。因此它可以作为“薄 bridge”参照，但**不应原样复制其强刷行为**。
+当前 `@convex-dev/workos@0.0.3` bridge 调用 `getAccessToken()`，却没有把 Convex 的 `forceRefreshToken` 映射成 WorkOS 的 `getAccessToken({ forceRefresh: true })`。因此它可以作为"薄 bridge"参照，但**不应原样复制其强刷行为**。
 
 可借鉴：
 
@@ -156,7 +156,7 @@ WorkOS React SDK 的[官方源码](https://github.com/workos/authkit-js/blob/391
 
 ### 4. `@convex-dev/auth`：React
 
-这是 Convex 生态里最直接支持“自己签发 session + JWT”的实现。其[安全文档](https://labs.convex.dev/auth/security)明确说明为什么纯 React 默认让 JS 持有凭证：Convex 通常是第三方 origin、浏览器无法用应用的 server-only Cookie 填充 WebSocket Authenticate、React Native 的 Cookie 支持也不一致。
+这是 Convex 生态里最直接支持"自己签发 session + JWT"的实现。其[安全文档](https://labs.convex.dev/auth/security)明确说明为什么纯 React 默认让 JS 持有凭证：Convex 通常是第三方 origin、浏览器无法用应用的 server-only Cookie 填充 WebSocket Authenticate、React Native 的 Cookie 支持也不一致。
 
 默认 [`ConvexAuthProvider`](https://github.com/get-convex/convex-auth/blob/b58a384ced62e771275d27c7d2649d49de2db8ec/src/react/index.tsx) 使用 `localStorage`，并允许调用方注入任意 `TokenStorage`。实际存储键和流程见 [`src/react/client.tsx`](https://github.com/get-convex/convex-auth/blob/b58a384ced62e771275d27c7d2649d49de2db8ec/src/react/client.tsx)：
 
@@ -169,7 +169,7 @@ WorkOS React SDK 的[官方源码](https://github.com/workos/authkit-js/blob/391
 
 服务器默认 JWT 为 [1 小时](https://github.com/get-convex/convex-auth/blob/b58a384ced62e771275d27c7d2649d49de2db8ec/src/server/implementation/tokens.ts)，session 总时长与 inactive 时长默认都是 30 天。refresh token one-time rotation 有 10 秒并发复用窗口，并在窗口外检测旧 token 重用后使后代 token 失效，见 [`refreshSession.ts`](https://github.com/get-convex/convex-auth/blob/b58a384ced62e771275d27c7d2649d49de2db8ec/src/server/implementation/mutations/refreshSession.ts)。
 
-这说明 localStorage 可以配合 rotation、reuse detection、多 tab 锁和严格 XSS 防御做出一个可运行的 SPA 权衡；它并没有把 localStorage 变成“安全存储”。
+这说明 localStorage 可以配合 rotation、reuse detection、多 tab 锁和严格 XSS 防御做出一个可运行的 SPA 权衡；它并没有把 localStorage 变成"安全存储"。
 
 可借鉴：
 
@@ -195,7 +195,7 @@ Next.js 版本加入同源服务器后，安全边界明显更强。其 [Cookie 
 - 后续 refresh 通过同源 POST，proxy 从 `HttpOnly` Cookie 取真 refresh token；
 - middleware 在 JWT 接近到期时服务端预刷新，并检查跨 origin 请求。
 
-官方 [Next.js 安全文档](https://labs.convex.dev/auth/authz/nextjs)提醒：Cookie 自动携带意味着服务端 GET 不能产生副作用，否则会形成 CSRF 风险。这个模式不是“用了 Cookie 就自动安全”，而是同时需要 method discipline、origin 检查和 SameSite 策略。
+官方 [Next.js 安全文档](https://labs.convex.dev/auth/authz/nextjs)提醒：Cookie 自动携带意味着服务端 GET 不能产生副作用，否则会形成 CSRF 风险。用了 Cookie 不等于自动安全；这个模式同时需要 method discipline、origin 检查和 SameSite 策略。
 
 可借鉴到 `convex-logto` 的高安全模式：
 
@@ -254,7 +254,7 @@ Convex 官方 Next AuthKit recipe 使用 `@workos-inc/authkit-nextjs` 的 provid
 - `initialAuth`：SSR seed 用户认证状态；
 - `eagerAuth`：仅把 access token 放进一个约 30 秒、JS 可读的临时 Cookie，首渲染同步消费后删除，以省第一个 Server Action RTT；长期 refresh token 仍不暴露。参见官方 [`eagerAuth` 文档](https://github.com/workos/authkit-nextjs/blob/4c6bc9322631655d20461c9f369dde821131fcd9/README.md#L768-L790)。
 
-这说明安全与首屏速度不一定只能二选一：可以只对短 bearer 做一次性 bootstrap 暴露，长期会话仍留在 `HttpOnly` 边界。但这个模式需要服务端 SDK、加密 Cookie、刷新路由和严格的临时 token 生命周期。
+这说明安全与首屏速度不一定只能二选一。可以只对短 bearer 做一次性 bootstrap 暴露，长期会话仍留在 `HttpOnly` 边界。但这个模式需要服务端 SDK、加密 Cookie、刷新路由和严格的临时 token 生命周期。
 
 ## 首屏 bootstrap 对照
 
@@ -268,7 +268,7 @@ Convex 官方 Next AuthKit recipe 使用 `@workos-inc/authkit-nextjs` 的 provid
 | Better Auth React | static Convex site URL | session cache/请求 → `/convex/token` → WS 确认 | 否 | session cache；token promise dedupe |
 | Better Auth Next | static site/Convex URL | server Cookie → server JWT/getToken → `initialToken` → WS 确认 | 否 | SSR seed、JWT Cookie cache、preload query |
 
-共同特点是：公开的 issuer endpoint、app/client ID 都在 Provider 建立前已知。运行时多租户确实可能需要动态配置，但那是显式高级模式；不应让所有单租户应用默认支付一次 Convex query、一次 React remount 和一次额外 loading phase。
+共同特点是，公开的 issuer endpoint、app/client ID 都在 Provider 建立前已知。运行时多租户确实可能需要动态配置，但那是显式高级模式；不应让所有单租户应用默认支付一次 Convex query、一次 React remount 和一次额外 loading phase。
 
 ## 对 `convex-logto` 的具体建议
 
@@ -314,7 +314,7 @@ ConvexReactClient WebSocket Authenticate
 
 ## 最终判断
 
-对当前 `convex-logto`，最佳近期默认不是“把 Logto 的 localStorage 搬进 Cookie”，而是：
+对当前 `convex-logto`，最佳近期默认是：
 
 1. 静态传公开 Logto 配置，消除首屏 config query 与 Provider remount；
 2. 继续让 Logto SDK拥有 token，bridge 只做短期 ID token → Convex；
@@ -322,4 +322,4 @@ ConvexReactClient WebSocket Authenticate
 4. 明确把纯 SPA localStorage 标为便利性/兼容性权衡，而不是最安全行业默认；
 5. 另做真正的 BFF/Next.js 高安全模式：长期 refresh/session `HttpOnly`，JS 仅持短 JWT memory/SSR seed。
 
-这与 Convex 生态的真实演进方向一致：纯 SPA 方案接受 JavaScript 可见凭证以换取直连和跨 reload；更强方案利用同源服务器隔离长期会话，但仍只把短 JWT桥接到 Convex WebSocket。
+这与 Convex 生态的真实演进方向一致。纯 SPA 方案接受 JavaScript 可见凭证以换取直连和跨 reload；更强方案利用同源服务器隔离长期会话，但仍只把短 JWT桥接到 Convex WebSocket。

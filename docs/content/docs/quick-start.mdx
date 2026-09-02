@@ -23,7 +23,8 @@ tenant; Logto keeps the old key during a transition, so existing sessions stay s
 pnpm add convex-logto @logto/react
 ```
 
-`convex` and `react` are peers you already have. (React Native? See [Expo](/docs/react-native).)
+`convex` and `react` are peers you already have. For React Native, see
+[Expo](/docs/react-native).
 
 ## 1. Create a Logto app
 
@@ -31,7 +32,7 @@ In Logto Console → **Applications** → **Create application** → under
 **Single page app** pick your framework (e.g. **React**), **not** a
 **Third-party app**. A third-party app is for letting *other people's* apps sign
 in through your Logto; it withholds the `profile` / `email` scopes this package
-requests, so sign-in fails with `invalid_scope`. The app type can't be changed
+requests, so sign-in fails with `invalid_scope`. You can't change the app type
 after creation, so if you picked third-party, create a new Single page app.
 
 Note the **endpoint** (e.g. `https://auth.example.com`) and the **App ID**, and

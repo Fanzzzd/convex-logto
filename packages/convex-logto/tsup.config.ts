@@ -14,8 +14,8 @@ const external = [
 
 // Never set `clean` on any config here. These configs run concurrently, and
 // tsup's dts worker cleans `**/*.d.{ts,mts,cts}` across the whole outDir at
-// rollup `buildStart` with no negation — so one config's cleaner silently
-// deletes declarations its siblings have already emitted (egoist/tsup#1270).
+// rollup `buildStart` with no negation, so one config's cleaner deletes
+// declarations its siblings have already emitted (egoist/tsup#1270).
 // The build script deletes `dist` once, up front, instead.
 const shared = {
   dts: true,
@@ -54,7 +54,7 @@ export default defineConfig([
   },
   // Session mode's React entry. No Logto SDK dependency; ESM-only like the
   // other React entries. (The session *component* itself is built by
-  // `tsc -p tsconfig.component.json` into dist/component/, not by tsup — the
+  // `tsc -p tsconfig.component.json` into dist/component/, not by tsup. The
   // Convex CLI needs its file structure preserved.)
   {
     ...shared,

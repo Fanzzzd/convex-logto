@@ -59,9 +59,9 @@ logically revokes every component Session for that subject before bounded row
 cleanup.
 
 Existing component sessions created before this feature gain their `sid` on
-their next ID-token refresh (or on the next sign-in). A valid
-logout for an already-absent or not-yet-mapped `sid` still returns `200`, as the
-OIDC specification requires.
+their next ID-token refresh (or on the next sign-in). A valid logout for an
+already-absent or not-yet-mapped `sid` still returns `200`, as the OIDC
+specification requires.
 
 ## Validation and replay handling
 

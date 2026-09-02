@@ -131,7 +131,7 @@ beforeEach(() => {
   mockLogto.isAuthenticated = false;
   mockLogto.isLoading = false;
   mockLogto.error = undefined;
-  // Reset call history AND implementations back to the defaults — a plain
+  // Reset call history AND implementations back to the defaults. A plain
   // clearAllMocks leaves per-test implementations behind to leak forward.
   mockLogto.getIdToken.mockReset().mockResolvedValue("id-token");
   mockLogto.getAccessToken.mockReset().mockResolvedValue("at");
@@ -164,8 +164,8 @@ const flush = () =>
 it("C1: holds isLoading on the callback route while a code exchange is pending", async () => {
   setUrl("http://localhost:3000/callback?code=c123&state=s456");
   await renderProvider();
-  // Not authenticated, on /callback with a real code redirect: the bridge must
-  // report loading — never a settled logged-out frame (#11).
+  // Not authenticated, on /callback with a real code redirect. The bridge must
+  // report loading, never a settled logged-out frame (#11).
   expect(capturedAuth?.isLoading).toBe(true);
 });
 
@@ -200,7 +200,7 @@ it("benign callback (user cancelled) returns to the stashed returnTo via navigat
   await renderProvider({ navigate });
   await flush();
   expect(navigate).toHaveBeenCalledWith("/deep/page");
-  // The stash is consumed — a later sign-out/sign-in must not replay it.
+  // The stash is consumed. A later sign-out/sign-in must not replay it.
   expect(sessionStorage.getItem("convex-logto:returnTo")).toBeNull();
 });
 
@@ -298,7 +298,7 @@ it("stops holding isLoading once a callback resolves without authenticating", as
   // The provider is mounted above the router in every SPA example, so the soft
   // navigation out of /callback re-renders only the router subtree. Anything the
   // loading veto reads from `window.location` would stay frozen at "still on
-  // /callback", and Convex would sit at isLoading forever — the app never shows
+  // /callback", and Convex would sit at isLoading forever. The app never shows
   // a Sign in button again, and only a page reload recovers.
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
@@ -320,7 +320,7 @@ it("stops holding isLoading once a callback resolves without authenticating", as
 
 it("reports a sign-out that @logto/react swallowed", async () => {
   // The SDK reaches OIDC discovery before it clears tokens, then catches the
-  // failure into its own state and resolves the promise — so the user is still
+  // failure into its own state and resolves the promise, so the user is still
   // signed in with a live token while the button looks like it worked.
   const failure = new Error("failed to fetch openid-configuration");
   const onAuthError = vi.fn<(error: Error) => void>();
@@ -352,7 +352,7 @@ it("mounts the sign-in error observer once the callback has resolved", async () 
   // A router's `navigate` is asynchronous, so a provider re-render right after
   // the callback resolves can still see /callback in the URL. Gating the
   // observer on the URL leaves it unmounted for the rest of the page session,
-  // and the swallowed sign-in failure #53 exists to surface is lost again.
+  // and the swallowed sign-in failure #53 exists to report is lost again.
   const failure = new Error("OIDC discovery unreachable");
   const onAuthError = vi.fn<(error: Error) => void>();
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});

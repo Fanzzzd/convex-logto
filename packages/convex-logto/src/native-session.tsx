@@ -1,6 +1,6 @@
-// The `convex-logto/native-session` entry: the web session state machine with
-// Expo SecureStore and system-browser adapters. It intentionally does not
-// import @logto/rn; the Convex component owns every OIDC token exchange.
+// The `convex-logto/native-session` entry is the web session state machine
+// with Expo SecureStore and system-browser adapters. It does not import
+// @logto/rn on purpose; the Convex component owns every OIDC token exchange.
 
 import * as SecureStore from "expo-secure-store";
 import * as WebBrowser from "expo-web-browser";
@@ -67,7 +67,7 @@ export type ConvexLogtoSessionProviderProps = {
    * Self-reported description of this device ("ios", "iPhone 15", ...), stamped
    * on the session at sign-in so `listSessions()` can show the user something
    * recognisable. Advisory display data, never authenticated. Safe to pass as an
-   * inline object: only the three field values affect the engine.
+   * inline object, because only the three field values affect the engine.
    */
   clientDescriptor?: LogtoSessionClientDescriptor;
   /** Subscribe to `sessionValid` and drop auth immediately on revocation. Default true. */
@@ -75,8 +75,8 @@ export type ConvexLogtoSessionProviderProps = {
   /** Sign-in initiation plus recoverable OAuth, SecureStore, and system-browser failures. */
   onAuthError?: (error: Error) => void;
   /**
-   * Opt-in phase timings for the auth bootstrap — `bootstrap_start` through
-   * `convex_authenticated`, plus refresh, revocation and sign-out. Absent means
+   * Opt-in phase timings: `bootstrap_start` through `convex_authenticated` for
+   * the auth bootstrap, plus refresh, revocation and sign-out. Absent means
    * nothing is measured or emitted. See [`LogtoAuthEvent`](./auth-events).
    */
   onAuthEvent?: LogtoAuthEventHandler;
@@ -88,8 +88,8 @@ export type ConvexLogtoSessionProviderProps = {
  * ID token, and single-use OAuth state are all encrypted by SecureStore. Sign-in
  * and federated sign-out use expo-web-browser; there is no callback route.
  *
- * Device binding is intentionally absent: native credential persistence is
- * already bound to the OS keystore, and this surface never exposes that option.
+ * Device binding is absent on purpose. Native credential persistence is
+ * already bound to the OS keystore, so this entry never exposes that option.
  */
 export function ConvexLogtoSessionProvider({
   client,
@@ -101,7 +101,7 @@ export function ConvexLogtoSessionProvider({
   onAuthEvent,
   children,
 }: ConvexLogtoSessionProviderProps) {
-  // Refs, not `useMemo` dependencies: apps usually learn the device description
+  // Refs, not `useMemo` dependencies. Apps usually learn the device description
   // asynchronously, and rebuilding the engine to deliver it would restart the
   // mount state machine mid-sign-in.
   const onAuthErrorRef = useRef(onAuthError);
@@ -134,7 +134,7 @@ export function ConvexLogtoSessionProvider({
       // route cleanup or post-sign-in navigation to perform.
       navigate: () => {},
       onAuthError: (error) => onAuthErrorRef.current?.(error),
-      // Always wired, always through the ref: making this conditional would put
+      // Always wired, always through the ref. Making this conditional would put
       // the handler's presence in the memo's dependencies, and an app that
       // enables telemetry from an effect would rebuild the engine mid-mount.
       // The cost when no handler is set is one ref read per phase.
@@ -193,14 +193,14 @@ function useAuthFromSession() {
 }
 
 /**
- * `convex_authenticated` is the phase an app actually cares about — the first
- * moment an authenticated query can run — and only Convex knows when it
- * happens. Always mounted: whether anything is measured is decided per event by
- * the handler slot, so an `onAuthEvent` passed on a later render still works.
+ * `convex_authenticated` is the phase an app cares about, the first moment an
+ * authenticated query can run, and only Convex knows when it happens. Always
+ * mounted. The handler slot decides per event whether anything is measured,
+ * so an `onAuthEvent` passed on a later render still works.
  */
 function ConvexAuthPhaseWatcher({ engine }: { engine: SessionAuthEngine }) {
   const { isAuthenticated } = useConvexAuth();
-  // Keyed by engine, not a bare boolean: a replaced engine emits its own
+  // Keyed by engine, not a bare boolean. A replaced engine emits its own
   // `bootstrap_start`, and a `reported` that survived it would leave that span
   // open forever.
   const reportedFor = useRef<SessionAuthEngine | null>(null);
@@ -213,7 +213,7 @@ function ConvexAuthPhaseWatcher({ engine }: { engine: SessionAuthEngine }) {
 }
 
 /**
- * Reactive revocation: subscribe to the session's liveness; the moment the
+ * Reactive revocation. Subscribes to the session's liveness; the moment the
  * server deletes the session row (sign-out elsewhere, reuse detection, a
  * webhook revocation), Convex pushes `false`, SecureStore is cleared, and auth
  * drops in real time.
@@ -228,10 +228,10 @@ function RevocationWatcher() {
   const sessionId = snapshot.sessionId;
   const hasSessionId = sessionId !== null && sessionId.length > 0;
   // `useQueries`, not `useQuery`, because `useQuery` rethrows a query error
-  // during render and this component is a sibling of `{children}` — above every
+  // during render and this component is a sibling of `{children}`, above every
   // error boundary the app can install. A frontend deployed ahead of its Convex
-  // functions would otherwise blank the page for every signed-in user instead of
-  // merely losing reactive revocation. Here the error arrives as a value.
+  // functions would otherwise blank the page for every signed-in user instead
+  // of losing reactive revocation. Here the error arrives as a value.
   const queries = useMemo(() => {
     const request: RequestForQueries = {};
     if (hasSessionId) {
@@ -244,7 +244,7 @@ function RevocationWatcher() {
     if (valid instanceof Error) {
       engine.reportWatchFailure(
         new Error(
-          "convex-logto: reactive revocation is off — the sessionValid query failed. " +
+          "convex-logto: reactive revocation is off. The sessionValid query failed. " +
             "Sessions still expire on their own schedule.",
           { cause: valid },
         ),
@@ -269,10 +269,10 @@ export type LogtoSessionAuth = {
   signIn: () => Promise<void>;
   /**
    * Finish a sign-in whose deep link came back outside the system-browser
-   * promise — the OS reclaimed the app while Logto had it, so the app
+   * promise because the OS reclaimed the app while Logto had it, so the app
    * cold-started on the redirect instead of resuming.
    *
-   * Web needs no equivalent: the callback lives in the URL and the provider
+   * Web needs no equivalent. The callback lives in the URL and the provider
    * re-reads it on the next mount. Native's flow otherwise lives entirely in one
    * in-memory promise, so without this the user returns signed in at Logto and
    * signed out in the app, with no error.
@@ -290,7 +290,7 @@ export type LogtoSessionAuth = {
    * }, [completeSignIn]);
    * ```
    *
-   * Safe to call with any link: one that is not this app's `redirectUri`, or
+   * Safe to call with any link. One that is not this app's `redirectUri`, or
    * that carries no OIDC response, is ignored without disturbing a sign-in in
    * progress, and a duplicate delivery of the same URL waits for the first.
    *
@@ -316,8 +316,8 @@ export type LogtoSessionAuth = {
   }) => Promise<void>;
   /**
    * The caller's own sessions, for a "where am I signed in" screen. A snapshot,
-   * not a subscription — the session token it authenticates with rotates — so
-   * call it again after `renameSession` / `revokeSession`.
+   * not a subscription, because the session token it authenticates with
+   * rotates; call it again after `renameSession` / `revokeSession`.
    */
   listSessions: () => Promise<{
     sessions: LogtoSessionSummary[];
@@ -334,13 +334,13 @@ export type LogtoSessionAuth = {
   /**
    * Revoke one of the caller's own sessions, rejecting like `renameSession` for
    * an unknown id. Revoking the current one does not clear this device's
-   * credentials — call `signOut` for that.
+   * credentials; call `signOut` for that.
    */
   revokeSession: (targetSessionId: string) => Promise<void>;
   /**
-   * The current ID token — the Short bearer Convex validates. `null` when
+   * The current ID token, the short bearer Convex validates. `null` when
    * signed out, when the stored one has aged out, or while the engine is still
-   * restoring — so read it under `isAuthenticated`, which is false until the
+   * restoring, so read it under `isAuthenticated`, which is false until the
    * restore finishes.
    */
   getIdToken: () => string | null;
@@ -359,7 +359,7 @@ export type LogtoSessionAuth = {
   ) => Promise<LogtoResourceTokenClaims>;
   /**
    * What a Resource token authorizes. The resource must be listed in
-   * `resources` on `logtoSessionApi()` — Logto will not issue a token for a
+   * `resources` on `logtoSessionApi()`; Logto will not issue a token for a
    * resource the grant never named.
    */
   getAccessTokenClaims: (

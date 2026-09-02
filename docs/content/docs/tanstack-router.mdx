@@ -75,11 +75,11 @@ your `navigate`, but the router still renders that path first; without a route
 for it the user sees a 404 for the length of one round-trip. `replace: true`
 keeps the code-bearing URL out of history.
 
-Route guards work as above. `useLogtoAuth()` from
-`convex-logto/react-session` has the same `isAuthenticated` / `isLoading` pair
-(both come from Convex, so they flip only once Convex has accepted the token),
-and it adds `signOutEverywhere()` plus the `listSessions()` /
-`renameSession()` / `revokeSession()` device list.
+Route guards work as above. `useLogtoAuth()` from `convex-logto/react-session`
+has the same `isAuthenticated` / `isLoading` pair (both come from Convex, so
+they flip only once Convex has accepted the token), and it adds
+`signOutEverywhere()` plus the `listSessions()` / `renameSession()` /
+`revokeSession()` device list.
 
 A router-level guard is not an authorization boundary in either mode; it decides
 what to render, and the Convex function still has to check the identity itself.
