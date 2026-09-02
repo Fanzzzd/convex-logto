@@ -26,6 +26,11 @@ updates:
       # a build the Start plugin never augmented and loses the `server` option —
       # which is how #97 and #98 both failed `docs#check-types`. They can only
       # move together.
+      #
+      # @tanstack/react-router-ssr-query rides along with a *floor* on
+      # @tanstack/query-core (ssr-query-core 1.169.2 needs >= 5.102.0, for
+      # `dehydrateQuery`), so a router bump can need a query bump in the same
+      # PR: #231 built against the old query-core and failed on that import.
       tanstack-router:
         patterns:
           - "@tanstack/react-router"
@@ -33,6 +38,8 @@ updates:
           - "@tanstack/react-start"
           - "@tanstack/react-start-*"
           - "@tanstack/router-plugin"
+          - "@tanstack/react-query"
+          - "@tanstack/query-*"
       # Same shape: fumadocs-ui peer-depends on an *exact* fumadocs-core
       # (16.10.2 requires core 16.10.2), and fumadocs-mdx tracks core's range.
       # A caret keeps them aligned within a major; across one it would not.

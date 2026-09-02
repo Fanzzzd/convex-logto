@@ -24,6 +24,27 @@
       }
     ],
     "react/react-in-jsx-scope": "off",
+    // oxlint 1.79 folded the React Compiler rules into the react plugin's
+    // correctness and suspicious categories. This library is not compiled by
+    // the React Compiler, and the five below flag patterns this code uses on
+    // purpose; the comment beside each site says why. The rest of that set
+    // (set-state-in-render, purity, immutability, ...) stays on: it passes,
+    // and it catches real mistakes.
+    // The "latest handler" refs are assigned during render because child
+    // effects run before the parent's; an effect would hand the watcher the
+    // previous render's handler.
+    "react/refs": "off",
+    // `ConvexProviderWithAuth` takes the auth hook as a prop. That is Convex's
+    // API, not a hook used as a value.
+    "react/hooks": "off",
+    // The engine memo reads seed values (`seedRef.current`) that must stay out
+    // of its dependency list: a re-issued SSR token would otherwise rebuild
+    // the engine and abandon an in-flight callback exchange.
+    "react/memo-dependencies": "off",
+    "react/preserve-manual-memoization": "off",
+    // The one-frame settle effects write state from an effect so the settled
+    // frame is its own commit; each converges in one extra render.
+    "react/set-state-in-effect": "off",
     "typescript/consistent-type-assertions": [
       "error",
       {
@@ -61,6 +82,9 @@
     {
       "files": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/*.test-d.ts"],
       "rules": {
+        // Test doubles reassign module-level `let`s from inside a fake
+        // provider component to hand the next render a different answer.
+        "react/globals": "off",
         "vitest/expect-expect": "off",
         "vitest/no-conditional-expect": "off",
         "vitest/require-mock-type-parameters": "off",
