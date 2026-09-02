@@ -68,8 +68,13 @@ export function useNativeAuthState(
 ): { isLoading: boolean; isAuthenticated: boolean } {
   const [seenAuthenticated, setSeenAuthenticated] = useState(false);
   useEffect(() => {
-    if (seenAuthenticated !== isAuthenticated)
+    // From an effect, not during render: the loading pulse has to be a
+    // committed frame Convex can see, and a render-time update would fold it
+    // into the settled frame.
+    if (seenAuthenticated !== isAuthenticated) {
+      // oxlint-disable-next-line react/set-state-in-effect -- see above
       setSeenAuthenticated(isAuthenticated);
+    }
   }, [isAuthenticated, seenAuthenticated]);
   return nativeAuthState(isInitialized, isAuthenticated, seenAuthenticated);
 }

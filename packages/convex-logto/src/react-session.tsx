@@ -15,6 +15,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useInsertionEffect,
   useMemo,
   useRef,
   useSyncExternalStore,
@@ -187,39 +188,31 @@ export function ConvexLogtoSessionProvider({
   const cookieDeviceBinding = cookieTransport?.deviceBinding;
 
   // The engine must survive re-renders, but `navigate`/`onAuthError` are often
-  // inline arrows with a fresh identity each render — route them through refs
-  // so the engine stays stable and still always calls the latest one. The
-  // client descriptor rides along for a stronger reason: apps usually learn it
+  // inline arrows with a fresh identity each render. They go through refs so
+  // the engine stays stable and still calls the latest one. The client
+  // descriptor rides along for a stronger reason: apps usually learn it
   // asynchronously, and rebuilding the engine to deliver it would restart the
-  // mount state machine — abandoning an in-flight callback exchange and leaving
+  // mount state machine, abandoning an in-flight callback exchange and leaving
   // the tree signed out with a live session on the server.
+  // Same reason for `cookieTransport={{ fetch: (u, i) => fetch(u, i) }}`: a
+  // documented option, and an inline arrow changes identity on every render.
   const navigateRef = useRef(navigate);
   const onAuthErrorRef = useRef(onAuthError);
   const clientDescriptorRef = useRef(clientDescriptor);
   const onAuthEventRef = useRef(onAuthEvent);
-  useEffect(() => {
+  const cookieFetchRef = useRef(cookieFetch);
+  // An insertion effect, because React runs every insertion effect of a
+  // commit before any passive effect. The `convex_authenticated` watcher below
+  // is a child, and a child's passive effect runs before this component's, so
+  // a passive effect here would hand it the previous render's handler.
+  useInsertionEffect(() => {
     navigateRef.current = navigate;
     onAuthErrorRef.current = onAuthError;
     clientDescriptorRef.current = clientDescriptor;
+    onAuthEventRef.current = onAuthEvent;
+    cookieFetchRef.current = cookieFetch;
   });
-  // Assigned during render, not in an effect: child effects run before the
-  // parent's, so the `convex_authenticated` watcher below would emit into a
-  // ref that still held the previous render's handler.
-  onAuthEventRef.current = onAuthEvent;
 
-  // Seed values, not dependencies. `handler.getInitialToken()` rotates the
-  // cookie and mints a fresh ID token on every call, so re-running the SSR
-  // loader — `router.invalidate()`, a reload — hands back a different string
-  // every time. Rebuilding the engine for that abandons an in-flight exchange,
-  // spends the callback's single-use transaction under its replacement, and
-  // renders `isAuthenticated: false` with `isLoading: false` for a full
-  // re-auth round trip: a real signed-out flash.
-  const seedRef = useRef({ initialToken, initialSessionId });
-  seedRef.current = { initialToken, initialSessionId };
-  // Same reason: `cookieTransport={{ fetch: (u, i) => fetch(u, i) }}` is a
-  // documented option, and an inline arrow changes identity on every render.
-  const cookieFetchRef = useRef(cookieFetch);
-  cookieFetchRef.current = cookieFetch;
   const cookieFetchProxy = useCallback<typeof fetch>(
     (input, init) =>
       cookieFetchRef.current
@@ -228,6 +221,16 @@ export function ConvexLogtoSessionProvider({
     [],
   );
 
+  // `initialToken` and `initialSessionId` are seed values, not dependencies.
+  // `handler.getInitialToken()` rotates the cookie and mints a fresh ID token
+  // on every call, so re-running the SSR loader (`router.invalidate()`, a
+  // reload) hands back a different string every time. Rebuilding the engine
+  // for that abandons an in-flight exchange, spends the callback's single-use
+  // transaction under its replacement, and renders `isAuthenticated: false`
+  // with `isLoading: false` for a full re-auth round trip: a real signed-out
+  // flash. The engine reads them in its constructor, during this render,
+  // because its first snapshot has to match what the server rendered.
+  /* oxlint-disable react-hooks/exhaustive-deps -- see above */
   const engine = useMemo(() => {
     // Namespace storage by deployment so two dev apps on the same origin
     // (localhost) don't cross-read each other's sessions.
@@ -246,15 +249,12 @@ export function ConvexLogtoSessionProvider({
       storage,
       callbackPath,
       afterSignIn,
-      initialToken: seedRef.current.initialToken ?? undefined,
+      initialToken: initialToken ?? undefined,
       // Cookie mode always writes a non-secret marker. That both overwrites a
       // legacy localStorage credential and makes reload attempt the /token
       // route even though JavaScript cannot inspect the HttpOnly cookie.
       initialSession: usesCookieTransport
-        ? createCookieSessionMarker(
-            storage.readSession(),
-            seedRef.current.initialSessionId,
-          )
+        ? createCookieSessionMarker(storage.readSession(), initialSessionId)
         : undefined,
       // The credential is an HttpOnly cookie only the server can expire, so a
       // failed revoke is a failed sign-out — not something to swallow.
@@ -287,6 +287,7 @@ export function ConvexLogtoSessionProvider({
     cookieDeviceBinding,
     deviceBinding,
   ]);
+  /* oxlint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
     engine.start();

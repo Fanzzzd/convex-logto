@@ -15,6 +15,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useInsertionEffect,
   useMemo,
   useRef,
   useState,
@@ -268,13 +269,17 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
   }
 
   // Opt-in phase timings. The emitter is built once per mount and reads the
-  // handler through a ref, so an inline arrow never rebuilds anything — and
+  // handler through a ref, so an inline arrow never rebuilds anything, and
   // while the ref is empty (no `onAuthEvent`) an emit costs nothing.
   const onAuthEventRef = useRef(onAuthEvent);
-  // Assigned during render, not in an effect: child effects run before the
-  // parent's, so the `convex_authenticated` watcher below would emit into a
-  // ref that still held the previous render's handler.
-  onAuthEventRef.current = onAuthEvent;
+  // An insertion effect, because React runs every insertion effect of a
+  // commit before any passive effect. The `convex_authenticated` watcher below
+  // is a child, and a child's passive effect runs before this component's, so
+  // a passive effect here would hand it the previous render's handler.
+  useInsertionEffect(() => {
+    onAuthEventRef.current = onAuthEvent;
+  });
+  // oxlint-disable-next-line react/refs -- the emitter reads the ref at emit time, from effects and handlers, never during render
   const events = useMemo(() => createAuthEventEmitter(onAuthEventRef), []);
   useEffect(() => {
     events("bootstrap_start");
@@ -346,6 +351,7 @@ export function ConvexLogtoProvider(props: ConvexLogtoProviderProps) {
       <AuthErrorContext.Provider value={onAuthError}>
         <TokenFailureContext.Provider value={tokenFailure}>
           <LogtoProvider config={logtoConfig}>
+            {/* oxlint-disable-next-line react/hooks -- `useAuth` is a prop that takes a hook; that is Convex's API. */}
             <ConvexProviderWithAuth client={client} useAuth={useAuthFromLogto}>
               <ConvexAuthPhaseWatcher events={events} />
               {children}
@@ -430,6 +436,10 @@ export function useLogtoAuth(): LogtoAuth {
           if (active) setUser(undefined);
         });
     } else {
+      // Deriving `user` from `isAuthenticated` instead would show the previous
+      // user's claims for a frame on the next sign-in, until the fetch above
+      // replaces them. Clearing them costs one render, at sign-out.
+      // oxlint-disable-next-line react/set-state-in-effect -- see above
       setUser(undefined);
     }
     return () => {

@@ -17,6 +17,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useInsertionEffect,
   useMemo,
   useRef,
   useSyncExternalStore,
@@ -106,14 +107,15 @@ export function ConvexLogtoSessionProvider({
   const onAuthErrorRef = useRef(onAuthError);
   const clientDescriptorRef = useRef(clientDescriptor);
   const onAuthEventRef = useRef(onAuthEvent);
-  useEffect(() => {
+  // An insertion effect, because React runs every insertion effect of a
+  // commit before any passive effect. The `convex_authenticated` watcher below
+  // is a child, and a child's passive effect runs before this component's, so
+  // a passive effect here would hand it the previous render's handler.
+  useInsertionEffect(() => {
     onAuthErrorRef.current = onAuthError;
     clientDescriptorRef.current = clientDescriptor;
+    onAuthEventRef.current = onAuthEvent;
   });
-  // Assigned during render, not in an effect: child effects run before the
-  // parent's, so the `convex_authenticated` watcher below would emit into a
-  // ref that still held the previous render's handler.
-  onAuthEventRef.current = onAuthEvent;
 
   const engine = useMemo(() => {
     const storage = new NativeSessionStorageArea(
@@ -151,6 +153,7 @@ export function ConvexLogtoSessionProvider({
 
   return (
     <SessionContext.Provider value={contextValue}>
+      {/* oxlint-disable-next-line react/hooks -- `useAuth` is a prop that takes a hook; that is Convex's API. */}
       <ConvexProviderWithAuth client={client} useAuth={useAuthFromSession}>
         {reactiveRevocation ? <RevocationWatcher /> : null}
         <ConvexAuthPhaseWatcher engine={engine} />
