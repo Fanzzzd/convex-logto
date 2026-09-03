@@ -431,7 +431,9 @@ export type LogtoSessionAuth = {
    * redirect to Logto and back to the provider's `callbackPath`. `returnTo`
    * (a same-origin path starting with `/`) is where the user lands after
    * sign-in completes; it overrides the provider's `afterSignIn`. Initiation
-   * failures reach `onAuthError` before this promise rejects.
+   * failures reach `onAuthError` before this promise rejects. Called while a
+   * `signOut` is in flight, it waits for that sign-out and resolves without
+   * starting anything once the page is leaving for Logto.
    */
   signIn: (options?: { returnTo?: string }) => Promise<void>;
   /**
