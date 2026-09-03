@@ -1426,6 +1426,39 @@ describe("signOut", () => {
     expect(handlers.signIn).not.toHaveBeenCalled();
   });
 
+  it("a second sign-out during the first keeps the gate until the first has navigated", async () => {
+    // A double-click. The second sign-out finds no local session, skips the
+    // revoke and never navigates. It must not release the gate the first one
+    // still owns.
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    const revoke = deferred<{ endSessionUrl: string }>();
+    handlers.signOut.mockReturnValue(revoke.promise);
+    handlers.signIn.mockResolvedValue({
+      url: "https://auth.example.com/oidc/auth?state=st-1",
+    });
+
+    const first = engine.signOut();
+    await vi.waitFor(() => expect(handlers.signOut).toHaveBeenCalledTimes(1));
+    await engine.signOut();
+    expect(handlers.signOut).toHaveBeenCalledTimes(1);
+    const signingIn = engine.signIn();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(handlers.signIn).not.toHaveBeenCalled();
+
+    revoke.resolve({
+      endSessionUrl: "https://auth.example.com/oidc/session/end?x",
+    });
+    await first;
+    await signingIn;
+
+    expect(handlers.signIn).not.toHaveBeenCalled();
+    expect(window.location.assign).toHaveBeenCalledTimes(1);
+    expect(window.location.assign).toHaveBeenCalledWith(
+      "https://auth.example.com/oidc/session/end?x",
+    );
+  });
+
   it("a sign-in waits for a sign-out that stays on the page, then proceeds", async () => {
     const { engine, storage, handlers } = makeHarness();
     storage.writeSession({ token: "t1", sessionId: "s1" });

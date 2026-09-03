@@ -1724,10 +1724,30 @@ export class SessionAuthEngine {
     // page is on its way to Logto; a sign-out that stays on the page (native,
     // `federated: false`, a failed navigation) releases the gate again, so
     // the next sign-in is an ordinary one.
+    //
+    // Chained onto any sign-out already in flight. A second click finds no
+    // local session, skips the revoke and never navigates; on its own it would
+    // settle false and release the gate while the first sign-out was still
+    // awaiting the server, reopening the window this exists to close. So the
+    // gate settles once every in-flight sign-out has, true if any navigated,
+    // and only the current gate may release the field.
     let navigated = false;
     let settle!: (navigated: boolean) => void;
-    this.inflightSignOut = new Promise<boolean>((resolve) => {
+    const own = new Promise<boolean>((resolve) => {
       settle = resolve;
+    });
+    const previous = this.inflightSignOut;
+    const gate =
+      previous === null
+        ? own
+        : Promise.all([previous, own]).then(
+            ([earlier, mine]) => earlier || mine,
+          );
+    this.inflightSignOut = gate;
+    void gate.then((anyNavigated) => {
+      if (!anyNavigated && this.inflightSignOut === gate) {
+        this.inflightSignOut = null;
+      }
     });
     try {
       await this.performSignOutInner(options, () => {
@@ -1735,7 +1755,6 @@ export class SessionAuthEngine {
       });
     } finally {
       settle(navigated);
-      if (!navigated) this.inflightSignOut = null;
     }
   }
 
