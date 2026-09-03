@@ -622,6 +622,14 @@ export class SessionAuthEngine {
   private inflightSignIn: Promise<void> | null = null;
   private inflightCompletion: Promise<void> | null = null;
   private inflightRefresh: Promise<string | null> | null = null;
+  /**
+   * The sign-out in progress, resolving to whether it handed the page to
+   * Logto's end-session endpoint. A sign-out clears local state before it
+   * makes that navigation, and `signIn` must not start in between; see
+   * `signInInner`. Stays set once the page is leaving, so nothing starts a
+   * sign-in during the unload either.
+   */
+  private inflightSignOut: Promise<boolean> | null = null;
   private recoveringFor: number | null = null;
   private storagePreparation: Promise<void> | null = null;
   /** Invalidates async credential work that started before a local sign-out. */
@@ -1172,6 +1180,15 @@ export class SessionAuthEngine {
           `paths to prevent open redirects.`,
       );
     }
+    // A sign-out clears local state, then awaits the server revoke, then
+    // hands the page to Logto's end-session endpoint. An app that sends every
+    // unauthenticated render to its sign-in route starts a sign-in inside
+    // that await. Its authorize navigation would cancel the end-session one,
+    // Logto's SSO cookie would answer it without a prompt, and the user who
+    // just signed out would be signed straight back in. Wait for the
+    // sign-out instead; once it has left the page there is nothing to start.
+    const signOut = this.inflightSignOut;
+    if (signOut !== null && (await signOut)) return;
     await this.prepareStorage();
     await this.options.deviceBinding?.prepare();
     const redirectUri =
@@ -1703,6 +1720,38 @@ export class SessionAuthEngine {
       postLogoutRedirectUri: string,
     ) => Promise<{ endSessionUrl?: string }>;
   }): Promise<void> {
+    // Published for `signInInner`, which waits on it. Resolves to whether the
+    // page is on its way to Logto; a sign-out that stays on the page (native,
+    // `federated: false`, a failed navigation) releases the gate again, so
+    // the next sign-in is an ordinary one.
+    let navigated = false;
+    let settle!: (navigated: boolean) => void;
+    this.inflightSignOut = new Promise<boolean>((resolve) => {
+      settle = resolve;
+    });
+    try {
+      await this.performSignOutInner(options, () => {
+        navigated = true;
+      });
+    } finally {
+      settle(navigated);
+      if (!navigated) this.inflightSignOut = null;
+    }
+  }
+
+  private async performSignOutInner(
+    options: {
+      postLogoutRedirectUri?: string;
+      federated: boolean;
+      requireServerSuccess: boolean;
+      revoke: (
+        sessionToken: string,
+        deviceProof: string | undefined,
+        postLogoutRedirectUri: string,
+      ) => Promise<{ endSessionUrl?: string }>;
+    },
+    onNavigate: () => void,
+  ): Promise<void> {
     // Fence first, before any async storage preparation or network work. A
     // refresh that began in the previous generation must never resurrect it.
     this.authGeneration += 1;
@@ -1844,6 +1893,7 @@ export class SessionAuthEngine {
           this.reportError(this.asError(error));
         }
       } else if (navigationUrl !== undefined) {
+        onNavigate();
         window.location.assign(navigationUrl);
       }
     }

@@ -644,7 +644,11 @@ signed-out until the user reloaded.
    invalidating a still-live sibling that shares Logto grant state.
 5. **Sign-out.** Clears local state first (other tabs sharing localStorage
    follow via the `storage` event), removes the component Session, then ends the
-   current browser's SSO session unless you disable federated sign-out.
+   current browser's SSO session unless you disable federated sign-out. An app
+   whose sign-in route calls `signIn()` on mount reaches it in that window, so
+   `signIn()` waits for the sign-out and starts nothing once the page is
+   leaving for Logto. Otherwise the authorize navigation would cancel the
+   end-session one and Logto's SSO cookie would sign the user straight back in.
 
 The client single-flights concurrent refreshes at three layers: per tab
 (in-flight merge), per browser (Web Locks), per session (a server-side claim). A

@@ -1388,6 +1388,69 @@ describe("signOut", () => {
     );
   });
 
+  it("a sign-in started while a federated sign-out is in flight starts nothing", async () => {
+    // The shape of every "protected route → /login → auto signIn()" app: the
+    // moment local state clears, the route tree bounces to sign-in and calls
+    // signIn() while the sign-out is still awaiting the server revoke. Its
+    // authorize navigation would cancel the end-session one, and Logto's SSO
+    // cookie would answer it without a prompt.
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    storage.writeIdToken(freshToken());
+    const revoke = deferred<{ endSessionUrl: string }>();
+    handlers.signOut.mockReturnValue(revoke.promise);
+    handlers.signIn.mockResolvedValue({
+      url: "https://auth.example.com/oidc/auth?state=st-1",
+    });
+
+    const signingOut = engine.signOut();
+    await vi.waitFor(() => expect(handlers.signOut).toHaveBeenCalled());
+    expect(engine.getSnapshot().status).toBe("unauthenticated");
+    const signingIn = engine.signIn();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(handlers.signIn).not.toHaveBeenCalled();
+
+    revoke.resolve({
+      endSessionUrl: "https://auth.example.com/oidc/session/end?x",
+    });
+    await signingOut;
+    await signingIn;
+
+    expect(handlers.signIn).not.toHaveBeenCalled();
+    expect(window.location.assign).toHaveBeenCalledTimes(1);
+    expect(window.location.assign).toHaveBeenCalledWith(
+      "https://auth.example.com/oidc/session/end?x",
+    );
+    // The page is leaving. A later sign-in stays put too.
+    await engine.signIn();
+    expect(handlers.signIn).not.toHaveBeenCalled();
+  });
+
+  it("a sign-in waits for a sign-out that stays on the page, then proceeds", async () => {
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    const revoke = deferred<Record<string, never>>();
+    handlers.signOut.mockReturnValue(revoke.promise);
+    handlers.signIn.mockResolvedValue({
+      url: "https://auth.example.com/oidc/auth?state=st-1",
+    });
+
+    const signingOut = engine.signOut({ federated: false });
+    await vi.waitFor(() => expect(handlers.signOut).toHaveBeenCalled());
+    const signingIn = engine.signIn();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(handlers.signIn).not.toHaveBeenCalled();
+
+    revoke.resolve({});
+    await signingOut;
+    await signingIn;
+
+    expect(handlers.signIn).toHaveBeenCalledTimes(1);
+    expect(window.location.assign).toHaveBeenCalledWith(
+      "https://auth.example.com/oidc/auth?state=st-1",
+    );
+  });
+
   it("local sign-out survives a dead server, and skips the SSO redirect", async () => {
     const { engine, storage, handlers } = makeHarness();
     storage.writeSession({ token: "t1", sessionId: "s1" });
