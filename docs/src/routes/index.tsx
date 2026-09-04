@@ -24,16 +24,16 @@ function Home() {
         </h1>
 
         <p className="mt-6 max-w-2xl text-lg text-fd-muted-foreground">
-          Logto auth for Convex React apps, with the least setup. One provider
-          on the frontend, one line on the backend, one source of truth across
-          environments.
+          Logto auth for Convex React and Expo apps. One provider on the
+          frontend, one line on the backend, every Logto value on the Convex
+          deployment. Revoked sessions sign out at once.
         </p>
 
         <div className="mt-10 w-full max-w-md">
           <pre className="overflow-x-auto rounded-xl border border-fd-border bg-fd-secondary/40 px-5 py-4 text-left font-mono text-sm">
             <code>
               <span className="text-fd-muted-foreground select-none">$ </span>
-              npm i convex-logto @logto/react
+              npm i convex-logto
             </code>
           </pre>
         </div>
@@ -68,9 +68,9 @@ function Home() {
         </div>
 
         <p className="mt-16 max-w-xl text-sm text-fd-muted-foreground">
-          Uses Logto&apos;s ID token over OIDC, so Convex auto-discovers the
-          signing key and algorithm. There is nothing about JWTs for you to
-          configure.
+          Hands Convex Logto&apos;s ID token over OIDC, so Convex discovers the
+          signing key itself. Your Convex deployment is the OAuth client. The
+          browser never holds a refresh token.
         </p>
       </main>
     </HomeLayout>

@@ -1,7 +1,7 @@
 {
   "$schema": "https://context7.com/schema/context7.json",
   "projectTitle": "convex-logto",
-  "description": "Use Logto (self-hosted or cloud) as the auth provider for Convex React apps. An ID-token OIDC bridge plus a signed webhook user-sync.",
+  "description": "Use Logto (self-hosted or cloud) as the auth provider for Convex React and Expo apps. Session mode keeps the Logto refresh token in a Convex component and pushes revocation to open clients. Bridge mode keeps Logto's SDK in the browser. Both hand Convex the OIDC ID token. Includes a signed webhook user sync and OIDC back-channel logout.",
   "folders": ["docs/content/docs", "packages/convex-logto"],
   "excludeFolders": [
     "node_modules",
@@ -12,10 +12,12 @@
   ],
   "excludeFiles": ["CHANGELOG.md"],
   "rules": [
-    "convex-logto bridges Logto's OIDC ID token into Convex auth. It uses the ID token on purpose. Logto access tokens are typed `at+jwt` and Convex rejects them.",
-    "Import server helpers (logtoAuthConfig, logtoConfigQuery, logtoSync, registerLogtoWebhook, verifyLogtoSignature) from `convex-logto`. Import React helpers (ConvexLogtoProvider, useLogtoAuth) from `convex-logto/react`, which is ESM-only.",
-    "Configure Logto via Convex deployment env vars: LOGTO_ENDPOINT, LOGTO_APP_ID (and LOGTO_WEBHOOK_SIGNING_KEY for webhook sync). The frontend needs no Logto config of its own when it pulls config from the backend via logtoConfigQuery + the ConvexLogtoProvider `configQuery` prop.",
-    "There is no JWT template, algorithm, or JWKS URL to configure. Convex auto-discovers them over OIDC (Logto signs ID tokens with ES384).",
-    "Peer dependencies: convex (required), plus react and @logto/react on the frontend. Install with `npm i convex-logto @logto/react`."
+    "convex-logto hands Logto's OIDC ID token to Convex. It uses the ID token on purpose. Logto access tokens are typed `at+jwt` and Convex rejects them.",
+    "Session mode is the recommended mode. The Convex deployment is the OAuth client: create a Traditional web app in Logto, `app.use(logto)` from `convex-logto/convex.config` in convex/convex.config.ts, set LOGTO_ENDPOINT, LOGTO_APP_ID and LOGTO_CLIENT_SECRET on the deployment, re-export all eleven functions from `logtoSessionApi(components.logto)` in convex/auth.ts, and mount `ConvexLogtoSessionProvider` from `convex-logto/react-session` with `sessionApi={api.auth}`. No Logto SDK and no Logto config in the bundle.",
+    "Bridge mode is the alternative: a Single page app in Logto, `@logto/react` installed, `ConvexLogtoProvider` from `convex-logto/react` with static `config={{ endpoint, appId }}` (or `configQuery={api.logto.config}` backed by `logtoConfigQuery()`). Revocation waits for the ID token to expire.",
+    "Import server helpers (logtoAuthConfig, logtoSessionApi, assertSubjectHasActiveSession, logtoConfigQuery, logtoSync, registerLogtoWebhook, registerLogtoBackchannelLogout, createLogtoSessionCookieHandler, assertOrganizationRole) from `convex-logto`. The React entries `convex-logto/react-session` and `convex-logto/react` are ESM-only. Expo uses `convex-logto/native-session` or `convex-logto/native`.",
+    "Pass `{ initialAuthTokenReuse: true }` to `ConvexReactClient`. Without it Convex refetches a token on every page load, which spends a Logto refresh grant each time.",
+    "There is no JWT template, algorithm, or JWKS URL to configure; Convex discovers them over OIDC. Logto signs with ES384 by default, which Convex rejects silently, so rotate the tenant's OIDC signing key to RSA once.",
+    "Peer dependencies: convex and react. Install with `npm i convex-logto`; bridge mode also needs `@logto/react` (or `@logto/rn` on Expo)."
   ]
 }
