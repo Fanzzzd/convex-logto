@@ -56,7 +56,7 @@ export default { providers: [logtoAuthConfig()] };
 
 A public Convex query that serves `{ endpoint, appId, allowInsecureHttp? }` to
 a [bridge-mode](/docs/bridge-mode) frontend that resolves its Logto config at
-runtime, for one artifact serving many environments. Static `config` on the
+runtime, so the bundle carries no Logto values. Static `config` on the
 provider is the bridge-mode default; session mode needs neither, since every
 Logto value stays on the deployment.
 

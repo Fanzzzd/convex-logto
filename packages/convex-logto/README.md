@@ -8,7 +8,7 @@ Use [Logto](https://logto.io) (self-hosted or cloud) as the auth provider for a 
 
 - **One provider on the frontend.** `<ConvexLogtoSessionProvider>` signs in, finishes the callback, refreshes, and signs out. No Logto SDK in the bundle and no hand-rolled `useAuth` bridge.
 - **One line on the backend.** `logtoAuthConfig()` reads your env. No JWT template, no algorithm, no JWKS URL to copy.
-- **Every Logto value on the Convex deployment.** Endpoint, app id, and app secret live in `npx convex env`. The frontend build carries none of them, so one artifact serves dev, staging, and prod.
+- **Every Logto value on the Convex deployment.** Endpoint, app id, and app secret live in `npx convex env`. The frontend build carries none of them; the only per-environment value in the bundle is the Convex URL.
 - **Revoked sessions sign out at once.** A sign-out on another device, "sign out everywhere", a suspension, or an admin ending the session reaches every open tab through a Convex subscription, without waiting for the ID token to expire.
 
 It hands Convex Logto's **ID token** over OIDC, so Convex discovers the signing key and JWKS itself. The one Logto-side requirement is an RSA signing key; see [step 1](#1-create-a-logto-app).
@@ -243,7 +243,7 @@ npx convex env set --prod LOGTO_APP_ID        <prod-app-id>
 npx convex env set --prod LOGTO_CLIENT_SECRET <prod-app-secret>
 ```
 
-In session mode **the only thing that varies per environment is the Convex deployment the frontend points at** (`VITE_CONVEX_URL`). The same build serves every environment. In bridge mode with static `config`, set the two public Logto values in each frontend environment as well, or use `configQuery` to get the same single-source property.
+In session mode **the only thing that varies per environment is the Convex deployment the frontend points at** (`VITE_CONVEX_URL`, which Vite embeds at build time, so each environment still gets its own build). In bridge mode with static `config`, set the two public Logto values in each frontend environment as well, or use `configQuery` to keep them out of the bundle.
 
 [session-mode-docs]: https://convex-logto-docs.vercel.app/docs/session-mode
 [session-example]: https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session

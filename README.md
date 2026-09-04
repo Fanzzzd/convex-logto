@@ -26,8 +26,8 @@ something else)
   template, no signing algorithm, no JWKS URL; it validates Logto's **ID token**
   over OIDC, so Convex discovers the key itself.
 - **Every Logto value on the Convex deployment.** Endpoint, app id, and app
-  secret live in `npx convex env`. The frontend build carries none of them, so
-  one artifact serves every environment.
+  secret live in `npx convex env`. The frontend build carries none of them; the
+  only per-environment value in the bundle is the Convex URL.
 - **Revoked sessions sign out at once.** A sign-out on another device, "sign
   out everywhere", a suspension, or an admin ending the session reaches every
   open tab through a Convex subscription.

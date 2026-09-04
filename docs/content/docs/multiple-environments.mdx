@@ -20,9 +20,10 @@ npx convex env set --prod LOGTO_CLIENT_SECRET <prod-app-secret>
 
 In [session mode](/docs/session-mode) the frontend carries no Logto values,
 so **the only thing that varies per environment is the Convex deployment it
-points at**, which you already set via
-`VITE_CONVEX_URL` (or `NEXT_PUBLIC_CONVEX_URL`, `EXPO_PUBLIC_CONVEX_URL`). The
-same build serves every environment.
+points at**, which you already set via `VITE_CONVEX_URL` (or
+`NEXT_PUBLIC_CONVEX_URL`, `EXPO_PUBLIC_CONVEX_URL`). Vite, Next.js, and Expo
+embed that value at build time, so each environment still gets its own build;
+it differs from the others by that one URL.
 
 Each environment's Logto app needs its own Redirect URI and Post sign-out
 redirect URI, and, if you use them, its own [webhook](/docs/webhook-sync) and
@@ -36,8 +37,8 @@ provider takes the endpoint and app id from the frontend. With static `config`
 set the two public values in each frontend environment (`VITE_LOGTO_ENDPOINT`
 and `VITE_LOGTO_APP_ID`, or the `NEXT_PUBLIC_*` / `EXPO_PUBLIC_*` equivalents).
 
-To get session mode's one-artifact property in bridge mode, export
+To keep those two values out of the bundle as well, export
 `logtoConfigQuery()` from `convex/logto.ts` and pass
-`configQuery={api.logto.config}` to the provider. The frontend then pulls the
-two values from whichever deployment `VITE_CONVEX_URL` selects, at the cost of
-one query round trip before the Logto client can mount.
+`configQuery={api.logto.config}` to the provider. The frontend then pulls them
+from whichever deployment `VITE_CONVEX_URL` selects, at the cost of one query
+round trip before the Logto client can mount.

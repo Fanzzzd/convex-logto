@@ -84,7 +84,8 @@ loss.
 - **One provider on the frontend.** No hand-rolled `useAuth`.
 - **One line on the backend.** No JWT template, no algorithm, no JWKS URL.
 - **Every Logto value on the Convex deployment.** In session mode the
-  frontend build carries nothing, so one artifact serves every environment.
+  frontend build carries no Logto values; the only per-environment value in
+  the bundle is the Convex URL.
 - **Bridge and session mode present the same ID token to Convex**, so identity,
   webhook sync, and environments are the same downstream, and moving between
   them is a new Logto app and a provider swap.

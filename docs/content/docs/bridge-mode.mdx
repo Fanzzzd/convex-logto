@@ -116,8 +116,8 @@ up](/docs/how-it-works#what-you-give-up) before turning on
 also the only check that the grant still existed.
 
 <Callout>
-Want the frontend to carry no Logto values at all, for example one build
-serving many environments? Export `logtoConfigQuery()` from `convex/logto.ts`
+Want the frontend to carry no Logto values at all? Export
+`logtoConfigQuery()` from `convex/logto.ts`
 and pass `configQuery={api.logto.config}` in place of `config`. The provider
 renders the `fallback` prop (default `null`) until the query resolves, and
 children mount once. Session mode gets this for free.
