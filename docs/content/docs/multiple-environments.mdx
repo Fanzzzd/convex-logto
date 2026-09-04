@@ -18,9 +18,9 @@ npx convex env set --prod LOGTO_CLIENT_SECRET <prod-app-secret>
 # staging: target that deployment the same way
 ```
 
-In [session mode](/docs/session-mode) that is the whole story. The frontend
-carries no Logto values, so **the only thing that varies per environment is
-the Convex deployment it points at**, which you already set via
+In [session mode](/docs/session-mode) the frontend carries no Logto values,
+so **the only thing that varies per environment is the Convex deployment it
+points at**, which you already set via
 `VITE_CONVEX_URL` (or `NEXT_PUBLIC_CONVEX_URL`, `EXPO_PUBLIC_CONVEX_URL`). The
 same build serves every environment.
 

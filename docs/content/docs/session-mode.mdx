@@ -672,7 +672,8 @@ in your bundle, so call `getOrganizationToken` on it.</Callout>
 ## Choosing a mode
 
 Session mode is the default recommendation. It keeps long-lived credentials
-out of the browser, revokes live, and ships a bundle with no auth SDK. Stay on
+out of the browser, signs revoked sessions out at once, and ships a bundle with
+no auth SDK. Stay on
 **[bridge mode](/docs/bridge-mode)** if you want zero server-side state or
 you're already running it; it remains supported. Both modes present the same
 ID token to Convex, so `ctx.auth.getUserIdentity()` and the [webhook user

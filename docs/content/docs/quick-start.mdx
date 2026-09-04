@@ -57,15 +57,14 @@ npx convex env set LOGTO_APP_ID        your-app-id
 npx convex env set LOGTO_CLIENT_SECRET your-app-secret
 ```
 
-The app secret is the one Logto value that is a secret. It stays on the
-deployment and never reaches the browser.
+The app secret stays on the deployment and never reaches the browser.
 
 The endpoint may include a reverse-proxy path prefix, but it must be the Logto
 base URL (not the trailing `/oidc` issuer URL) and must not contain credentials,
 a query, or a fragment. The library requires HTTPS; loopback HTTP works for
 local development. If an existing self-hosted deployment can only be reached
 over non-loopback HTTP, add `allowInsecureHttp: true` to both `logtoAuthConfig`
-and `logtoSessionApi`. This is a compatibility escape hatch. Terminate TLS
+and `logtoSessionApi`. That option exists for compatibility. Terminate TLS
 instead when you can.
 
 ## 3. Wire Convex
@@ -207,7 +206,8 @@ That is the whole auth setup. Many apps need nothing more. From here:
 - [Auth in your app](/docs/auth-in-your-app) gates and routes on auth state.
 - [Session mode](/docs/session-mode) covers what you now have: the device
   list, `signOutEverywhere()`, device binding, the HttpOnly cookie transport
-  for apps with a same-site server, and how a failed refresh is classified.
+  for apps with a same-site server, and how the component classifies a
+  failed refresh.
 - [Webhook sync](/docs/webhook-sync) mirrors users into a table and, with the
   component attached, revokes a deleted or suspended user's sessions within
   seconds.

@@ -24,9 +24,9 @@ function Home() {
         </h1>
 
         <p className="mt-6 max-w-2xl text-lg text-fd-muted-foreground">
-          Logto auth for Convex React apps. One provider on the frontend, one
-          line on the backend, every Logto value on the Convex deployment, and
-          revocation that lands live.
+          Logto auth for Convex React and Expo apps. One provider on the
+          frontend, one line on the backend, every Logto value on the Convex
+          deployment. Revoked sessions sign out at once.
         </p>
 
         <div className="mt-10 w-full max-w-md">
@@ -69,7 +69,7 @@ function Home() {
 
         <p className="mt-16 max-w-xl text-sm text-fd-muted-foreground">
           Hands Convex Logto&apos;s ID token over OIDC, so Convex discovers the
-          signing key itself. Your Convex deployment is the OAuth client; the
+          signing key itself. Your Convex deployment is the OAuth client. The
           browser never holds a refresh token.
         </p>
       </main>

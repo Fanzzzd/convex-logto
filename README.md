@@ -28,8 +28,9 @@ something else)
 - **Every Logto value on the Convex deployment.** Endpoint, app id, and app
   secret live in `npx convex env`. The frontend build carries none of them, so
   one artifact serves every environment.
-- **Revocation lands live.** Sign-out on another device, "sign out everywhere",
-  a suspended user, or an admin ending the session drops the open tab at once.
+- **Revoked sessions sign out at once.** A sign-out on another device, "sign
+  out everywhere", a suspension, or an admin ending the session reaches every
+  open tab through a Convex subscription.
 
 ## Two modes, one identity model
 

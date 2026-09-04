@@ -16,13 +16,14 @@ Use [Logto](https://logto.io) (self-hosted or cloud) as the auth provider for a
 - **Every Logto value on the Convex deployment.** Endpoint, app id, and app
   secret live in `npx convex env`. The frontend build carries none of them, so
   one artifact serves dev, staging, and prod.
-- **Revocation lands live.** Sign-out on another device, "sign out everywhere",
-  a suspended user, or an admin ending the session drops the open tab at once,
-  not when the token expires.
+- **Revoked sessions sign out at once.** A sign-out on another device, "sign
+  out everywhere", a suspension, or an admin ending the session reaches every
+  open tab through a Convex subscription, without waiting for the ID token to
+  expire.
 
-Not sure this is the right package for you? [Why this package](/docs/why) is the
-honest comparison, including the cases where `@convex-dev/auth`, Clerk, or
-wiring Logto by hand is the better answer.
+Not sure this is the right package for you? [Why this package](/docs/why)
+compares it with `@convex-dev/auth`, Clerk, and wiring Logto by hand, and says
+when each of those is the better answer.
 
 ## Two modes
 

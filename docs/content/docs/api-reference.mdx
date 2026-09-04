@@ -150,8 +150,8 @@ export const {
 
 Options: `scopes` (server-configured; the browser can't request its own),
 `reuseWindowMs` (default 10s), `endpoint` / `appId` / `clientSecret` env
-overrides, and the same `allowInsecureHttp` compatibility escape hatch
-described above.
+overrides, and the same `allowInsecureHttp` compatibility option described
+above.
 
 `resources` is the input to
 [the token exchange](#organization-and-api-resource-tokens). Logto refuses to
@@ -495,8 +495,8 @@ Returns `{ isAuthenticated, isLoading, user, signIn, signOut,
 signOutEverywhere, listSessions, renameSession, revokeSession, getIdToken,
 getOrganizationTokenClaims, getAccessTokenClaims, getOrganizationToken,
 getAccessToken, fetchUserInfo }`. The first five are the same as bridge mode's
-hook. The token methods are covered under [Organization and API-resource
-tokens](#organization-and-api-resource-tokens).
+hook. [Organization and API-resource tokens](#organization-and-api-resource-tokens)
+covers the token methods.
 
 - `signIn({ returnTo? })`: one round-trip to mint the sign-in URL, then a
   full-page redirect. `returnTo` must be a same-origin path, at most 2048

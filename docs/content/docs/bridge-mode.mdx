@@ -10,8 +10,8 @@ bridges the ID token it issues into Convex. Nothing runs on the server beyond
 
 Pick it when you want zero server-side state, or when you already run it. The
 [Quick start](/docs/quick-start) sets up [session mode](/docs/session-mode)
-instead, which keeps the refresh token on your Convex deployment and revokes
-sessions live. The two present the same ID token to Convex, so everything
+instead, which keeps the refresh token on your Convex deployment and signs
+revoked sessions out at once. The two present the same ID token to Convex, so everything
 downstream is identical, and moving to session mode later is a new Logto app
 and a provider swap.
 
@@ -151,9 +151,9 @@ function Header() {
 The `void signIn()` event-handler form is fine. `@logto/react` catches a failed
 sign-in into its own state and resolves the promise, so the provider watches
 that state and delivers the failure to `onAuthError` and the console. A failed
-`signOut()` also reaches `onAuthError`, and it is worth acting on. The SDK
-reaches OIDC discovery before it clears tokens, so an unreachable Logto leaves
-the user signed in.
+`signOut()` also reaches `onAuthError`, and it matters. The SDK reaches OIDC
+discovery before it clears tokens, so an unreachable Logto leaves the user
+signed in.
 
 `signOut()` ends the Logto session and returns the user to your origin (the
 **Post sign-out redirect URI** from step 1). Pass

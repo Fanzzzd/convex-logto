@@ -9,7 +9,7 @@ Use [Logto](https://logto.io) (self-hosted or cloud) as the auth provider for a 
 - **One provider on the frontend.** `<ConvexLogtoSessionProvider>` signs in, finishes the callback, refreshes, and signs out. No Logto SDK in the bundle and no hand-rolled `useAuth` bridge.
 - **One line on the backend.** `logtoAuthConfig()` reads your env. No JWT template, no algorithm, no JWKS URL to copy.
 - **Every Logto value on the Convex deployment.** Endpoint, app id, and app secret live in `npx convex env`. The frontend build carries none of them, so one artifact serves dev, staging, and prod.
-- **Revocation lands live.** Sign-out on another device, "sign out everywhere", a suspended user, or an admin ending the session drops the open tab at once, not when the token expires.
+- **Revoked sessions sign out at once.** A sign-out on another device, "sign out everywhere", a suspension, or an admin ending the session reaches every open tab through a Convex subscription, without waiting for the ID token to expire.
 
 It hands Convex Logto's **ID token** over OIDC, so Convex discovers the signing key and JWKS itself. The one Logto-side requirement is an RSA signing key; see [step 1](#1-create-a-logto-app).
 
@@ -43,7 +43,7 @@ TanStack Router, TanStack Start, Next.js, and Expo are in the
 
 **Rotate the signing key to RSA first.** Convex only accepts ID tokens signed with **RS256** (or EdDSA); Logto signs with **ES384** by default, which Convex rejects without an error (sign-in looks fine, but `ctx.auth.getUserIdentity()` returns `null`). Rotate it once per tenant. In the Logto Console, open **Tenant settings → OIDC configs**, click **Rotate private keys**, and choose **RSA**. Logto keeps the old key during a transition, so existing sessions stay signed in.
 
-Then, in Logto Console → **Applications** → **Create application** → **Traditional web**. Pick this type even though your frontend is a SPA; the Convex deployment holds the app secret, and only a Traditional web app has one. The app type can't be changed after creation.
+Then, in Logto Console → **Applications** → **Create application** → **Traditional web**. Pick this type even though your frontend is a SPA; the Convex deployment holds the app secret, and only a Traditional web app has one. You can't change the app type after creation.
 
 Note the **endpoint** (e.g. `https://auth.example.com`), the **App ID**, and the **App Secret**, and add two URLs on the app (for each environment):
 
@@ -195,7 +195,7 @@ That is the whole auth setup. Many apps need nothing more. The runnable version 
 
 **Device binding.** `deviceBinding` on the provider requires an ECDSA proof from a non-extractable IndexedDB-held key whenever the client presents the rotating token, so a copied token cannot refresh or sign out from another device. Off by default; cannot be combined with the cookie transport.
 
-**Configuration faults never delete sessions.** A wrong `LOGTO_CLIENT_SECRET` or a moved `LOGTO_ENDPOINT` is reported as transient and the session survives, so fixing the env var is the whole recovery. Only Logto rejecting the grant itself deletes a session.
+**Configuration faults never delete sessions.** The component reports a wrong `LOGTO_CLIENT_SECRET` or a moved `LOGTO_ENDPOINT` as transient and keeps the session, so fixing the env var is the whole recovery. Only Logto rejecting the grant itself deletes a session.
 
 Runnable apps: [`examples/vite-react-session`][session-example] for the SPA shape and [`examples/nextjs-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs-session) for the cookie transport and server rendering with a real identity.
 
