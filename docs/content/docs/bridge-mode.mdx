@@ -1,0 +1,189 @@
+---
+title: Bridge mode
+description: Logto's SPA SDK in the browser, its ID token bridged into Convex. Zero server-side state.
+---
+
+Bridge mode is the other way to run this package. `@logto/react` signs in
+from the browser and owns the refresh token, and `<ConvexLogtoProvider>`
+bridges the ID token it issues into Convex. Nothing runs on the server beyond
+`auth.config.ts`.
+
+Pick it when you want zero server-side state, or when you already run it. The
+[Quick start](/docs/quick-start) sets up [session mode](/docs/session-mode)
+instead, which keeps the refresh token on your Convex deployment and revokes
+sessions live. The two present the same ID token to Convex, so everything
+downstream is identical, and moving to session mode later is a new Logto app
+and a provider swap.
+
+| | Bridge mode | Session mode |
+|---|---|---|
+| Logto app type | Single-page app | Traditional web |
+| Refresh token lives | browser `localStorage` | Convex component |
+| Frontend dependencies | `@logto/react` | none beyond `convex` + `react` |
+| Logto config in the bundle | endpoint + app id | nothing |
+| Sign-out elsewhere, user suspended | noticed at token expiry | pushed live |
+| Server-side state | none | one component |
+
+<Callout type="warn">
+**Rotate the Logto signing key to RSA first**, as in the [Quick
+start](/docs/quick-start). Convex rejects Logto's default ES384 without an
+error.
+</Callout>
+
+## Install
+
+```bash
+pnpm add convex-logto @logto/react
+```
+
+`convex` and `react` are peers you already have. For React Native, see
+[Expo](/docs/react-native), which uses `@logto/rn`.
+
+## 1. Create a Logto app
+
+In Logto Console → **Applications** → **Create application** → under
+**Single page app** pick your framework (e.g. **React**), **not** a
+**Third-party app**. A third-party app is for letting *other people's* apps sign
+in through your Logto; it withholds the `profile` / `email` scopes this package
+requests, so sign-in fails with `invalid_scope`. You can't change the app type
+after creation.
+
+Note the **endpoint** (e.g. `https://auth.example.com`) and the **App ID**, and
+add two URLs on the app (for each environment):
+
+- **Redirect URIs** → `http://localhost:5173/callback` (and your prod callback)
+- **Post sign-out redirect URIs** → `http://localhost:5173` (your app's origin,
+  and your prod origin)
+
+## 2. Set the config
+
+On your Convex deployment, which `auth.config.ts` reads to validate tokens:
+
+```bash
+npx convex env set LOGTO_ENDPOINT https://auth.example.com
+npx convex env set LOGTO_APP_ID   your-app-id
+```
+
+And in your frontend env (`.env.local`). Both are **public** OAuth values (the
+app id is a client id, not a secret), safe in the bundle:
+
+```bash
+VITE_LOGTO_ENDPOINT=https://auth.example.com
+VITE_LOGTO_APP_ID=your-app-id
+```
+
+The endpoint rules from the quick start apply here too. If a self-hosted
+deployment can only be reached over non-loopback HTTP, add
+`allowInsecureHttp: true` to `logtoAuthConfig` and to the provider's `config`.
+
+## 3. Wire Convex
+
+```ts title="convex/auth.config.ts"
+import { logtoAuthConfig } from "convex-logto";
+export default { providers: [logtoAuthConfig()] };
+```
+
+## 4. Wrap your app
+
+```tsx title="src/main.tsx"
+import { ConvexReactClient } from "convex/react";
+import { ConvexLogtoProvider } from "convex-logto/react";
+
+const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL, {
+  // Without this, Convex confirms the cached token and then refetches a fresh
+  // one at once, which spends a Logto refresh grant on every page load.
+  initialAuthTokenReuse: true,
+});
+
+root.render(
+  <ConvexLogtoProvider
+    client={convex}
+    config={{
+      endpoint: import.meta.env.VITE_LOGTO_ENDPOINT,
+      appId: import.meta.env.VITE_LOGTO_APP_ID,
+    }}
+    onAuthError={(error) => console.error("auth error", error)}
+  >
+    <App />
+  </ConvexLogtoProvider>,
+);
+```
+
+Static `config` is the default. It removes a config round trip from first
+paint, so sign-in is interactive on the first render. Read [what you give
+up](/docs/how-it-works#what-you-give-up) before turning on
+`initialAuthTokenReuse` here; in bridge mode the per-page-load round trip was
+also the only check that the grant still existed.
+
+<Callout>
+Want the frontend to carry no Logto values at all, for example one build
+serving many environments? Export `logtoConfigQuery()` from `convex/logto.ts`
+and pass `configQuery={api.logto.config}` in place of `config`. The provider
+renders the `fallback` prop (default `null`) until the query resolves, and
+children mount once. Session mode gets this for free.
+</Callout>
+
+## 5. Add a callback route
+
+`signIn()` lands on `/callback`. The provider finishes the OIDC code exchange;
+the route just needs to render. In a plain Vite app with no router:
+
+```tsx title="src/App.tsx"
+if (window.location.pathname === "/callback") return <p>Finishing sign in…</p>;
+```
+
+## 6. Sign in, and read the user
+
+```tsx
+import { useLogtoAuth } from "convex-logto/react";
+
+function Header() {
+  const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
+  if (isLoading) return null;
+  return isAuthenticated ? (
+    <button onClick={() => void signOut()}>Sign out ({user?.email ?? user?.sub})</button>
+  ) : (
+    <button onClick={() => void signIn()}>Sign in</button>
+  );
+}
+```
+
+The `void signIn()` event-handler form is fine. `@logto/react` catches a failed
+sign-in into its own state and resolves the promise, so the provider watches
+that state and delivers the failure to `onAuthError` and the console. A failed
+`signOut()` also reaches `onAuthError`, and it is worth acting on. The SDK
+reaches OIDC discovery before it clears tokens, so an unreachable Logto leaves
+the user signed in.
+
+`signOut()` ends the Logto session and returns the user to your origin (the
+**Post sign-out redirect URI** from step 1). Pass
+`signOut({ postLogoutRedirectUri: "https://app.com/bye" })` to land somewhere
+else; register that URI too.
+
+The `me` query from the [Quick start](/docs/quick-start#6-sign-in-and-read-the-user)
+works unchanged. The hook has the same five fields as the session-mode one, so
+[Auth in your app](/docs/auth-in-your-app) applies with the import swapped to
+`convex-logto/react`.
+
+## What differs from session mode
+
+- **Revocation waits for expiry.** An ID token stays valid until it expires no
+  matter what happens at Logto. With `initialAuthTokenReuse` on, a page load
+  does not ask Logto either, so a session ended at Logto lasts up to the ID
+  token's lifetime (an hour by default). Leave the option off to pay a round
+  trip per page load and notice sooner, or shorten the token's TTL in Logto.
+- **Organization tokens come from the SDK.** `useLogto().getOrganizationToken()`
+  from `@logto/react` is already in your bundle. Membership and roles still
+  ride in the ID token, so [`assertOrganizationRole`](/docs/api-reference#organization-authorization)
+  works the same.
+- **The webhook still syncs**, but there are no sessions for it to revoke, so
+  `registerLogtoWebhook(http, internal.logto.sync)` takes no `sessions`
+  option.
+- **`useLogtoAuth()` has no device list**, no `signOutEverywhere()`, and no
+  `federated` flag on `signOut()`.
+
+Runnable apps: [`examples/vite-react`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react),
+[`examples/tanstack-router-spa`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-router-spa),
+[`examples/tanstack-start`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-start),
+[`examples/nextjs`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs),
+and [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo).

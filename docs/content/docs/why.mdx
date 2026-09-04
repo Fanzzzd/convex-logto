@@ -41,14 +41,15 @@ you would write yourself:
 - `{ domain, applicationID }` in `auth.config.ts`, which is two lines.
 - The discovery that Logto's default OIDC signing algorithm is **ES384**, which
   Convex rejects. This costs an afternoon the first time; the package cannot fix
-  it either, but it tells you up front (see [Quick start](/docs/quick-start)).
+  it either, but it tells you up front (see [Bridge mode](/docs/bridge-mode)).
 
 If bridge mode were all this package did, "just write it yourself" would be
 reasonable advice.
 
 ## What is hard to write yourself
 
-**[Session mode](/docs/session-mode).** The Logto refresh token lives in a Convex
+**[Session mode](/docs/session-mode)**, which is what the [Quick
+start](/docs/quick-start) sets up. The Logto refresh token lives in a Convex
 component, in tables your own app code cannot read; the browser holds a
 short-lived ID token and a rotating application session token. That buys live
 revocation, a "where am I signed in" list, and a browser that holds nothing
@@ -82,11 +83,11 @@ loss.
 
 - **One provider on the frontend.** No hand-rolled `useAuth`.
 - **One line on the backend.** No JWT template, no algorithm, no JWKS URL.
-- **One source of truth per environment.** The Convex deployment serves its own
-  Logto config to the frontend.
+- **Every Logto value on the Convex deployment.** In session mode the
+  frontend build carries nothing, so one artifact serves every environment.
 - **Bridge and session mode present the same ID token to Convex**, so identity,
   webhook sync, and environments are the same downstream, and moving between
-  them is an import change.
+  them is a new Logto app and a provider swap.
 
 ## Status
 

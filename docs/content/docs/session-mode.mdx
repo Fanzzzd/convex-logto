@@ -4,7 +4,8 @@ description: Keep the Logto refresh token out of the browser. A Convex component
 ---
 
 Session mode makes your **Convex deployment the OAuth client** instead of the
-browser. A Convex component holds the Logto refresh token server-side; the
+browser. It is the recommended mode and what the [Quick start](/docs/quick-start)
+sets up. A Convex component holds the Logto refresh token server-side; the
 browser holds only two things:
 
 - a **short-lived ID token** (the bearer Convex validates; minutes of exposure,
@@ -14,8 +15,8 @@ browser holds only two things:
   superseded generations during the reuse window. Presentation after that
   window triggers reuse containment.
 
-Compared to the default [bridge mode](/docs/quick-start) (Logto's SPA SDK in the
-browser, refresh token in `localStorage`):
+Compared to [bridge mode](/docs/bridge-mode) (Logto's SPA SDK in the browser,
+refresh token in `localStorage`):
 
 | | Bridge mode | Session mode |
 |---|---|---|
@@ -38,96 +39,41 @@ transport section below.
 
 ## Setup
 
-### 1. Create a Traditional Web app in Logto
+The [Quick start](/docs/quick-start) walks through it step by step. The pieces:
 
-In Logto Console, open **Applications → Create application → Traditional web**. Add:
-
-- **Redirect URI** → `http://localhost:5173/callback`
-- **Post sign-out redirect URI** → `http://localhost:5173`
-
-Note the **App ID** and **App Secret**. As in bridge mode, the tenant's OIDC
-signing key must be **RSA** (Convex rejects Logto's default ES384; see the
-warning at the top of the [Quick start](/docs/quick-start)).
-
-### 2. Install the component
-
-```ts title="convex/convex.config.ts"
-import { defineApp } from "convex/server";
-import logto from "convex-logto/convex.config";
-
-const app = defineApp();
-app.use(logto);
-export default app;
-```
-
-### 3. Configure the deployment
-
-All Logto config lives server-side, including the app secret, which never
-reaches the browser:
-
-```bash
-npx convex env set LOGTO_ENDPOINT      https://your-logto.example.com
-npx convex env set LOGTO_APP_ID        your-traditional-web-app-id
-npx convex env set LOGTO_CLIENT_SECRET your-traditional-web-app-secret
-```
-
-The endpoint policy is HTTPS by default (loopback HTTP works for local
-development). For an existing HTTP-only, non-loopback self-hosted deployment,
-pass `{ allowInsecureHttp: true }` to both `logtoAuthConfig` and
-`logtoSessionApi`; prefer terminating TLS instead.
-
-`convex/auth.config.ts` is the same one line as bridge mode
-(`logtoAuthConfig()`); session mode validates the same OIDC ID token, just
-issued to the Traditional Web app.
-
-### 4. Expose the auth functions
-
-```ts title="convex/auth.ts"
-import { logtoSessionApi } from "convex-logto";
-import { components } from "./_generated/api";
-
-export const {
-  signIn,
-  callback,
-  refresh,
-  signOut,
-  signOutEverywhere,
-  listSessions,
-  renameSession,
-  revokeSession,
-  exchangeToken,
-  fetchUserInfo,
-  sessionValid,
-} = logtoSessionApi(components.logto);
-```
-
-Re-export all eleven with these exact names. The provider looks them up on the
-module you pass it. A missing one disables that feature with a named error
-rather than failing the build, so a rolling upgrade is safe.
-
-### 5. Mount the provider
-
-```tsx title="src/main.tsx"
-import { ConvexReactClient } from "convex/react";
-import { ConvexLogtoSessionProvider } from "convex-logto/react-session";
-import { api } from "../convex/_generated/api";
-
-const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
-
-<ConvexLogtoSessionProvider client={convex} sessionApi={api.auth}>
-  <App />
-</ConvexLogtoSessionProvider>;
-```
-
-Pass `{ initialAuthTokenReuse: true }` to the client too. Without it Convex
-refetches a token the moment it confirms the cached one, which in session mode
-means a Logto refresh grant *and* a session-token rotation on every page load;
-see [one token round trip per page load](/docs/how-it-works#one-token-round-trip-per-page-load-unless-you-opt-out).
+1. A **Traditional web** app in Logto, with `http://localhost:5173/callback` as
+   a Redirect URI and `http://localhost:5173` as a Post sign-out redirect URI.
+   The deployment holds its App Secret. The tenant's OIDC signing key must be
+   **RSA**, as in bridge mode; Convex rejects Logto's default ES384.
+2. `app.use(logto)` in `convex/convex.config.ts`, importing `logto` from
+   `convex-logto/convex.config`.
+3. `LOGTO_ENDPOINT`, `LOGTO_APP_ID`, and `LOGTO_CLIENT_SECRET` set with
+   `npx convex env set`. Every Logto value lives server-side; nothing reaches
+   the browser. The endpoint policy is HTTPS (loopback HTTP works for local
+   development). For an existing HTTP-only, non-loopback self-hosted
+   deployment, pass `{ allowInsecureHttp: true }` to both `logtoAuthConfig`
+   and `logtoSessionApi`; prefer terminating TLS instead.
+4. `convex/auth.config.ts` with the same one line as bridge mode,
+   `logtoAuthConfig()`. Session mode validates the same OIDC ID token, just
+   issued to the Traditional web app.
+5. `convex/auth.ts` re-exporting the eleven functions from
+   `logtoSessionApi(components.logto)` with their exact names: `signIn`,
+   `callback`, `refresh`, `signOut`, `signOutEverywhere`, `listSessions`,
+   `renameSession`, `revokeSession`, `exchangeToken`, `fetchUserInfo`,
+   `sessionValid`. The provider looks them up on the module you pass it. A
+   missing one disables that feature with a named error rather than failing
+   the build, so a rolling upgrade is safe.
+6. `<ConvexLogtoSessionProvider client={convex} sessionApi={api.auth}>` from
+   `convex-logto/react-session`, with `{ initialAuthTokenReuse: true }` on the
+   `ConvexReactClient`. Without it Convex refetches a token the moment it
+   confirms the cached one, which in session mode means a Logto refresh grant
+   *and* a session-token rotation on every page load; see [one token round
+   trip per page load](/docs/how-it-works#one-token-round-trip-per-page-load-unless-you-opt-out).
 
 That's the whole frontend. No `@logto/react`, no callback component. The
 provider finishes the exchange on `/callback` and replace-navigates back into
-the app by itself. `useLogtoAuth()` from `convex-logto/react-session` extends
-the bridge hook with `signOutEverywhere`:
+the app by itself. `useLogtoAuth()` from `convex-logto/react-session` has the
+five bridge-mode fields plus the session-management ones:
 
 ```tsx
 import { useLogtoAuth } from "convex-logto/react-session";
@@ -668,13 +614,15 @@ unreachable.
 | `sessionApi` | none | The module re-exporting `logtoSessionApi(...)`, e.g. `api.auth`. |
 | `callbackPath` | `"/callback"` | Route that finishes the redirect (exact match; must match the registered Redirect URI's path). |
 | `afterSignIn` | `"/"` | Where to land after sign-in; `signIn({ returnTo })` overrides. |
-| `navigate` | hard replace | Your router's navigate for soft post-sign-in navigation. |
+| `navigate` | hard replace | Your router's navigate for soft post-sign-in navigation. Prefer a replace-style one so the callback URL leaves history. |
 | `tokenStorage` | `"session"` | Where the ID token persists: `"session"` (per-tab; a fresh token restores without refresh only while its paired component-session marker remains), `"memory"` (strictest), `"local"`. The provider clears orphan ID tokens. |
 | `deviceBinding` | `false` | Bind refresh and revocation operations to a non-extractable IndexedDB-held ECDSA key. Cannot be combined with `cookieTransport`. |
 | `cookieTransport` | none | `{ endpoint?, fetch?, deviceBinding? }`. Moves the rotating session token into a persistent same-site HttpOnly cookie whose 190-day lifetime renews on every rotation. The reserved `deviceBinding` flag only activates the shared incompatibility assertion. |
+| `clientDescriptor` | none | `{ platform?, os?, browser? }`, the self-reported device description `listSessions()` shows. Display text only; never authenticated. |
 | `initialToken` / `initialSessionId` | none | Paired values from `handler.getInitialToken(request)` for authenticated SSR/hydration. |
 | `reactiveRevocation` | `true` | Subscribe to session liveness and drop auth live on revocation. |
-| `onAuthError` | none | Sign-in initiation and callback failures, plus opted-in device-key storage failures. The provider reports initiation failures before `signIn()` rejects, so `void signIn()` remains observable. |
+| `onAuthError` | none | Sign-in initiation, callback, and sign-out failures, plus opted-in device-key storage failures. The provider reports a failure before the promise rejects, so `void signIn()` remains observable. |
+| `onAuthEvent` | none | Opt-in phase timings for the auth bootstrap; see [Auth phase events](/docs/api-reference#auth-phase-events). Absent means nothing is measured. |
 
 `logtoSessionApi(component, opts?)` accepts `scopes` (server-set; the browser
 can't request its own), `reuseWindowMs`, env overrides, and two options that
@@ -723,13 +671,13 @@ in your bundle, so call `getOrganizationToken` on it.</Callout>
 
 ## Choosing a mode
 
-Stay on **bridge mode** if you want zero server-side state or you're already
-running it; it remains supported. Pick **session mode** to keep long-lived
-credentials out of the browser, get live revocation, and ship a bundle with no
-auth SDK. Both modes present the same ID token to Convex, so
-`ctx.auth.getUserIdentity()` and the [webhook user sync](/docs/webhook-sync)
-work the same, and migrating is a config change (new Logto app + provider
-swap), not a data migration.
+Session mode is the default recommendation. It keeps long-lived credentials
+out of the browser, revokes live, and ships a bundle with no auth SDK. Stay on
+**[bridge mode](/docs/bridge-mode)** if you want zero server-side state or
+you're already running it; it remains supported. Both modes present the same
+ID token to Convex, so `ctx.auth.getUserIdentity()` and the [webhook user
+sync](/docs/webhook-sync) work the same, and migrating is a config change (new
+Logto app + provider swap), not a data migration.
 
 See the runnable
 [vite-react-session example](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session).
