@@ -19,7 +19,7 @@ export const Route = createRootRoute({
       {
         name: "description",
         content:
-          "Logto auth for Convex React apps, with the least setup. ID-token over OIDC, one provider, one backend line.",
+          "Logto auth for Convex React apps. One provider, one backend line, every Logto value on the Convex deployment, revocation that lands live.",
       },
     ],
     links: [{ rel: "stylesheet", href: appCss }],

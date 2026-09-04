@@ -1,7 +1,7 @@
 {
   "name": "convex-logto",
   "version": "0.7.2",
-  "description": "Use Logto (self-hosted or cloud) as the auth provider for Convex React apps: an ID-token OIDC bridge plus a signed webhook user-sync, modeled on convex/react-clerk and @convex-dev/workos-authkit.",
+  "description": "Use Logto (self-hosted or cloud) as the auth provider for Convex React and Expo apps. Session mode keeps the Logto refresh token in a Convex component and revokes live; bridge mode keeps Logto's SDK in the browser. Both hand Convex the OIDC ID token, plus a signed webhook user-sync and back-channel logout.",
   "type": "module",
   "license": "MIT",
   "author": "Fanzzzd (https://github.com/Fanzzzd)",
@@ -12,6 +12,9 @@
     "authentication",
     "oidc",
     "react",
+    "react-native",
+    "expo",
+    "session",
     "webhook"
   ],
   "repository": {
