@@ -1,63 +1,78 @@
 ---
 title: Overview
-description: Logto auth for a Convex React app, with the least setup possible.
+description: Logto auth for a Convex React app. The Convex deployment holds the Logto credentials; the browser holds a short-lived ID token.
 ---
 
 Use [Logto](https://logto.io) (self-hosted or cloud) as the auth provider for a
-[Convex](https://convex.dev) React app, with the least setup possible.
+[Convex](https://convex.dev) React app.
 
-## The three "one X" promises
+## What you get
 
-- **One provider on the frontend.** `<ConvexLogtoProvider>` wires Logto +
-  Convex + the sign-in callback. No hand-rolled `useAuth` bridge.
+- **One provider on the frontend.** `<ConvexLogtoSessionProvider>` signs in,
+  finishes the callback, refreshes, and signs out. No Logto SDK in the bundle
+  and no hand-rolled `useAuth` bridge.
 - **One line on the backend.** `logtoAuthConfig()` reads your env. No JWT
   template, no algorithm, no JWKS URL to copy.
-- **One source of truth across environments.** The frontend can pull its Logto
-  config from the backend, so you configure Logto in one place per environment,
-  the Convex deployment.
+- **Every Logto value on the Convex deployment.** Endpoint, app id, and app
+  secret live in `npx convex env`. The frontend build carries none of them; the
+  only per-environment value in the bundle is the Convex URL.
+- **Revoked sessions sign out at once.** A sign-out on another device, "sign
+  out everywhere", a suspension, or an admin ending the session reaches every
+  open tab through a Convex subscription, without waiting for the ID token to
+  expire.
 
-Not sure this is the right package for you? [Why this package](/docs/why) is the
-honest comparison, including the cases where `@convex-dev/auth`, Clerk, or
-wiring Logto by hand is the better answer.
+Not sure this is the right package for you? [Why this package](/docs/why)
+compares it with `@convex-dev/auth`, Clerk, and wiring Logto by hand, and says
+when each of those is the better answer.
 
 ## Two modes
 
-- **Bridge mode** (the default everywhere below): Logto's SPA SDK signs in the
-  browser; the package bridges its ID token into Convex. Zero server-side
-  state.
-- **[Session mode](/docs/session-mode)**: a Convex component holds the Logto
-  refresh token server-side and rotates application session tokens with the
-  browser. The browser holds nothing long-lived, revocation lands live, and
-  there is no Logto SDK in the bundle.
+**Session mode** is the recommended path and what the [Quick
+start](/docs/quick-start) sets up. Your Convex deployment is the OAuth client.
+A Convex component holds the Logto refresh token in tables your app code cannot
+read, and the browser holds a short-lived ID token plus a rotating application
+session token.
 
-Both present the same ID token to Convex, so everything else on this site
-(identity, webhook sync, environments) applies to both. Whichever mode you
+**[Bridge mode](/docs/bridge-mode)** puts Logto's SPA SDK (`@logto/react`) in
+the browser and bridges its ID token into Convex. Zero server-side state, and
+the refresh token lives in `localStorage`. Pick it when you want no server
+state at all, or when you already run it. It stays supported.
+
+Both modes present the same ID token to Convex, so `ctx.auth.getUserIdentity()`,
+[webhook sync](/docs/webhook-sync), and [organization
+authorization](/docs/api-reference#organization-authorization) work the same.
+Moving between them is a new Logto app and a provider swap. Whichever mode you
 choose, apply the [SPA security baseline](/docs/security-baseline) to the code
 that shares the browser origin with authentication.
 
 ## ID token over OIDC
 
-It uses Logto's **ID token** over OIDC, so Convex auto-discovers the signing key
-and JWKS: no JWT template, no algorithm, no JWKS URL to configure. The one
-Logto-side requirement is that the OIDC signing key be **RSA/RS256** (Convex
-rejects Logto's default ES384). It's a one-time tenant rotation; see
-[Quick start](/docs/quick-start).
+The package hands Convex Logto's **ID token**, so Convex discovers the signing
+key and JWKS itself. The one Logto-side requirement is an **RSA** OIDC signing
+key. Convex rejects Logto's default ES384 without an error, so rotate the key
+once per tenant before anything else; the [Quick start](/docs/quick-start)
+starts there.
 
 ## Install
 
 ```bash
-pnpm add convex-logto @logto/react
+pnpm add convex-logto
 ```
 
-`convex` and `react` are peers you already have.
+`convex` and `react` are peers you already have. Bridge mode adds
+`@logto/react` (`@logto/rn` on Expo); Expo session mode adds
+`expo-secure-store` and `expo-web-browser`.
 
 ## Where to next
 
 **Get started**
 
-- [Quick start](/docs/quick-start): wire auth end to end (Vite) in six steps.
+- [Quick start](/docs/quick-start): session mode on Vite, end to end, in six
+  steps.
+- [Bridge mode](/docs/bridge-mode): the same six steps with the Logto SDK in the
+  browser.
 
-**Integrations**, the provider + callback lines for your framework:
+**Integrations**, where the provider mounts and where the callback goes:
 
 - [Vite](/docs/vite) · [TanStack Router](/docs/tanstack-router) ·
   [TanStack Start](/docs/tanstack-start) · [Next.js](/docs/nextjs) ·
@@ -65,49 +80,51 @@ pnpm add convex-logto @logto/react
 
 **Guides**
 
-- [SPA security baseline](/docs/security-baseline): CSP, Trusted Types,
-  third-party script hygiene, and least-privilege scopes.
-- [Session mode](/docs/session-mode): keep the refresh token out of the
-  browser, with reactive revocation.
+- [Session mode](/docs/session-mode): the threat model, the device list, device
+  binding, the HttpOnly cookie transport, and what happens when a refresh fails.
 - [Auth in your app](/docs/auth-in-your-app): render and route on auth state.
 - [Webhook sync](/docs/webhook-sync): mirror Logto users into a queryable
   Convex table.
-- [Multiple environments](/docs/multiple-environments): dev / staging / prod
-  with a single source of config.
+- [Back-channel logout](/docs/backchannel-logout): let Logto end sessions from
+  its side.
+- [SPA security baseline](/docs/security-baseline): CSP, Trusted Types,
+  third-party script hygiene, and least-privilege scopes.
+- [Multiple environments](/docs/multiple-environments): dev / staging / prod.
 
 **Reference**
 
 - [API reference](/docs/api-reference): every export and its signature.
-- [How it works](/docs/how-it-works): why the ID token, and why there's no JWT
-  config.
-- [Examples](https://github.com/Fanzzzd/convex-logto/tree/main/examples): runnable
-  apps for Vite, TanStack Router / Start, Next.js, and Expo.
+- [How it works](/docs/how-it-works): why the ID token, why there's no JWT
+  config, and the one Convex client option to turn on.
 
 ## Examples
 
-Runnable apps you can copy from; each wires the same package for a different
+Runnable apps you can copy from. Each wires the same package for a different
 framework:
 
 <Cards>
-  <Card title="Vite + React" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react">
-    Minimal setup: one provider + declarative auth gating.
+  <Card title="Vite + React, session mode" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session">
+    The quick start as an app: server-held refresh token, device list, live revocation.
   </Card>
-  <Card title="Vite + React (session mode)" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session">
-    Server-held refresh token, rotating session tokens, reactive revocation.
-  </Card>
-  <Card title="TanStack Router (SPA)" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-router-spa">
-    Route guards in beforeLoad, plus a webhook-synced users table with RBAC.
-  </Card>
-  <Card title="TanStack Start (SSR)" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-start">
-    One SSR-safe provider + beforeLoad route guards.
-  </Card>
-  <Card title="Next.js App Router" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs">
-    Client provider boundary + callback route.
-  </Card>
-  <Card title="Expo (React Native)" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo">
-    Native auth via convex-logto/native: no callback route, deep-link sign-in.
+  <Card title="Next.js App Router, session mode" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs-session">
+    HttpOnly cookie transport, server rendering with a real identity, document-only refresh in the proxy.
   </Card>
   <Card title="Expo, session mode" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo-session">
-    Server-held refresh token, SecureStore credentials, device list.
+    SecureStore credentials, deep-link sign-in, reclaimed-sign-in recovery.
+  </Card>
+  <Card title="Vite + React, bridge mode" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react">
+    One provider, static config, declarative auth gating.
+  </Card>
+  <Card title="TanStack Router (SPA), bridge mode" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-router-spa">
+    Route guards in beforeLoad, plus a webhook-synced users table with RBAC.
+  </Card>
+  <Card title="TanStack Start (SSR), bridge mode" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-start">
+    One SSR-safe provider and beforeLoad route guards.
+  </Card>
+  <Card title="Next.js App Router, bridge mode" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs">
+    Client provider boundary and a callback route.
+  </Card>
+  <Card title="Expo, bridge mode" href="https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo">
+    convex-logto/native on @logto/rn, no callback route.
   </Card>
 </Cards>

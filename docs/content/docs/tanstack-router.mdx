@@ -1,63 +1,27 @@
 ---
 title: TanStack Router
-description: Mount ConvexLogtoProvider in a TanStack Router SPA. Soft navigation, a callback route, and beforeLoad guards.
+description: Mount the provider in a TanStack Router SPA. Soft navigation, a callback route, and beforeLoad guards, in both modes.
 ---
 
 Finish [Quick start](/docs/quick-start) steps 1 to 3 (the backend is framework-agnostic),
 then wire the provider and callback the TanStack Router way.
 
-`configQuery` resolves the Logto endpoint and app id from the Convex deployment,
-so the frontend needs no Logto env vars. Add the query it reads:
-
-```ts title="convex/logto.ts"
-import { logtoConfigQuery } from "convex-logto";
-export const config = logtoConfigQuery();
-```
-
-## Provider
-
-Pass `navigate` so post-sign-in is a soft router navigation, not a full reload.
-
-```tsx title="src/main.tsx"
-const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
-
-root.render(
-  <ConvexLogtoProvider
-    client={convex}
-    configQuery={api.logto.config}
-    navigate={(to) => void router.navigate({ to })}
-  >
-    <RouterProvider router={router} />
-  </ConvexLogtoProvider>,
-);
-```
-
-## Callback route
-
-```tsx title="src/router.tsx"
-const callbackRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/callback",
-  component: () => <p>Finishing sign in…</p>,
-});
-```
-
-## Route guards
-
-For redirect-based protection you need auth **outside render**, in a route's
-`beforeLoad`. Lift `useLogtoAuth()` into the router `context` and guard there; the
-full pattern (with the `isLoading`-first check that avoids bouncing a just-returned
-user) is in [Auth in your app → Route guards](/docs/auth-in-your-app#route-guards-tanstack-router).
-
-Full app: [`examples/tanstack-router-spa`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-router-spa).
-
 ## Session mode
 
-[Session mode](/docs/session-mode) changes the provider and drops `configQuery`
-(no Logto config reaches the bundle); the router wiring is unchanged.
+Pass `navigate` so the post-sign-in landing is a soft router navigation rather
+than a full reload. `replace: true` keeps the code-bearing callback URL out of
+history.
 
 ```tsx title="src/main.tsx"
+import { ConvexReactClient } from "convex/react";
 import { ConvexLogtoSessionProvider } from "convex-logto/react-session";
+import { RouterProvider } from "@tanstack/react-router";
+import { api } from "../convex/_generated/api";
+import { router } from "./router";
+
+const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL, {
+  initialAuthTokenReuse: true,
+});
 
 root.render(
   <ConvexLogtoSessionProvider
@@ -70,22 +34,63 @@ root.render(
 );
 ```
 
-Keep the `/callback` route. The provider completes the exchange and then calls
+### Callback route
+
+Keep a `/callback` route. The provider completes the exchange and then calls
 your `navigate`, but the router still renders that path first; without a route
-for it the user sees a 404 for the length of one round-trip. `replace: true`
-keeps the code-bearing URL out of history.
+for it the user sees a 404 for the length of one round trip.
 
-Route guards work as above. `useLogtoAuth()` from `convex-logto/react-session`
-has the same `isAuthenticated` / `isLoading` pair (both come from Convex, so
-they flip only once Convex has accepted the token), and it adds
-`signOutEverywhere()` plus the `listSessions()` / `renameSession()` /
-`revokeSession()` device list.
+```tsx title="src/router.tsx"
+const callbackRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/callback",
+  component: () => <p>Finishing sign in…</p>,
+});
+```
 
-A router-level guard is not an authorization boundary in either mode; it decides
-what to render, and the Convex function still has to check the identity itself.
-Session mode adds `assertSubjectHasActiveSession(ctx, components.logto)` for
-functions that must also fail the moment a session is revoked, rather than when
-the ID token expires.
+### Route guards
+
+For redirect-based protection you need auth **outside render**, in a route's
+`beforeLoad`. Lift `useLogtoAuth()` into the router `context` and guard there.
+The full pattern, with the `isLoading`-first check that avoids bouncing a
+just-returned user, is in [Auth in your app → Route
+guards](/docs/auth-in-your-app#route-guards-tanstack-router).
+
+A router-level guard is not an authorization boundary. It decides what to
+render, and the Convex function still has to check the identity itself.
+`assertSubjectHasActiveSession(ctx, components.logto)` makes a function fail the
+moment a session is revoked, rather than when the ID token expires.
 
 Full app: [`examples/vite-react-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session)
 (the session-mode wiring is router-independent).
+
+## Bridge mode
+
+[Bridge mode](/docs/bridge-mode) changes the provider and adds the two public
+Logto values to the frontend env. The router wiring is unchanged.
+
+```tsx title="src/main.tsx"
+import { ConvexLogtoProvider } from "convex-logto/react";
+
+root.render(
+  <ConvexLogtoProvider
+    client={convex}
+    config={{
+      endpoint: import.meta.env.VITE_LOGTO_ENDPOINT,
+      appId: import.meta.env.VITE_LOGTO_APP_ID,
+    }}
+    navigate={(to) => void router.navigate({ to, replace: true })}
+  >
+    <RouterProvider router={router} />
+  </ConvexLogtoProvider>,
+);
+```
+
+Keep the same `/callback` route. Route guards work as above; `useLogtoAuth()`
+from `convex-logto/react` has the same `isAuthenticated` / `isLoading` pair,
+and both come from Convex, so they flip only once Convex has accepted the
+token.
+
+Full app: [`examples/tanstack-router-spa`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/tanstack-router-spa),
+which also carries the [webhook-synced users table](/docs/webhook-sync) and
+RBAC.

@@ -1,63 +1,30 @@
 ---
 title: Vite + React
-description: Mount ConvexLogtoProvider in a Vite SPA. The Quick start, condensed to the Vite-specific pieces.
+description: Mount the provider in a Vite SPA. The Quick start, condensed to the Vite-specific pieces, for both modes.
 ---
 
-The [Quick start](/docs/quick-start) is the full Vite walkthrough. This page is the
-condensed reference for the two Vite-specific pieces: where the provider mounts and
-the callback route.
+The [Quick start](/docs/quick-start) is the full Vite walkthrough. This page is
+the condensed reference for the two Vite-specific pieces, where the provider
+mounts and the callback route, in each mode.
 
 <Callout>
-Backend setup (Logto app + RSA key, Convex env, `auth.config.ts`) is the same for
-every framework; see [Quick start](/docs/quick-start) steps 1 to 3.
+Backend setup (Logto app + RSA key, Convex env, `auth.config.ts`) is the same
+for every framework; see [Quick start](/docs/quick-start) steps 1 to 3.
 </Callout>
-
-`configQuery` resolves the Logto endpoint and app id from the Convex deployment,
-so the frontend needs no Logto env vars. Add the query it reads:
-
-```ts title="convex/logto.ts"
-import { logtoConfigQuery } from "convex-logto";
-export const config = logtoConfigQuery();
-```
-
-## Provider
-
-A plain SPA needs no `navigate`; the provider falls back to a hard redirect after
-sign-in. Add `navigate` once you have a router, as the
-[TanStack Router](/docs/tanstack-router) page does.
-
-```tsx title="src/main.tsx"
-import { ConvexReactClient } from "convex/react";
-import { ConvexLogtoProvider } from "convex-logto/react";
-import { api } from "../convex/_generated/api";
-
-const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
-
-root.render(
-  <ConvexLogtoProvider client={convex} configQuery={api.logto.config}>
-    <App />
-  </ConvexLogtoProvider>,
-);
-```
-
-## Callback route
-
-Without a router, render a callback view when the path matches:
-
-```tsx title="src/App.tsx"
-if (window.location.pathname === "/callback") return <p>Finishing sign in…</p>;
-```
-
-Full app: [`examples/vite-react`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react).
 
 ## Session mode
 
-[Session mode](/docs/session-mode) swaps the entry and the props; the mount point
-and callback route are the same two Vite-specific pieces.
+The provider talks to the `logtoSessionApi(...)` re-exports (`api.auth` below)
+and nothing else. No Logto config reaches the bundle.
 
 ```tsx title="src/main.tsx"
+import { ConvexReactClient } from "convex/react";
 import { ConvexLogtoSessionProvider } from "convex-logto/react-session";
 import { api } from "../convex/_generated/api";
+
+const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL, {
+  initialAuthTokenReuse: true,
+});
 
 root.render(
   <ConvexLogtoSessionProvider client={convex} sessionApi={api.auth}>
@@ -66,25 +33,59 @@ root.render(
 );
 ```
 
-There is no `configQuery`. Session mode keeps every Logto value on the Convex
-deployment, so nothing needs to reach the bundle. `sessionApi` is the module
-re-exporting `logtoSessionApi(...)`, `api.auth` above.
+A plain SPA needs no `navigate`; the provider falls back to a hard replace
+after sign-in. Add `navigate` once you have a router, as the [TanStack
+Router](/docs/tanstack-router) page does.
 
-The callback is still `/callback`, and the provider still owns it, but it now
-POSTs the code to Convex and replace-navigates to `afterSignIn` itself, so the
-view you render there is only ever a flash:
+### Callback route
+
+The provider owns `/callback`. It POSTs the code to Convex and replace-navigates
+to `afterSignIn` itself, so the view you render there is only ever a flash:
 
 ```tsx title="src/App.tsx"
 if (window.location.pathname === "/callback") return <p>Finishing sign in…</p>;
 ```
 
 <Callout>
-A plain Vite SPA usually ships to a static host, which has no same-site server to
-mount the [cookie transport](/docs/session-mode#httponly-cookie-transport-optional)
+A plain Vite SPA usually ships to a static host, which has no same-site server
+to mount the [cookie transport](/docs/session-mode#httponly-cookie-transport-optional)
 on. That is fine; the default localStorage transport is the supported
-static-hosting path. The session token there is one-time and rotates on every
-use, and the server stores only its hash. Add the cookie transport when you have
-a server on the same site, not before.
+static-hosting path. The session token there rotates on every use, and the
+server stores only its hash. Add the cookie transport when you have a server on
+the same site, not before.
 </Callout>
 
 Full app: [`examples/vite-react-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session).
+
+## Bridge mode
+
+[Bridge mode](/docs/bridge-mode) swaps the entry and the props. The mount point
+and the callback route are the same.
+
+```tsx title="src/main.tsx"
+import { ConvexReactClient } from "convex/react";
+import { ConvexLogtoProvider } from "convex-logto/react";
+
+const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
+
+root.render(
+  <ConvexLogtoProvider
+    client={convex}
+    config={{
+      endpoint: import.meta.env.VITE_LOGTO_ENDPOINT,
+      appId: import.meta.env.VITE_LOGTO_APP_ID,
+    }}
+  >
+    <App />
+  </ConvexLogtoProvider>,
+);
+```
+
+The two `VITE_LOGTO_*` values are public. To keep them out of the bundle
+anyway, export `logtoConfigQuery()` from `convex/logto.ts` and pass
+`configQuery={api.logto.config}` instead of `config`.
+
+The callback route is the same one-liner. Here the provider runs the SDK's
+code exchange on `/callback` and then navigates to `afterSignIn`.
+
+Full app: [`examples/vite-react`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react).

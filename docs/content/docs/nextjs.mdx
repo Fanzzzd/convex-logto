@@ -1,63 +1,15 @@
 ---
 title: Next.js
-description: Mount ConvexLogtoProvider behind a "use client" boundary in the Next.js App Router.
+description: Mount the provider behind a "use client" boundary in the Next.js App Router. Session mode adds a cookie transport and server rendering with a real identity.
 ---
 
-Finish [Quick start](/docs/quick-start) steps 1 to 3, then mount the provider. It uses
-hooks and `window`, so it lives in a `"use client"` component; `app/layout.tsx` stays
-a Server Component and just renders it.
+Finish [Quick start](/docs/quick-start) steps 1 to 3, then mount the provider.
+Both providers use hooks and `window`, so they live in a `"use client"`
+component; `app/layout.tsx` stays a Server Component and just renders it.
 
 <Callout>Use `NEXT_PUBLIC_CONVEX_URL`, not `import.meta.env`.</Callout>
 
-`configQuery` resolves the Logto endpoint and app id from the Convex deployment,
-so the frontend needs no Logto env vars. Add the query it reads:
-
-```ts title="convex/logto.ts"
-import { logtoConfigQuery } from "convex-logto";
-export const config = logtoConfigQuery();
-```
-
-## Provider
-
-```tsx title="app/providers.tsx"
-"use client";
-import { ConvexReactClient } from "convex/react";
-import { ConvexLogtoProvider } from "convex-logto/react";
-import { useRouter } from "next/navigation";
-import { api } from "../convex/_generated/api";
-
-const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
-
-export function Providers({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
-  return (
-    <ConvexLogtoProvider
-      client={convex}
-      configQuery={api.logto.config}
-      navigate={(to) => router.push(to)}
-    >
-      {children}
-    </ConvexLogtoProvider>
-  );
-}
-```
-
-## Callback route
-
-```tsx title="app/callback/page.tsx"
-// Server Component; the provider in app/providers.tsx finishes the exchange.
-export default function CallbackPage() {
-  return <p>Finishing sign in…</p>;
-}
-```
-
-Full app: [`examples/nextjs`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs).
-
 ## Session mode
-
-[Session mode](/docs/session-mode) keeps the same client boundary. The provider
-uses hooks and `window`, so it stays inside `app/providers.tsx`, and
-`app/layout.tsx` stays a Server Component that renders it.
 
 ```tsx title="app/providers.tsx"
 "use client";
@@ -66,7 +18,9 @@ import { ConvexLogtoSessionProvider } from "convex-logto/react-session";
 import { useRouter } from "next/navigation";
 import { api } from "../convex/_generated/api";
 
-const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!, {
+  initialAuthTokenReuse: true,
+});
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -82,10 +36,18 @@ export function Providers({ children }: { children: React.ReactNode }) {
 }
 ```
 
-`configQuery` is gone; session mode keeps every Logto value on the Convex
-deployment, so the bundle carries none of it. `app/callback/page.tsx` stays the
-Server Component shown above; the provider finishes the exchange under it and
-replace-navigates away.
+No Logto config reaches the bundle; session mode keeps every value on the
+Convex deployment.
+
+### Callback route
+
+```tsx title="app/callback/page.tsx"
+// Server Component; the provider in app/providers.tsx finishes the exchange
+// under it and replace-navigates away.
+export default function CallbackPage() {
+  return <p>Finishing sign in…</p>;
+}
+```
 
 ### Cookie transport
 
@@ -214,3 +176,39 @@ identity rendered on the server with `preloadQuery` in `app/page.tsx`, and the
 document-only refresh in `proxy.ts`.
 
 Full walkthrough: [Session mode](/docs/session-mode).
+
+## Bridge mode
+
+[Bridge mode](/docs/bridge-mode) keeps the same client boundary and the same
+callback page. The provider takes the two public Logto values from
+`NEXT_PUBLIC_*` env.
+
+```tsx title="app/providers.tsx"
+"use client";
+import { ConvexReactClient } from "convex/react";
+import { ConvexLogtoProvider } from "convex-logto/react";
+import { useRouter } from "next/navigation";
+
+const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  return (
+    <ConvexLogtoProvider
+      client={convex}
+      config={{
+        endpoint: process.env.NEXT_PUBLIC_LOGTO_ENDPOINT!,
+        appId: process.env.NEXT_PUBLIC_LOGTO_APP_ID!,
+      }}
+      navigate={(to) => router.replace(to)}
+    >
+      {children}
+    </ConvexLogtoProvider>
+  );
+}
+```
+
+The runnable [`examples/nextjs`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/nextjs)
+resolves the same two values at runtime with `configQuery={api.logto.config}`
+instead, so its build carries no Logto values. Either works; static `config`
+skips the query round trip before first paint.

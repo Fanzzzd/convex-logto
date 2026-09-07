@@ -3,7 +3,7 @@ title: SPA security baseline
 description: Reduce the XSS and supply-chain paths that can expose browser-held authentication credentials.
 ---
 
-Both [bridge mode](/docs/quick-start) and [session mode](/docs/session-mode)
+Both [session mode](/docs/session-mode) and [bridge mode](/docs/bridge-mode)
 give JavaScript a bearer ID token so Convex can authenticate requests. The modes
 limit the consequences of token theft differently; neither makes arbitrary
 same-origin JavaScript safe. Treat every script allowed to run in your application as
@@ -136,7 +136,7 @@ The package always includes the OIDC scopes it needs: `openid`, `profile`,
 permission:
 
 - In session mode, you configure `scopes` and `resources` on
-  `logtoSessionApi(...)` (since 0.4.0). They are server-controlled; the browser cannot
+  `logtoSessionApi(...)`. They are server-controlled; the browser cannot
   elevate them for an individual sign-in.
 - In bridge mode, pass only the extra `scopes` and `resources` you need to
   `ConvexLogtoProvider`, and keep the matching Logto API resource and
@@ -151,15 +151,15 @@ production authority.
 The [session-mode threat-model comparison](/docs/session-mode) explains the full
 trade-off. The practical distinction for this checklist is:
 
-- Bridge mode uses Logto's browser storage adapter. Its refresh token is in
-  `localStorage`, so same-origin script can copy the durable credential and use it
-  according to the tenant's token lifetime and rotation policy.
 - Session mode keeps the Logto refresh token in the Convex component. By
   default the browser has a short-lived ID token in `sessionStorage` and a
   rotating session token in `localStorage`. The callback mints the first
   generation, and every successful refresh rotates it; the server retains only
   hashes for a bounded set of recent generations until their reuse-window
   expiry.
+- Bridge mode uses Logto's browser storage adapter. Its refresh token is in
+  `localStorage`, so same-origin script can copy the durable credential and use it
+  according to the tenant's token lifetime and rotation policy.
 
 That reduction matters, but the default session token remains JavaScript-readable.
 Choose one step-up when off-device exfiltration is in scope:

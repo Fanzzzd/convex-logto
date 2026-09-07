@@ -1,31 +1,44 @@
 ---
 title: Multiple environments
-description: Dev / staging / prod with a single source of Logto config per environment.
+description: Dev / staging / prod. Every Logto value lives on the Convex deployment, so the frontend varies by one URL.
 ---
 
-This page uses the runtime `configQuery` setup from
-[Quick start](/docs/quick-start). In that mode the frontend pulls public Logto
-config from Convex, so **the only thing that varies per environment is the
-Convex deployment it points at** (which you already set via
-`VITE_CONVEX_URL`). The frontend has no Logto env vars to manage. With the
-default static `config`, set the two public Logto values in each frontend
-environment instead.
-
-## Single-source config (recommended)
-
-Create one Logto app per environment (dev / staging / prod, so
-tokens can't cross environments), then set each deployment's env once:
+Create one Logto app per environment (dev / staging / prod), so tokens can't
+cross environments, then set each Convex deployment's env once:
 
 ```bash
 # dev deployment
-npx convex env set LOGTO_ENDPOINT https://your-logto.example.com
-npx convex env set LOGTO_APP_ID   <dev-app-id>
+npx convex env set LOGTO_ENDPOINT      https://your-logto.example.com
+npx convex env set LOGTO_APP_ID        <dev-app-id>
+npx convex env set LOGTO_CLIENT_SECRET <dev-app-secret>
 # production deployment
-npx convex env set --prod LOGTO_ENDPOINT https://your-logto.example.com
-npx convex env set --prod LOGTO_APP_ID   <prod-app-id>
+npx convex env set --prod LOGTO_ENDPOINT      https://your-logto.example.com
+npx convex env set --prod LOGTO_APP_ID        <prod-app-id>
+npx convex env set --prod LOGTO_CLIENT_SECRET <prod-app-secret>
 # staging: target that deployment the same way
 ```
 
-With `configQuery`, the same frontend artifact works everywhere. Only the Convex
-deployment selected by `VITE_CONVEX_URL` changes; each deployment serves its own
-public Logto configuration.
+In [session mode](/docs/session-mode) the frontend carries no Logto values,
+so **the only thing that varies per environment is the Convex deployment it
+points at**, which you already set via `VITE_CONVEX_URL` (or
+`NEXT_PUBLIC_CONVEX_URL`, `EXPO_PUBLIC_CONVEX_URL`). Vite, Next.js, and Expo
+embed that value at build time, so each environment still gets its own build;
+it differs from the others by that one URL.
+
+Each environment's Logto app needs its own Redirect URI and Post sign-out
+redirect URI, and, if you use them, its own [webhook](/docs/webhook-sync) and
+[back-channel logout](/docs/backchannel-logout) URI. Those point at the
+deployment's `.convex.site` URL, which also differs per deployment.
+
+## Bridge mode
+
+[Bridge mode](/docs/bridge-mode) needs no `LOGTO_CLIENT_SECRET`, but its
+provider takes the endpoint and app id from the frontend. With static `config`
+set the two public values in each frontend environment (`VITE_LOGTO_ENDPOINT`
+and `VITE_LOGTO_APP_ID`, or the `NEXT_PUBLIC_*` / `EXPO_PUBLIC_*` equivalents).
+
+To keep those two values out of the bundle as well, export
+`logtoConfigQuery()` from `convex/logto.ts` and pass
+`configQuery={api.logto.config}` to the provider. The frontend then pulls them
+from whichever deployment `VITE_CONVEX_URL` selects, at the cost of one query
+round trip before the Logto client can mount.

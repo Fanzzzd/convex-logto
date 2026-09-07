@@ -30,7 +30,6 @@ users: defineTable({
 ## 2. Map events to your table
 
 ```ts title="convex/logto.ts"
-// alongside `config` from the quick start
 import { logtoSync, type LogtoSyncHandler } from "convex-logto";
 import type { DataModel } from "./_generated/dataModel";
 import type { QueryCtx, MutationCtx } from "./_generated/server";
@@ -131,7 +130,7 @@ Beyond the HMAC signature, the route enforces a **freshness window** on the
 delivery's `createdAt` (minutes, which retires replayed captures; Logto's own retries
 land within seconds) and caps the body at **1 MB**.
 
-If you use [session mode](/docs/session-mode), also pass the component:
+In [session mode](/docs/session-mode), also pass the component:
 
 ```ts title="convex/http.ts"
 import { components, internal } from "./_generated/api";
@@ -143,7 +142,10 @@ That adds two things. **Exactly-once handling.** The route deduplicates
 deliveries by raw-body hash, so a retry whose `200` got lost doesn't re-run your
 handlers. **Session revocation.** `User.Deleted`, and a suspension flipping ON,
 kill all of that user's sessions before your sync handlers run, so reactive
-clients drop to signed-out live.
+clients drop to signed-out live. This is worth registering even with no
+handlers mapped (`logtoSync({})`); the [session example](https://github.com/Fanzzzd/convex-logto/tree/main/examples/vite-react-session)
+does exactly that. [Bridge mode](/docs/bridge-mode) has no sessions to revoke,
+so it omits the option.
 
 ## 4. Create the webhook in Logto
 
@@ -160,7 +162,8 @@ to `User.Created` as well is harmless; with no handler mapped for it the route
 answers `200` and does nothing. New rows come from your authenticated mutation
 (section 2), not the webhook.
 
-Then copy the **Signing key**, the one Logto value that _is_ a secret:
+Then copy the **Signing key**. It is a secret, like the app secret, and lives
+on the deployment:
 
 ```bash
 npx convex env set LOGTO_WEBHOOK_SIGNING_KEY <signing-key>

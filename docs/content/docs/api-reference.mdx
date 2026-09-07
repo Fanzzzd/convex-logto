@@ -8,7 +8,7 @@ description: Every export from convex-logto and its web, native, and session-mod
 | Export | From | Purpose |
 | --- | --- | --- |
 | `logtoAuthConfig(opts?)` | `convex-logto` | Provider entry for `auth.config.ts`. Reads `LOGTO_ENDPOINT` / `LOGTO_APP_ID`. |
-| `logtoConfigQuery(opts?)` | `convex-logto` | Public query serving `{ endpoint, appId, allowInsecureHttp? }` to the frontend (runtime-config mode). |
+| `logtoConfigQuery(opts?)` | `convex-logto` | Public query serving `{ endpoint, appId, allowInsecureHttp? }` to a bridge-mode frontend that resolves its config at runtime. |
 | `logtoSync<DataModel>(handlers)` | `convex-logto` | Returns `{ sync }`, an internal mutation mapping user events to your tables. |
 | `registerLogtoWebhook(http, sync, opts?)` | `convex-logto` | Registers the verified webhook route. Reads `LOGTO_WEBHOOK_SIGNING_KEY`. |
 | `verifyLogtoSignature(key, body, sig)` | `convex-logto` | Low-level signature check, for custom routing. |
@@ -25,7 +25,7 @@ description: Every export from convex-logto and its web, native, and session-mod
 | `LOGTO_SESSION_COOKIE_*`, `LOGTO_ID_TOKEN_COOKIE_NAME`, `LOGTO_SESSION_CSRF_*` | `convex-logto` | Fixed cookie names/base path and CSRF header/value constants. |
 | `assertOrganizationMember` / `assertOrganizationRole` | `convex-logto` | Organization authorization from the ID token Convex already validated. |
 | `logtoOrganizations` / `logtoOrganizationRoles` | `convex-logto` | The same claims, read rather than asserted. |
-| `ConvexLogtoProvider` | `convex-logto/react` | Logto + Convex + auto sign-in callback in one provider. Static `config` or backend `configQuery`. |
+| `ConvexLogtoProvider` | `convex-logto/react` | [Bridge mode](/docs/bridge-mode)'s provider, on `@logto/react`. Static `config` or backend `configQuery`. |
 | `useLogtoAuth()` | `convex-logto/react` | `{ isAuthenticated, isLoading, user, signIn, signOut }`. |
 | default | `convex-logto/convex.config` | The session component, for `app.use(logto)` in `convex/convex.config.ts`. |
 | `ConvexLogtoSessionProvider` | `convex-logto/react-session` | Session mode's provider. No Logto SDK; talks to your `logtoSessionApi` functions. |
@@ -55,9 +55,10 @@ export default { providers: [logtoAuthConfig()] };
 ### `logtoConfigQuery(opts?)`
 
 A public Convex query that serves `{ endpoint, appId, allowInsecureHttp? }` to
-the frontend, for apps that resolve their Logto config at runtime
-(`configQuery` mode: multi-tenant, one artifact for many environments).
-Most apps should pass static `config` instead.
+a [bridge-mode](/docs/bridge-mode) frontend that resolves its Logto config at
+runtime, so the bundle carries no Logto values. Static `config` on the
+provider is the bridge-mode default; session mode needs neither, since every
+Logto value stays on the deployment.
 
 ```ts title="convex/logto.ts"
 import { logtoConfigQuery } from "convex-logto";
@@ -149,8 +150,8 @@ export const {
 
 Options: `scopes` (server-configured; the browser can't request its own),
 `reuseWindowMs` (default 10s), `endpoint` / `appId` / `clientSecret` env
-overrides, and the same `allowInsecureHttp` compatibility escape hatch
-described above.
+overrides, and the same `allowInsecureHttp` compatibility option described
+above.
 
 `resources` is the input to
 [the token exchange](#organization-and-api-resource-tokens). Logto refuses to
@@ -449,68 +450,6 @@ is in progress, it throws the transient `session_liveness_scan_incomplete`
 error instead of guessing. Callers may retry that error.
 `assertUserHasActiveSession` remains as a deprecated compatibility alias.
 
-## Frontend (`convex-logto/react`)
-
-### `ConvexLogtoProvider`
-
-Logto + Convex + the auto sign-in callback in one provider. Pass your public
-Logto config statically (the default; no config round-trip), or `configQuery`
-to resolve it from the backend at runtime. Exactly one of the two.
-
-```tsx
-<ConvexLogtoProvider
-  client={convex}
-  config={{
-    endpoint: import.meta.env.VITE_LOGTO_ENDPOINT,
-    appId: import.meta.env.VITE_LOGTO_APP_ID,
-  }}
->
-  <App />
-</ConvexLogtoProvider>
-```
-
-| Prop | Required | Purpose |
-| --- | --- | --- |
-| `client` | yes | Your `ConvexReactClient`. |
-| `config` | one of | Static `{ endpoint, appId, allowInsecureHttp? }`. Both OAuth values are public; HTTPS is required except loopback or explicit insecure opt-in. |
-| `configQuery` | one of | Ref to the `logtoConfigQuery()` export, e.g. `api.logto.config`, for runtime-resolved config. |
-| `fallback` | no | Rendered while `configQuery` loads (children mount once, when ready). Default `null`. No effect with static `config`. |
-| `callbackPath` | no | The route that finishes the OIDC redirect. Default `/callback`. Must match a registered Redirect URI's path; only this exact path runs callback handling. |
-| `afterSignIn` | no | Where to go once sign-in completes. Default `/`. `signIn({ returnTo })` overrides it. |
-| `navigate` | no | Soft navigation (your router's `navigate`). Optional for plain Vite; **recommended for any router** (TanStack / Next) so post-sign-in is a soft navigation rather than a full-page reload that drops router state. Prefer a replace-style navigate. Falls back to a hard `location.replace`. |
-| `onAuthError` | no | Called on sign-in initiation failures (Logto unreachable, blocked storage, in-app browser restrictions), recoverable callback failures (stale/replayed callback, setup errors like `invalid_scope`), and **sign-out failures**; `@logto/react` catches those into its own state and resolves the promise, leaving the user signed in with the tokens still in place. The provider also logs errors to the console. |
-| `discoveryCache` | no | Cache OIDC discovery + JWKS in sessionStorage. Default `true`. |
-| `onAuthEvent` | no | Opt-in phase timings (see [Auth phase events](#auth-phase-events)). Bridge mode emits `bootstrap_start` and `convex_authenticated`, plus `config_loaded` in `configQuery` mode only. Absent means nothing is measured. |
-| `scopes` / `resources` | no | Extra OIDC scopes / API resources. `openid`, `profile`, `offline_access`, and `email` are always included. |
-
-Safe to render on the server. Nothing touches `window` during render, so you
-need no stub or mount gate. In the Next.js App Router, mark the component that
-imports it `"use client"`, as with any hook.
-
-The sign-in redirect lands on `callbackPath` (default `/callback`); add a route
-there that just renders.
-
-### `useLogtoAuth()`
-
-Returns `{ isAuthenticated, isLoading, user, signIn, signOut }`.
-
-```tsx
-const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
-```
-
-`signIn({ returnTo })` starts sign-in and lands the user on `returnTo` after it
-completes. `returnTo` must be a same-origin path starting with `/` (the
-provider rejects anything else, to prevent open redirects). Without `returnTo`,
-the provider uses `afterSignIn`. The 0.5.x `signIn(redirectUri: string)`
-overload is **gone** in 0.6. A redirect URI whose path was not `callbackPath`
-produced a sign-in nothing handled; set `callbackPath` on the provider instead.
-Failures reach `onAuthError` and the console either way, including the ones
-`@logto/react` catches into SDK state and never rejects with. The ones it does
-reject with, the provider reports first and then rethrows, so a fire-and-forget
-call wants a handler: `void signOut().catch(() => {})`. A failed sign-out is
-worth acting on; the SDK reaches OIDC discovery before it clears tokens, so an
-unreachable Logto leaves the user signed in.
-
 ## Session mode (`convex-logto/react-session`)
 
 ### `ConvexLogtoSessionProvider`
@@ -527,17 +466,17 @@ in the bundle. It talks to the functions from `logtoSessionApi(...)`.
 | Prop | Required | Purpose |
 | --- | --- | --- |
 | `client` | yes | Your `ConvexReactClient`. |
-| `sessionApi` | yes | The module re-exporting `logtoSessionApi(...)`'s functions, e.g. `api.auth` (exact names: `signIn` / `callback` / `refresh` / `signOut` / `signOutEverywhere` / `listSessions` / `renameSession` / `revokeSession` / `sessionValid`). |
+| `sessionApi` | yes | The module re-exporting `logtoSessionApi(...)`'s eleven functions, e.g. `api.auth` (exact names: `signIn` / `callback` / `refresh` / `signOut` / `signOutEverywhere` / `listSessions` / `renameSession` / `revokeSession` / `exchangeToken` / `fetchUserInfo` / `sessionValid`). |
 | `callbackPath` | no | Route that finishes the redirect. Default `/callback`; exact match against the registered Redirect URI's path. |
 | `afterSignIn` | no | Where to land after sign-in. Default `/`. `signIn({ returnTo })` overrides it. |
-| `navigate` | no | Your router's navigate (prefer replace-style) for soft post-sign-in navigation. Falls back to a hard `location.replace`. |
+| `navigate` | no | Your router's navigate for soft post-sign-in navigation; prefer replace-style so the callback URL leaves history. Falls back to a hard `location.replace`. |
 | `tokenStorage` | no | Where the ID token persists: `"session"` (default, per-tab; reload without refresh only with its paired component-session marker), `"memory"` (strictest), `"local"`. The provider clears orphan ID tokens. |
 | `deviceBinding` | no | Opt into ECDSA P-256 proof of possession for refresh and revocation, backed by a non-extractable IndexedDB-held key. Default `false`; cannot be combined with `cookieTransport`. |
 | `cookieTransport` | no | `{ endpoint?, fetch?, deviceBinding? }`; use the same-site handler instead of exposing the rotating session token to JavaScript. Its reserved `deviceBinding` flag only activates the shared incompatibility assertion. |
 | `clientDescriptor` | no | `{ platform?, os?, browser? }` self-reported client description stamped on the session at sign-in for `listSessions()`. Advisory display data only; the library never reads a User-Agent or IP, and it is never authenticated. Safe as an inline object literal. |
 | `initialToken` / `initialSessionId` | no | Paired SSR seed returned by `handler.getInitialToken(request)`. |
 | `reactiveRevocation` | no | Subscribe to session liveness; drop auth live on revocation. Default `true`. |
-| `onAuthError` | no | Sign-in initiation failures, recoverable callback failures, or opted-in device-key storage failures. The provider reports initiation failures before `signIn()` rejects and logs all of them to the console. |
+| `onAuthError` | no | Sign-in initiation failures, recoverable callback failures, sign-out failures, and opted-in device-key storage failures. The provider reports a failure before the promise rejects and logs all of them to the console, so `void signIn()` in a handler stays observable. |
 | `onAuthEvent` | no | Opt-in phase timings (see [Auth phase events](#auth-phase-events)). Absent means nothing is measured. |
 
 There is no callback component to add; the provider completes the exchange on
@@ -553,7 +492,11 @@ Sessions remain the default and are unaffected. See the
 ### `useLogtoAuth()` (session)
 
 Returns `{ isAuthenticated, isLoading, user, signIn, signOut,
-signOutEverywhere, listSessions, renameSession, revokeSession }`.
+signOutEverywhere, listSessions, renameSession, revokeSession, getIdToken,
+getOrganizationTokenClaims, getAccessTokenClaims, getOrganizationToken,
+getAccessToken, fetchUserInfo }`. The first five are the same as bridge mode's
+hook. [Organization and API-resource tokens](#organization-and-api-resource-tokens)
+covers the token methods.
 
 - `signIn({ returnTo? })`: one round-trip to mint the sign-in URL, then a
   full-page redirect. `returnTo` must be a same-origin path, at most 2048
@@ -627,6 +570,70 @@ saying out loud rather than swallowing.
   credentials; use `signOut()` for that. Like `signOutEverywhere`, this is an
   RP-level boundary. The other device's Logto SSO cookie survives, so it can
   start a new sign-in. A missing re-export fails with the same named fix.
+
+## Bridge mode (`convex-logto/react`)
+
+### `ConvexLogtoProvider`
+
+[Bridge mode](/docs/bridge-mode)'s provider: `@logto/react` + Convex + the
+auto sign-in callback. Pass your public Logto config statically (the default;
+no config round-trip), or `configQuery` to resolve it from the backend at
+runtime. Exactly one of the two.
+
+```tsx
+<ConvexLogtoProvider
+  client={convex}
+  config={{
+    endpoint: import.meta.env.VITE_LOGTO_ENDPOINT,
+    appId: import.meta.env.VITE_LOGTO_APP_ID,
+  }}
+>
+  <App />
+</ConvexLogtoProvider>
+```
+
+| Prop | Required | Purpose |
+| --- | --- | --- |
+| `client` | yes | Your `ConvexReactClient`. |
+| `config` | one of | Static `{ endpoint, appId, allowInsecureHttp? }`. Both OAuth values are public; HTTPS is required except loopback or explicit insecure opt-in. |
+| `configQuery` | one of | Ref to the `logtoConfigQuery()` export, e.g. `api.logto.config`, for runtime-resolved config. |
+| `fallback` | no | Rendered while `configQuery` loads (children mount once, when ready). Default `null`. No effect with static `config`. |
+| `callbackPath` | no | The route that finishes the OIDC redirect. Default `/callback`. Must match a registered Redirect URI's path; only this exact path runs callback handling. |
+| `afterSignIn` | no | Where to go once sign-in completes. Default `/`. `signIn({ returnTo })` overrides it. |
+| `navigate` | no | Soft navigation (your router's `navigate`). Optional for plain Vite; **recommended for any router** (TanStack / Next) so post-sign-in is a soft navigation rather than a full-page reload that drops router state. Prefer a replace-style navigate. Falls back to a hard `location.replace`. |
+| `onAuthError` | no | Called on sign-in initiation failures (Logto unreachable, blocked storage, in-app browser restrictions), recoverable callback failures (stale/replayed callback, setup errors like `invalid_scope`), and **sign-out failures**; `@logto/react` catches those into its own state and resolves the promise, leaving the user signed in with the tokens still in place. The provider also logs errors to the console. |
+| `discoveryCache` | no | Cache OIDC discovery + JWKS in sessionStorage. Default `true`. |
+| `onAuthEvent` | no | Opt-in phase timings (see [Auth phase events](#auth-phase-events)). Bridge mode emits `bootstrap_start` and `convex_authenticated`, plus `config_loaded` in `configQuery` mode only. Absent means nothing is measured. |
+| `scopes` / `resources` | no | Extra OIDC scopes / API resources. `openid`, `profile`, `offline_access`, and `email` are always included. |
+
+Safe to render on the server. Nothing touches `window` during render, so you
+need no stub or mount gate. In the Next.js App Router, mark the component that
+imports it `"use client"`, as with any hook.
+
+The sign-in redirect lands on `callbackPath` (default `/callback`); add a route
+there that just renders.
+
+### `useLogtoAuth()` (bridge)
+
+Returns `{ isAuthenticated, isLoading, user, signIn, signOut }`.
+
+```tsx
+import { useLogtoAuth } from "convex-logto/react";
+
+const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
+```
+
+`signIn({ returnTo })` starts sign-in and lands the user on `returnTo` after it
+completes. `returnTo` must be a same-origin path starting with `/` (the
+provider rejects anything else, to prevent open redirects). Without `returnTo`,
+the provider uses `afterSignIn`. To land the callback on another path, set
+`callbackPath` on the provider; there is no per-call redirect URI.
+Failures reach `onAuthError` and the console either way, including the ones
+`@logto/react` catches into SDK state and never rejects with. The ones it does
+reject with, the provider reports first and then rethrows, so a fire-and-forget
+call wants a handler: `void signOut().catch(() => {})`. A failed sign-out is
+worth acting on; the SDK reaches OIDC discovery before it clears tokens, so an
+unreachable Logto leaves the user signed in.
 
 ## Auth phase events
 
@@ -721,14 +728,14 @@ The provider persists the ID token in SecureStore so a cold start authenticates
 with no refresh while its paired component-session marker remains. It clears an
 orphan bearer. This is the native equivalent of choosing web
 `tokenStorage="local"`, but the bearer stays inside the OS encrypted keystore.
-See [Expo (React Native)](/docs/react-native#native-session-mode) for setup and
+See [Expo (React Native)](/docs/react-native#session-mode) for setup and
 the web/native differences.
 
-## Native (`convex-logto/native`)
+## Native bridge mode (`convex-logto/native`)
 
 For React Native / Expo, built on [`@logto/rn`](https://github.com/logto-io/react-native).
 The backend exports above are the same; only the frontend provider differs. Full
-walkthrough in [React Native (Expo)](/docs/react-native).
+walkthrough in [React Native (Expo)](/docs/react-native#bridge-mode).
 
 ### `ConvexLogtoProvider` (native)
 

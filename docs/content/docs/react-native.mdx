@@ -1,81 +1,40 @@
 ---
 title: Expo (React Native)
-description: Use Logto bridge mode or server-held session mode in a Convex Expo app.
+description: Session mode or bridge mode in a Convex Expo app. The system browser signs in and an app deep link brings the user back; there is no callback route.
 ---
 
 There are two React Native entries:
 
-- **`convex-logto/native`** is bridge mode, built on
-  [`@logto/rn`](https://github.com/logto-io/react-native). The Logto SDK owns the
-  refresh token.
-- **`convex-logto/native-session`** is session mode. The Convex component owns
-  the Logto refresh token; Expo SecureStore holds only a rotating application
-  session token and a short-lived ID token.
+- **`convex-logto/native-session`** is [session mode](/docs/session-mode), the
+  recommended one. The Convex component owns the Logto refresh token; Expo
+  SecureStore holds only a rotating application session token and a
+  short-lived ID token.
+- **`convex-logto/native`** is [bridge mode](/docs/bridge-mode), built on
+  [`@logto/rn`](https://github.com/logto-io/react-native). The Logto SDK owns
+  the refresh token on the device.
 
-Both use the system browser and return through an app deep link, with no
-callback route. The bridge-mode walkthrough comes first; [native session
-mode](#native-session-mode) follows below.
+Both sign in through the system browser and return through an app deep link,
+with no callback route. Both use the same backend as the web, so `me` queries,
+[webhook sync](/docs/webhook-sync), and `ctx.auth.getUserIdentity()` are
+unchanged.
 
 <Callout>
-`@logto/rn` signs in through the system browser and returns via your custom
-`io.logto://` scheme, which **Expo Go on Android can't register**, so use a
-development build (`npx expo run:android` / `run:ios`, or an EAS dev build).
+Sign-in returns through your custom `io.logto://` scheme, which **Expo Go on
+Android can't register**, so use a development build (`npx expo run:android` /
+`run:ios`, or an EAS dev build).
 </Callout>
 
-## Install
+## Before either mode
 
-```bash
-pnpm add convex-logto @logto/rn
-npx expo install expo-crypto expo-secure-store expo-web-browser @react-native-async-storage/async-storage
-```
+**Rotate the signing key to RSA.** Convex only accepts ID tokens signed with
+**RS256** (or EdDSA). Logto signs with **ES384** by default, which Convex
+rejects without an error. Sign-in looks like it works, but
+`ctx.auth.getUserIdentity()` returns `null`. In the Logto Console, open
+**Tenant settings → OIDC configs**, click **Rotate private keys**, and choose
+**RSA**. Once per tenant; Logto keeps the old key during a transition.
 
-`convex` and `react` are peers you already have. `@logto/rn` needs those four Expo
-modules; `expo install` picks the versions matching your SDK.
-
-## 1. Create a Logto app
-
-In Logto Console → **Applications** → **Create application** → under **Single page
-app** pick **React**, **not** a **Third-party app** (it withholds the `profile` /
-`email` scopes this package needs, so sign-in fails with `invalid_scope`).
-
-Note the **endpoint** and **App ID**, and register the **native** redirect URIs;
-these use your app's URL scheme, not `http(s)`:
-
-- **Redirect URIs** → `io.logto://callback`
-- **Post sign-out redirect URIs** → `io.logto://callback`
-
-**Rotate the signing key to RSA first.** Convex only accepts ID tokens signed with
-**RS256** (or EdDSA). Logto signs with **ES384** by default, which Convex rejects
-without an error. Sign-in looks like it works, but `ctx.auth.getUserIdentity()`
-returns `null`. Rotate the key once per tenant. In the Logto Console, open **Tenant
-settings → OIDC configs**, click **Rotate private keys**, and choose **RSA**. Logto
-keeps the old key during a transition, so existing sessions stay signed in.
-
-## 2. Set the config on your Convex deployment (only place needed)
-
-```bash
-npx convex env set LOGTO_ENDPOINT https://auth.example.com
-npx convex env set LOGTO_APP_ID   your-app-id
-```
-
-## 3. Wire Convex
-
-The same as the web setup; the backend is framework-agnostic:
-
-```ts title="convex/auth.config.ts"
-import { logtoAuthConfig } from "convex-logto";
-export default { providers: [logtoAuthConfig()] };
-```
-
-```ts title="convex/logto.ts"
-// serves the public { endpoint, appId } to the frontend
-import { logtoConfigQuery } from "convex-logto";
-export const config = logtoConfigQuery();
-```
-
-## 4. Set your URL scheme
-
-The native redirect URI is your `app.json` `scheme` plus a path:
+**Set your URL scheme.** The native redirect URI is your `app.json` `scheme`
+plus a path:
 
 ```json title="app.json"
 {
@@ -86,98 +45,9 @@ The native redirect URI is your `app.json` `scheme` plus a path:
 ```
 
 On Android you **must** set the scheme here; iOS listens for it regardless. It
-must match the redirect URI you registered in step 1.
+must match the redirect URI you register on the Logto app below.
 
-## 5. Wrap your app
-
-The frontend carries **no Logto config**; it asks the backend. Pass `redirectUri`
-(the scheme callback) so `signIn()` has a default. Expo exposes only `EXPO_PUBLIC_*`
-env vars to the bundle:
-
-```tsx title="App.tsx"
-import { ConvexLogtoProvider } from "convex-logto/native";
-import { ConvexReactClient } from "convex/react";
-import { api } from "./convex/_generated/api";
-
-const convex = new ConvexReactClient(process.env.EXPO_PUBLIC_CONVEX_URL!, {
-  unsavedChangesWarning: false,
-});
-
-export default function App() {
-  return (
-    <ConvexLogtoProvider
-      client={convex}
-      configQuery={api.logto.config}
-      redirectUri="io.logto://callback"
-    >
-      <Main />
-    </ConvexLogtoProvider>
-  );
-}
-```
-
-<Callout>
-**No callback route.** Unlike the web, there's nothing to add for `/callback`;
-`@logto/rn`'s `signIn` opens the system browser and resolves when the deep link
-returns. `<ConvexLogtoProvider>` renders an optional `fallback` during the one-time
-config fetch (native has no SSR inert-client trick); Convex's `<AuthLoading>` covers
-the token handshake after that.
-</Callout>
-
-## 6. Sign in, and read the user
-
-```tsx
-import { useLogtoAuth } from "convex-logto/native";
-import { Button, Text } from "react-native";
-
-function Main() {
-  const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
-  if (isLoading) return <Text>Signing in…</Text>;
-  return isAuthenticated ? (
-    <Button title={`Sign out (${user?.email ?? user?.sub})`} onPress={() => void signOut()} />
-  ) : (
-    // signIn() defaults to the provider's redirectUri
-    <Button title="Sign in" onPress={() => void signIn()} />
-  );
-}
-```
-
-In any Convex function, the Logto identity is already there. The same `me` query as
-the web examples:
-
-```ts title="convex/me.ts"
-import { query } from "./_generated/server";
-
-export const me = query({
-  handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) return null;
-    return { id: identity.subject, email: identity.email, name: identity.name };
-  },
-});
-```
-
-Full runnable app: [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo).
-
-## How native differs from web
-
-| | Web (`convex-logto/react`) | Native (`convex-logto/native`) |
-| --- | --- | --- |
-| SDK | `@logto/react` | `@logto/rn` |
-| Sign-in callback | a `/callback` route you add | none; `signIn` resolves in place |
-| `signIn()` default | `${origin}/callback` | the provider's `redirectUri` |
-| Sign-out | federated redirect to origin | revokes tokens + clears storage (no browser) |
-| Loading | SSR-safe, renders children with no fallback | `fallback` covers the one-time config fetch |
-
-Everything else is shared: `logtoAuthConfig`, `logtoConfigQuery`, the webhook
-[user-sync](/docs/webhook-sync), and reading `ctx.auth.getUserIdentity()`.
-
-## Native session mode
-
-Use **`convex-logto/native-session`** when the Logto refresh token should remain
-inside the Convex session component. The server setup and eleven public functions
-are the same as [web session mode](/docs/session-mode); only the storage and
-OAuth adapters differ on the device.
+## Session mode
 
 ### Install
 
@@ -186,22 +56,32 @@ pnpm add convex-logto
 npx expo install expo-secure-store expo-web-browser
 ```
 
-This entry does not use `@logto/rn`, `expo-crypto`, or AsyncStorage.
-`expo-secure-store` and `expo-web-browser` are optional peers so bridge-mode and
-web-only apps do not install them.
+`expo-secure-store` and `expo-web-browser` are optional peers so bridge-mode
+and web-only apps do not install them. This entry does not use `@logto/rn`.
 
-### Configure Logto and Convex
+### 1. Create a Logto app
 
-Create a Logto **Traditional web** application, then register the app deep link
-in both lists:
+Create a **Traditional web** application, then register the app deep link in
+both lists:
 
 - **Redirect URIs** → `io.logto://callback`
 - **Post sign-out redirect URIs** → `io.logto://callback`
 
-Keep the `"scheme": "io.logto"` app configuration shown above. As with web
-session mode, set `LOGTO_ENDPOINT`, `LOGTO_APP_ID`, and
-`LOGTO_CLIENT_SECRET` on the Convex deployment, install the component, and
-export all eleven functions:
+Note the **endpoint**, **App ID**, and **App Secret**.
+
+### 2. Configure the deployment
+
+```bash
+npx convex env set LOGTO_ENDPOINT      https://auth.example.com
+npx convex env set LOGTO_APP_ID        your-app-id
+npx convex env set LOGTO_CLIENT_SECRET your-app-secret
+```
+
+The app carries no Logto config at all, not even the endpoint.
+
+### 3. Wire Convex
+
+The same three files as [web session mode](/docs/quick-start#3-wire-convex):
 
 ```ts title="convex/convex.config.ts"
 import { defineApp } from "convex/server";
@@ -210,6 +90,11 @@ import logto from "convex-logto/convex.config";
 const app = defineApp();
 app.use(logto);
 export default app;
+```
+
+```ts title="convex/auth.config.ts"
+import { logtoAuthConfig } from "convex-logto";
+export default { providers: [logtoAuthConfig()] };
 ```
 
 ```ts title="convex/auth.ts"
@@ -231,10 +116,10 @@ export const {
 } = logtoSessionApi(components.logto);
 ```
 
-`convex/auth.config.ts` still uses `logtoAuthConfig()` so Convex validates the
-same ID token.
+### 4. Mount the provider
 
-### Mount the native session provider
+Expo exposes only `EXPO_PUBLIC_*` env vars to the bundle. Pass `redirectUri`
+(the scheme callback) so `signIn()` has a default:
 
 ```tsx title="App.tsx"
 import { ConvexReactClient } from "convex/react";
@@ -243,6 +128,7 @@ import { api } from "./convex/_generated/api";
 
 const convex = new ConvexReactClient(process.env.EXPO_PUBLIC_CONVEX_URL!, {
   unsavedChangesWarning: false,
+  initialAuthTokenReuse: true,
 });
 
 export default function App() {
@@ -258,10 +144,34 @@ export default function App() {
 }
 ```
 
+### 5. Sign in, and read the user
+
+```tsx
+import { useLogtoAuth } from "convex-logto/native-session";
+import { Button, Text } from "react-native";
+
+function Main() {
+  const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
+  if (isLoading) return <Text>Signing in…</Text>;
+  return isAuthenticated ? (
+    <Button title={`Sign out (${user?.email ?? user?.sub})`} onPress={() => void signOut()} />
+  ) : (
+    <Button title="Sign in" onPress={() => void signIn()} />
+  );
+}
+```
+
 `signIn()` asks the Convex action for an authorize URL, opens it with
 `WebBrowser.openAuthSessionAsync`, verifies that the returned `state` matches
 the single-use state stashed before the browser opened, and exchanges the code
 in place. There is no `/callback` screen or router integration.
+
+`signOut()` clears SecureStore, revokes the server session, and opens Logto's
+end-session URL in the system browser unless you pass `federated: false`.
+`signOutEverywhere({ postLogoutRedirectUri? })` records subject-wide revocation,
+lets the `sessionValid` subscription sign out other live devices, and always
+ends this device's Logto browser session. The `me` query from the [Quick
+start](/docs/quick-start#6-sign-in-and-read-the-user) works unchanged.
 
 ### Recovering a reclaimed sign-in
 
@@ -296,25 +206,23 @@ in the browser is not recoverable this way, on purpose. Cancelling discards the
 OIDC state, so a later deep link cannot replay it. Tapping Sign in again is
 instant, since Logto's browser SSO session is still there.
 
-Native session mode keeps the rotating session token, OAuth state stash, and
-**short-lived ID token** in deployment-namespaced SecureStore. Persisting the ID
-token is a cold-start choice. While the token is fresh and its paired component
-Session marker is still present, the app authenticates on launch without a
-refresh. The provider clears an orphan ID token. Unlike AsyncStorage, the
-bearer remains under the iOS Keychain / Android encrypted keystore. A stale ID
-token causes the normal server refresh and rolls the SecureStore session token
-before Convex receives the new ID token.
+### What lives on the device
+
+Native session mode keeps the rotating session token, the OAuth state stash,
+and the **short-lived ID token** in deployment-namespaced SecureStore, under
+the iOS Keychain or the Android encrypted keystore. Persisting the ID token is
+a cold-start choice. While the token is fresh and its paired component Session
+marker is still present, the app authenticates on launch without a refresh; a
+stale one causes the normal server refresh, which rolls the SecureStore session
+token before Convex receives the new ID token. The provider clears an orphan ID
+token.
 
 Reactive revocation is on by default and uses the same `sessionValid`
-subscription as the web provider. `signOut()` clears SecureStore, revokes the
-server session, and opens Logto's end-session URL in the system browser unless
-you pass `federated: false`.
-`signOutEverywhere({ postLogoutRedirectUri? })` instead records subject-wide
-logical revocation, removes physical Session rows in bounded batches, lets the
-same subscription sign out other live devices, and always ends this device's
-Logto browser session.
-
-### Differences from web session mode
+subscription as the web provider. There is no `tokenStorage`,
+`cookieTransport`, or `deviceBinding` prop; SecureStore already uses the OS
+keystore. If SecureStore is unavailable or fails, the provider reports the
+failure through `onAuthError` and never falls back to AsyncStorage or an
+unbound plaintext credential.
 
 | | Web session | Native session |
 | --- | --- | --- |
@@ -324,21 +232,126 @@ Logto browser session.
 | ID token default | sessionStorage | Expo SecureStore for fast cold starts |
 | Cross-context coordination | storage events + Web Locks | one installed app / SecureStore |
 | Cookie transport | optional, same-site only | unavailable |
-| Software device binding | optional on web | none, on purpose; SecureStore uses the OS keystore |
+| Software device binding | optional on web | none, on purpose |
 
 Full runnable app: [`examples/expo-session`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo-session),
 the native counterpart of `vite-react-session`, with the same eleven-function
 `convex/auth.ts`, a device list, and a side-by-side comparison against the
 bridge-mode [`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo).
 
-Native session mode therefore has no `tokenStorage`, `cookieTransport`, or
-`deviceBinding` provider props. If SecureStore is unavailable or fails, auth
-reports the failure through `onAuthError`; the provider likewise reports a
-sign-in action or system-browser initiation failure before `signIn()` rejects.
-It never falls back to AsyncStorage or an unbound plaintext credential.
+## Bridge mode
+
+### Install
+
+```bash
+pnpm add convex-logto @logto/rn
+npx expo install expo-crypto expo-secure-store expo-web-browser @react-native-async-storage/async-storage
+```
+
+`@logto/rn` needs those four Expo modules; `expo install` picks the versions
+matching your SDK.
+
+### 1. Create a Logto app
+
+In Logto Console → **Applications** → **Create application** → under **Single page
+app** pick **React**, **not** a **Third-party app** (it withholds the `profile` /
+`email` scopes this package needs, so sign-in fails with `invalid_scope`).
+
+Note the **endpoint** and **App ID**, and register the same two deep links as
+above:
+
+- **Redirect URIs** → `io.logto://callback`
+- **Post sign-out redirect URIs** → `io.logto://callback`
+
+### 2. Set the config
+
+On the Convex deployment, which `auth.config.ts` reads:
+
+```bash
+npx convex env set LOGTO_ENDPOINT https://auth.example.com
+npx convex env set LOGTO_APP_ID   your-app-id
+```
+
+And in the app's env. Both values are public:
+
+```bash
+EXPO_PUBLIC_LOGTO_ENDPOINT=https://auth.example.com
+EXPO_PUBLIC_LOGTO_APP_ID=your-app-id
+```
+
+### 3. Wire Convex
+
+```ts title="convex/auth.config.ts"
+import { logtoAuthConfig } from "convex-logto";
+export default { providers: [logtoAuthConfig()] };
+```
+
+### 4. Wrap your app
+
+```tsx title="App.tsx"
+import { ConvexLogtoProvider } from "convex-logto/native";
+import { ConvexReactClient } from "convex/react";
+
+const convex = new ConvexReactClient(process.env.EXPO_PUBLIC_CONVEX_URL!, {
+  unsavedChangesWarning: false,
+});
+
+export default function App() {
+  return (
+    <ConvexLogtoProvider
+      client={convex}
+      config={{
+        endpoint: process.env.EXPO_PUBLIC_LOGTO_ENDPOINT!,
+        appId: process.env.EXPO_PUBLIC_LOGTO_APP_ID!,
+      }}
+      redirectUri="io.logto://callback"
+    >
+      <Main />
+    </ConvexLogtoProvider>
+  );
+}
+```
+
+To keep the two values out of the bundle, export `logtoConfigQuery()` from
+`convex/logto.ts` and pass `configQuery={api.logto.config}` instead; the
+provider renders `fallback` during that one config fetch. The runnable
+[`examples/expo`](https://github.com/Fanzzzd/convex-logto/tree/main/examples/expo)
+does it that way.
+
+### 5. Sign in, and read the user
+
+```tsx
+import { useLogtoAuth } from "convex-logto/native";
+import { Button, Text } from "react-native";
+
+function Main() {
+  const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
+  if (isLoading) return <Text>Signing in…</Text>;
+  return isAuthenticated ? (
+    <Button title={`Sign out (${user?.email ?? user?.sub})`} onPress={() => void signOut()} />
+  ) : (
+    // signIn() defaults to the provider's redirectUri
+    <Button title="Sign in" onPress={() => void signIn()} />
+  );
+}
+```
+
+`@logto/rn`'s `signIn` opens the system browser and resolves when the deep link
+returns. `signOut()` revokes the tokens and clears storage; there is no
+federated sign-out on native bridge mode. Both report a failure to
+`onAuthError` before rejecting.
+
+### How native bridge mode differs from web
+
+| | Web (`convex-logto/react`) | Native (`convex-logto/native`) |
+| --- | --- | --- |
+| SDK | `@logto/react` | `@logto/rn` |
+| Sign-in callback | a `/callback` route you add | none; `signIn` resolves in place |
+| `signIn()` default | `${origin}/callback` | the provider's `redirectUri` |
+| Sign-out | federated redirect to origin | revokes tokens + clears storage (no browser) |
+| Loading | SSR-safe; `fallback` only while a `configQuery` loads | `fallback` covers the one-time `configQuery` fetch |
 
 ## Expo SDK and `@logto/rn` versions
 
 This repository tests `@logto/rn@1.2` with Expo SDK 56. Keep the Logto adapter
-and Expo modules within their declared peer ranges when upgrading; the versions
-in this guide need no SDK 53 downgrade.
+and Expo modules within their declared peer ranges when upgrading.

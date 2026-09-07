@@ -13,6 +13,11 @@ auth, so you get **all** the standard ways to react to auth state:
 so they're **authoritative**. `isAuthenticated` is `true` only once Convex has
 accepted the token. Gate on these and there's no flash of the wrong state.
 
+The snippets import from `convex-logto/react-session`. In [bridge
+mode](/docs/bridge-mode) import from `convex-logto/react` instead; the five
+fields above are the same. Session mode's hook adds `signOutEverywhere()` and
+the device list, covered in [Session mode](/docs/session-mode#where-am-i-signed-in).
+
 ## Storing data for a user
 
 You usually **don't need a users table**. Every Convex function already has the
@@ -74,7 +79,7 @@ the values and `signIn` / `signOut` anywhere: in `return`, event handlers,
 effects, or conditionals.
 
 ```tsx
-import { useLogtoAuth } from "convex-logto/react";
+import { useLogtoAuth } from "convex-logto/react-session";
 
 function AuthButton() {
   const { isAuthenticated, isLoading, user, signIn, signOut } = useLogtoAuth();
@@ -97,14 +102,16 @@ This is the standard TanStack Router auth pattern; it works because
 ```tsx title="src/main.tsx"
 import { useEffect } from "react";
 import { ConvexReactClient } from "convex/react";
-import { ConvexLogtoProvider, useLogtoAuth } from "convex-logto/react";
+import { ConvexLogtoSessionProvider, useLogtoAuth } from "convex-logto/react-session";
 import { RouterProvider } from "@tanstack/react-router";
 import { router } from "./router";
 import { api } from "../convex/_generated/api";
 
-const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
+const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL, {
+  initialAuthTokenReuse: true,
+});
 
-// Lives inside <ConvexLogtoProvider> so useLogtoAuth() has its context.
+// Lives inside the provider so useLogtoAuth() has its context.
 function InnerApp() {
   const auth = useLogtoAuth();
 
@@ -119,13 +126,13 @@ function InnerApp() {
 }
 
 root.render(
-  <ConvexLogtoProvider
+  <ConvexLogtoSessionProvider
     client={convex}
-    configQuery={api.logto.config}
-    navigate={(to) => void router.navigate({ to })}
+    sessionApi={api.auth}
+    navigate={(to) => void router.navigate({ to, replace: true })}
   >
     <InnerApp />
-  </ConvexLogtoProvider>,
+  </ConvexLogtoSessionProvider>,
 );
 ```
 
@@ -137,7 +144,7 @@ import {
   redirect,
   Outlet,
 } from "@tanstack/react-router";
-import type { useLogtoAuth } from "convex-logto/react";
+import type { useLogtoAuth } from "convex-logto/react-session";
 
 type RouterAuthContext = { auth: ReturnType<typeof useLogtoAuth> };
 
@@ -169,10 +176,15 @@ A few things here are load-bearing:
 - **Check `isLoading` first.** `isAuthenticated` is `false` while auth is still
   settling, so without the `if (context.auth.isLoading) return` you'd redirect a
   signed-in user on every reload, and bounce a just-returned user mid sign-in
-  callback. The bridge keeps `isLoading` `true` across that whole validation
+  callback. The provider keeps `isLoading` `true` across that whole validation
   window, so the guard waits instead of redirecting.
 - **Keep the `router.invalidate()` effect.** It re-runs the guard when auth
   resolves. Depend on `[auth.isLoading, auth.isAuthenticated]`.
 - **Give the route a `pendingComponent`** (with `defaultPendingMs: 0`) so the
   loading window shows it instead of a flash of protected content.
-- **Pass `navigate`** to the provider so post-sign-in is a soft router navigation.
+- **Pass `navigate`** to the provider so post-sign-in is a soft router
+  navigation, and make it replace-style so the callback URL leaves history.
+- **A guard decides what to render, not who may read.** The Convex function
+  still checks `ctx.auth.getUserIdentity()` itself. In session mode,
+  `assertSubjectHasActiveSession(ctx, components.logto)` also makes it fail the
+  moment the session is revoked.
