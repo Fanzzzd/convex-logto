@@ -18,11 +18,11 @@
     "expo-secure-store": "~56.0.4",
     "expo-status-bar": "~56.0.4",
     "expo-web-browser": "~56.0.5",
-    "react": "19.2.8",
+    "react": "19.3.0",
     "react-native": "0.85.3"
   },
   "devDependencies": {
-    "@types/react": "~19.2.18",
+    "@types/react": "~19.3.0",
     "typescript": "~5.9.3"
   }
 }
