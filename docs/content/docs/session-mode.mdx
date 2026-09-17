@@ -557,8 +557,11 @@ there is what risks spending a rotated token twice. During *sign-in* every one
 of these is terminal instead, including a wrong client secret. The component
 consumes the sign-in transaction before it contacts Logto, so the attempt is
 unrepeatable either way and a retry could only report a stale callback, hiding
-what went wrong. The provider retries once a failure that never reached the
-deployment at all, since nothing was consumed.
+what went wrong. A failure that never reached the deployment at all consumed
+nothing, so the provider retries it on the same short backoff as a refresh:
+half a second, then two seconds. The request for the authorize URL that
+starts a sign-in gets the same treatment. Both are what a laptop sends as it
+wakes, while its network is still coming back.
 
 A transient failure is not a sign-out, and the browser keeps retrying it. The
 session token stays in storage and the provider re-presents it on its

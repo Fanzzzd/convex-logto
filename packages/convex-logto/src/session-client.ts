@@ -904,28 +904,30 @@ export class SessionAuthEngine {
    * A transport failure is the opposite case. A dropped connection or the
    * transport's own deadline may mean the request never arrived, and losing a
    * sign-in to one bad packet is worse than an attempt that finds nothing.
-   * Retry once. If the retry reports the row is gone, the first attempt did
-   * land after all, so report *its* error rather than the stale-callback one.
+   * Retry on the same short backoff as a refresh: the callback page is what a
+   * laptop is loading as it wakes, while the network is still coming back,
+   * and an immediate retry dies the way the first attempt did. If a retry
+   * reports the row is gone, the first attempt did land after all, so report
+   * *its* error rather than the stale-callback one.
    */
   private async exchangeCallback(
     args: FunctionArgs<LogtoSessionApi["callback"]>,
   ): Promise<FunctionReturnType<LogtoSessionApi["callback"]>> {
-    try {
-      return await this.options.transport.action(
-        this.options.api.callback,
-        args,
-      );
-    } catch (first) {
-      if (first instanceof ConvexError) throw first;
+    let first: unknown = null;
+    for (let attempt = 0; ; attempt++) {
       try {
         return await this.options.transport.action(
           this.options.api.callback,
           args,
         );
-      } catch (second) {
-        throw sessionErrorCode(second) === "transaction_not_found"
-          ? first
-          : second;
+      } catch (error) {
+        if (attempt === 0) first = error;
+        else if (sessionErrorCode(error) === "transaction_not_found")
+          throw first;
+        if (error instanceof ConvexError) throw error;
+        const retryDelay = RETRY_DELAYS_MS[attempt];
+        if (retryDelay === undefined) throw error;
+        await this.sleep(retryDelay);
       }
     }
   }
@@ -1194,12 +1196,16 @@ export class SessionAuthEngine {
     const redirectUri =
       this.options.authFlow?.redirectUri ??
       `${window.location.origin}${this.options.callbackPath}`;
-    const { url } = await this.options.transport.action(
-      this.options.api.signIn,
-      {
+    // The first request after a laptop wakes or a phone changes networks
+    // often dies in transport. The action only mints an authorize URL and a
+    // transaction row, so asking again is safe: a row an abandoned attempt
+    // left behind expires on its own, and the tab stashes only the state it
+    // navigates with.
+    const { url } = await this.retrying(() =>
+      this.options.transport.action(this.options.api.signIn, {
         redirectUri,
         returnTo,
-      },
+      }),
     );
     // Bind the transaction to this tab (see completeCallback).
     // Always spend an abandoned state before considering the new authorize
