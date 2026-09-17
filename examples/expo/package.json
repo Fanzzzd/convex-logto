@@ -11,7 +11,7 @@
     "typecheck": "pnpm check-types"
   },
   "dependencies": {
-    "@logto/rn": "^1.2.0",
+    "@logto/rn": "^1.3.0",
     "@react-native-async-storage/async-storage": "2.2.0",
     "convex": "^1.45.0",
     "convex-logto": "workspace:*",
