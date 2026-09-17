@@ -1,5 +1,18 @@
 # convex-logto
 
+## 0.7.4
+
+### Patch Changes
+
+- [#262](https://github.com/Fanzzzd/convex-logto/pull/262) [`32db4f0`](https://github.com/Fanzzzd/convex-logto/commit/32db4f0782962adb491dd2ba65159ed6a2721543) Thanks [@Fanzzzd](https://github.com/Fanzzzd)! - Session mode retries the two sign-in requests a waking laptop or a phone
+  changing networks used to lose. `signIn` asks the deployment for the authorize
+  URL again on the same short backoff a refresh uses, and the callback exchange
+  retries a transport failure on that backoff instead of once, immediately. A
+  `ConvexError` is still never retried, and a retry that finds the transaction
+  gone still reports the first attempt's error. Before this, `Failed to fetch` on
+  either request rejected `signIn` after a single attempt, and an app that starts
+  sign-in from an effect stayed on its loader until a reload.
+
 ## 0.7.3
 
 ### Patch Changes
