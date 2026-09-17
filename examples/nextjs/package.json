@@ -10,7 +10,7 @@
     "typecheck": "pnpm check-types"
   },
   "dependencies": {
-    "@logto/react": "^4.0.14",
+    "@logto/react": "^4.0.15",
     "convex": "^1.45.0",
     "convex-logto": "workspace:*",
     "next": "^16.3.4",

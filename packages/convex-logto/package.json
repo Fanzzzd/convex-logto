@@ -120,7 +120,7 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
-    "@logto/react": "^4.0.14",
+    "@logto/react": "^4.0.15",
     "@logto/rn": "^1.2.0",
     "@types/node": "^22.20.1",
     "@types/react": "^19.2.18",

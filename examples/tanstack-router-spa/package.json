@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@logto/react": "^4.0.14",
+    "@logto/react": "^4.0.15",
     "@tanstack/react-router": "^1.170.32",
     "convex": "^1.45.0",
     "convex-logto": "workspace:*",
