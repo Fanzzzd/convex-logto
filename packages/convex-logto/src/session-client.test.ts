@@ -1119,6 +1119,37 @@ describe("callback", () => {
     expect(handlers.callback).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps retrying a transport failure on the refresh backoff", async () => {
+    // The callback page is what a laptop loads as it wakes, while the network
+    // is still coming back. One immediate retry died the way the first
+    // attempt did.
+    const { engine, storage, handlers } = makeHarness();
+    setURL("http://localhost:5173/callback?code=c1&state=s1");
+    storage.stashTransaction({ state: "s1" });
+    handlers.callback
+      .mockRejectedValueOnce(new Error("Failed to fetch"))
+      .mockRejectedValueOnce(new Error("Failed to fetch"))
+      .mockResolvedValueOnce(sessionResult(1));
+
+    engine.start();
+    expect((await settled(engine)).status).toBe("authenticated");
+    expect(handlers.callback).toHaveBeenCalledTimes(3);
+  });
+
+  it("gives up on a transport failure that outlives the backoff", async () => {
+    const { engine, storage, handlers, onAuthError } = makeHarness();
+    setURL("http://localhost:5173/callback?code=c1&state=s1");
+    storage.stashTransaction({ state: "s1" });
+    handlers.callback.mockRejectedValue(new Error("Failed to fetch"));
+
+    engine.start();
+    expect((await settled(engine)).status).toBe("unauthenticated");
+    expect(handlers.callback).toHaveBeenCalledTimes(3);
+    expect(onAuthError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Failed to fetch" }),
+    );
+  });
+
   it("reports the first error when the retry finds the transaction gone", async () => {
     // The retry proves the first attempt landed after all.
     // `transaction_not_found` is the stale-callback diagnosis that would bury
@@ -1305,9 +1336,39 @@ describe("signIn", () => {
 
     await expect(engine.signIn()).rejects.toBe(failure);
 
+    // Rejected only once the transport backoff is spent.
+    expect(handlers.signIn).toHaveBeenCalledTimes(3);
     expect(onAuthError).toHaveBeenCalledTimes(1);
     expect(onAuthError).toHaveBeenCalledWith(failure);
     expect(console.error).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a sign-in request that never reached the deployment", async () => {
+    // The first request after a wake or a network change often dies in
+    // transport; the action only mints a URL, so asking again is safe.
+    const { engine, handlers, onAuthError } = makeHarness();
+    handlers.signIn
+      .mockRejectedValueOnce(new Error("Failed to fetch"))
+      .mockResolvedValueOnce({
+        url: "https://auth.example.com/oidc/auth?state=st-1",
+      });
+
+    await engine.signIn();
+
+    expect(handlers.signIn).toHaveBeenCalledTimes(2);
+    expect(onAuthError).not.toHaveBeenCalled();
+    expect(window.location.assign).toHaveBeenCalledWith(
+      "https://auth.example.com/oidc/auth?state=st-1",
+    );
+  });
+
+  it("does not retry a terminal sign-in failure", async () => {
+    const { engine, handlers } = makeHarness();
+    handlers.signIn.mockRejectedValue(terminalError());
+
+    await expect(engine.signIn()).rejects.toBeInstanceOf(ConvexError);
+
+    expect(handlers.signIn).toHaveBeenCalledTimes(1);
   });
 
   it("reports and rejects a device-key preparation failure", async () => {
