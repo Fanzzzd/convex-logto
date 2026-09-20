@@ -16,7 +16,7 @@
     "@tanstack/react-router": "^1.170.32",
     "@tanstack/react-router-ssr-query": "^1.167.2",
     "@tanstack/react-start": "^1.168.49",
-    "convex": "^1.45.0",
+    "convex": "^1.46.0",
     "convex-logto": "workspace:*",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
