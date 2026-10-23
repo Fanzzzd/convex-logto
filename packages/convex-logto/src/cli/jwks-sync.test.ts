@@ -96,7 +96,14 @@ describe("syncJwks", () => {
       "Logto serves only EC keys",
       ENDPOINT,
       serving([ec]),
-      /no RSA key.*Rotate/,
+      /signs with ec-old \(EC\).*Rotate/,
+    ],
+    // After rotating to EC, the old RSA key is still served as the previous one.
+    [
+      "Logto signs with EC and keeps an old RSA key",
+      ENDPOINT,
+      serving([ec, rsa("old")]),
+      /signs with ec-old/,
     ],
     [
       "the JWKS request fails",
@@ -126,12 +133,34 @@ describe("syncJwks", () => {
 });
 
 describe("checkJwks", () => {
+  it("fails, rather than passing on an old RSA key, once Logto signs with EC", async () => {
+    const { env } = memoryEnv(ENDPOINT);
+    await syncJwks({ env, fetch: serving([rsa("old")]) });
+    await expect(
+      checkJwks({ env, fetch: serving([ec, rsa("old")]) }),
+    ).rejects.toThrow(/signs with ec-old \(EC\)/);
+  });
+
+  it("lists a served key it cannot verify besides the signing key", async () => {
+    const { env } = memoryEnv(ENDPOINT);
+    const fetch = serving([
+      rsa("current"),
+      { ...ec, kid: "next", alg: "ES384" },
+    ]);
+    await syncJwks({ env, fetch });
+    await expect(checkJwks({ env, fetch })).resolves.toMatchObject({
+      missing: [],
+      unusable: ["next (EC ES384)"],
+    });
+  });
+
   it("reports nothing missing right after a sync", async () => {
     const { env } = memoryEnv(ENDPOINT);
     const fetch = serving([rsa("a")]);
     await syncJwks({ env, fetch });
     await expect(checkJwks({ env, fetch })).resolves.toEqual({
       jwksUrl: "https://auth.example.com/oidc/jwks",
+      unusable: [],
       missing: [],
       stale: [],
     });

@@ -76,6 +76,29 @@ describe("convex-logto CLI", () => {
     ]);
   });
 
+  it("never echoes an admin key back", async () => {
+    const h = harness({
+      vars: { LOGTO_JWKS: JSON.stringify({ keys: [key("old")] }) },
+      serves: [key("new")],
+    });
+    const code = await main(
+      [
+        "check-jwks",
+        "--url",
+        "https://x.convex.cloud",
+        "--admin-key",
+        "secret-1",
+        "--admin-key=secret-2",
+      ],
+      h.io,
+    );
+    expect(code).toBe(1);
+    expect(h.err.join("\n")).not.toMatch(/secret/);
+    expect(h.err.join("\n")).toMatch(
+      /--admin-key <admin key> --admin-key=<admin key>$/,
+    );
+  });
+
   it("check-jwks exits 0 when LOGTO_JWKS is current", async () => {
     const h = harness({
       vars: { LOGTO_JWKS: JSON.stringify({ keys: [key("a")] }) },

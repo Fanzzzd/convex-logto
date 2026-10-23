@@ -96,14 +96,14 @@ export function verificationKeys(
 }
 
 /**
- * Fetch and parse a Logto JWKS. The response is bounded in time and size, so
- * a slow or hostile endpoint cannot hold a Convex action open or exhaust its
- * memory.
+ * Fetch a Logto JWKS document as parsed JSON, unvalidated. The response is
+ * bounded in time and size, so a slow or hostile endpoint cannot hold a Convex
+ * action open or exhaust its memory.
  */
-export async function fetchLogtoJwks(
+export async function fetchJwksDocument(
   url: string,
   fetcher: typeof globalThis.fetch = globalThis.fetch,
-): Promise<LogtoJwk[]> {
+): Promise<unknown> {
   const controller = new AbortController();
   const timeout = setTimeout(() => {
     controller.abort();
@@ -118,19 +118,25 @@ export async function fetchLogtoJwks(
     }
     const body = await readBoundedBody(response, MAX_JWKS_BODY_BYTES);
     if (!body.ok) throw new LogtoJwksError("Could not read the Logto JWKS.");
-    let parsed: unknown;
     try {
-      parsed = JSON.parse(decoder.decode(body.bytes)) as unknown;
+      return JSON.parse(decoder.decode(body.bytes)) as unknown;
     } catch {
       throw new LogtoJwksError("Logto returned a malformed JWKS.");
     }
-    return parseLogtoJwks(parsed);
   } catch (error) {
     if (error instanceof LogtoJwksError) throw error;
     throw new LogtoJwksError("Could not fetch the Logto JWKS.");
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/** Fetch a Logto JWKS and return its RSA keys. */
+export async function fetchLogtoJwks(
+  url: string,
+  fetcher?: typeof globalThis.fetch,
+): Promise<LogtoJwk[]> {
+  return parseLogtoJwks(await fetchJwksDocument(url, fetcher));
 }
 
 /** Convex validates a `customJwt` provider's tokens with one fixed algorithm. */

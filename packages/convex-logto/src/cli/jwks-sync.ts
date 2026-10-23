@@ -6,10 +6,12 @@ import {
   buildLogtoEndpointUrl,
   normalizeLogtoEndpoint,
 } from "../shared/endpoint";
+import { isRecord } from "../shared/decode";
 import {
   LogtoJwksError,
   STATIC_JWKS_ALGORITHM,
-  fetchLogtoJwks,
+  fetchJwksDocument,
+  parseLogtoJwks,
   readStaticJwks,
   serializeJwks,
   verificationKeys,
@@ -39,6 +41,11 @@ export type SyncJwksResult = {
 
 export type CheckJwksResult = {
   jwksUrl: string;
+  /**
+   * Served keys a static JWKS cannot verify, other than the signing key. One
+   * of them may be a staged next key, which breaks sign-in once promoted.
+   */
+  unusable: string[];
   /** Keys Logto may sign with that LOGTO_JWKS lacks. Non-empty means sign-ins fail. */
   missing: string[];
   /** Keys LOGTO_JWKS holds that Logto no longer serves. Harmless; a sync drops them. */
@@ -57,7 +64,7 @@ function keyId(key: LogtoJwk): string {
 
 async function liveKeys(
   options: JwksSyncOptions,
-): Promise<{ jwksUrl: string; keys: LogtoJwk[] }> {
+): Promise<{ jwksUrl: string; keys: LogtoJwk[]; unusable: string[] }> {
   const rawEndpoint = (await options.env.get("LOGTO_ENDPOINT"))?.trim();
   if (!rawEndpoint) {
     throw new JwksSyncError(
@@ -77,20 +84,45 @@ async function liveKeys(
       `LOGTO_ENDPOINT on this deployment is unusable: ${String(error instanceof Error ? error.message : error)}`,
     );
   }
+  let served: unknown[];
   let keys: LogtoJwk[];
   try {
-    keys = await fetchLogtoJwks(jwksUrl, options.fetch);
+    const document = await fetchJwksDocument(jwksUrl, options.fetch);
+    keys = parseLogtoJwks(document);
+    served =
+      isRecord(document) && Array.isArray(document.keys) ? document.keys : [];
   } catch (error) {
     if (!(error instanceof LogtoJwksError)) throw error;
     throw new JwksSyncError(`${error.message} (${jwksUrl})`);
   }
   const usable = verificationKeys(keys, STATIC_JWKS_ALGORITHM);
-  if (usable.length === 0) {
+  const isUsable = (key: unknown) =>
+    isRecord(key) && usable.some((candidate) => candidate.n === key.n);
+  // Logto hands oidc-provider its keys as current, next, previous, and the
+  // JWKS keeps that order: the first key is the one signing ID tokens now.
+  // After a rotation to EC the old RSA key is still served as the previous
+  // one, so "some RSA key exists" would pass while every sign-in fails.
+  const [signing] = served;
+  if (!isUsable(signing)) {
     throw new JwksSyncError(
-      `Logto serves no RSA key that can verify RS256 (${jwksUrl}). Convex accepts only RS256 for a static JWKS, and Logto signs with an EC key by default. Rotate the OIDC signing key to RSA in the Logto Console, then run this again.`,
+      `Logto signs with ${describeServedKey(signing)}, which Convex cannot verify from a static JWKS (RS256 only; ${jwksUrl}). Rotate the OIDC signing key to RSA in the Logto Console, then run this again.`,
     );
   }
-  return { jwksUrl, keys: usable };
+  return {
+    jwksUrl,
+    keys: usable,
+    unusable: served
+      .slice(1)
+      .filter((key) => !isUsable(key))
+      .map(describeServedKey),
+  };
+}
+
+function describeServedKey(key: unknown): string {
+  if (!isRecord(key)) return "no key";
+  const kid = typeof key.kid === "string" ? key.kid : "a key without kid";
+  const type = [key.kty, key.alg].filter((part) => typeof part === "string");
+  return type.length > 0 ? `${kid} (${type.join(" ")})` : kid;
 }
 
 /** Copy Logto's current RS256 keys into the deployment's LOGTO_JWKS. */
@@ -119,7 +151,7 @@ export async function syncJwks(
 export async function checkJwks(
   options: JwksSyncOptions,
 ): Promise<CheckJwksResult> {
-  const { jwksUrl, keys } = await liveKeys(options);
+  const { jwksUrl, keys, unusable } = await liveKeys(options);
   const stored = await options.env.get("LOGTO_JWKS");
   if (stored === undefined) {
     throw new JwksSyncError(
@@ -137,6 +169,7 @@ export async function checkJwks(
   const kept = new Map(storedKeys.map((key) => [key.n, keyId(key)]));
   return {
     jwksUrl,
+    unusable,
     missing: [...live].filter(([n]) => !kept.has(n)).map(([, id]) => id),
     stale: [...kept].filter(([n]) => !live.has(n)).map(([, id]) => id),
   };

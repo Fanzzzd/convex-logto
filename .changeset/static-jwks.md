@@ -6,4 +6,4 @@ Static JWKS: `logtoAuthConfig({ jwks: process.env.LOGTO_JWKS })` returns a Conve
 
 New bin: `npx convex-logto sync-jwks` copies the deployment's own Logto keys into `LOGTO_JWKS`, and `npx convex-logto check-jwks` exits 1 when Logto serves a key the copy lacks. Every other flag goes to `convex env` unchanged (`--prod`, `--deployment-name`, `--preview-name`, `--url`, `--admin-key`, `--env-file`, `CONVEX_DEPLOY_KEY`). After rotating keys in Logto, run `sync-jwks` on every deployment, or every new sign-in is rejected.
 
-New exported types: `LogtoConnectionOptions`, `LogtoStaticJwksProvider`, `LogtoAuthProvider`.
+New exported types: `LogtoConnectionOptions`, `LogtoStaticJwksProvider`, `LogtoAuthProvider`. One type-level change: `logtoAuthConfig(options)` with a variable typed `LogtoAuthConfigOptions` now returns the union `LogtoAuthProvider`, because that type has the optional `jwks`. A call with no argument, or with an inline object without `jwks`, still returns `LogtoOidcProvider`, and every return type satisfies Convex's `AuthConfig`.

@@ -30,8 +30,9 @@ sign-in.
 An **RSA** signing key in Logto. Convex verifies a Custom JWT provider with one
 algorithm, and this package uses RS256. Discovery mode needs the same rotation
 (see [How it works](/docs/how-it-works#why-the-id-token-and-why-theres-no-jwt-config)),
-so a working setup already has it. `sync-jwks` refuses to write a copy without
-an RSA key, and `logtoAuthConfig` refuses to load one.
+so a working setup already has it. `sync-jwks` refuses to write a copy while
+Logto signs with anything but an RSA key, and `logtoAuthConfig` refuses a copy
+without one.
 
 ## Set it up
 
@@ -77,16 +78,23 @@ throw an error naming `LOGTO_JWKS`.
 Convex re-reads `auth.config.ts` when an environment variable changes, so the
 sync is the whole fix. No redeploy follows it.
 
-Self-hosted Logto can stage a rotation. With `PRIVATE_KEY_ROTATION_GRACE_PERIOD`
-above 0, Logto publishes the new key as the next key before it signs anything.
-Sync during that window and no sign-in fails. With the default of 0, the new key
-signs at once, so sync right after rotating.
+Logto can stage a rotation: it publishes the new key as the next key before it
+signs anything. Self-hosted Logto stages when `PRIVATE_KEY_ROTATION_GRACE_PERIOD`
+is above 0; Logto Cloud sets its own default. Sync during that window and no
+sign-in fails. With the self-hosted default of 0, the new key signs at once, so
+sync right after rotating.
+
+Rotate to an **RSA** key. After a rotation to EC, Logto still serves the old RSA
+key as the previous one, but signs with the EC key. `sync-jwks` and
+`check-jwks` both fail in that state instead of keeping the old key.
 
 ## Catch drift in CI
 
 `check-jwks` exits 1 when Logto serves a key `LOGTO_JWKS` lacks, a staged next
-key included. It warns, without failing, about stored keys Logto no longer
-serves. Under GitHub Actions it prints annotations.
+key included, or signs with a key a static JWKS cannot verify. It warns,
+without failing, about stored keys Logto no longer serves and about a served
+non-RSA key that is not the signing key, which may be a staged next key. Under
+GitHub Actions it prints annotations.
 
 ```yaml title=".github/workflows/release.yml"
 - name: Convex prod's LOGTO_JWKS matches Logto
@@ -112,8 +120,8 @@ npx convex-logto <command> [--allow-insecure-http] [convex env options]
 
 | Command | Effect |
 | --- | --- |
-| `sync-jwks` | Writes Logto's current RS256 keys to `LOGTO_JWKS`. Skips the write when the value already matches. |
-| `check-jwks` | Exits 1 when Logto serves a key `LOGTO_JWKS` lacks, or when `LOGTO_JWKS` is unset or unreadable. |
+| `sync-jwks` | Writes Logto's current RS256 keys to `LOGTO_JWKS`. Skips the write when the value already matches. Fails when Logto signs with a non-RSA key. |
+| `check-jwks` | Exits 1 when Logto serves a key `LOGTO_JWKS` lacks, signs with a non-RSA key, or when `LOGTO_JWKS` is unset or unreadable. |
 
 | Option | Effect |
 | --- | --- |

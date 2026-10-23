@@ -20,7 +20,12 @@ function convexCliPath(cwd: string): string {
   for (let dir = resolvePath(cwd); ; dir = dirname(dir)) {
     const manifestPath = join(dir, "node_modules", "convex", "package.json");
     if (existsSync(manifestPath)) {
-      const manifest: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
+      let manifest: unknown;
+      try {
+        manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      } catch {
+        throw new JwksSyncError(`Could not read ${manifestPath}.`);
+      }
       const bin =
         isRecord(manifest) && isRecord(manifest.bin)
           ? manifest.bin.convex

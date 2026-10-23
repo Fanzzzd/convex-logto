@@ -39,6 +39,17 @@ export type CliIo = {
   github?: boolean;
 };
 
+/** Deployment flags to echo back, with the admin key's value hidden. */
+function redact(args: readonly string[]): string[] {
+  return args.map((arg, index) =>
+    args[index - 1] === "--admin-key"
+      ? "<admin key>"
+      : arg.startsWith("--admin-key=")
+        ? "--admin-key=<admin key>"
+        : arg,
+  );
+}
+
 /** Run the CLI and return its exit code. */
 export async function main(argv: string[], io: CliIo): Promise<number> {
   const [command, ...rest] = argv;
@@ -76,14 +87,21 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
       return 0;
     }
     const result = await checkJwks(options);
+    const warn = (message: string) =>
+      io.err(`${io.github ? "::warning::" : "convex-logto: "}${message}`);
+    if (result.unusable.length > 0) {
+      warn(
+        `Logto also serves ${result.unusable.join(", ")}, which a static JWKS cannot verify. If that is a staged next key, every sign-in fails once Logto promotes it; stage an RSA key instead.`,
+      );
+    }
     if (result.stale.length > 0) {
-      io.err(
-        `${io.github ? "::warning::" : "convex-logto: "}LOGTO_JWKS still holds keys Logto no longer serves (${result.stale.join(", ")}). Harmless; sync-jwks drops them.`,
+      warn(
+        `LOGTO_JWKS still holds keys Logto no longer serves (${result.stale.join(", ")}). Harmless; sync-jwks drops them.`,
       );
     }
     if (result.missing.length > 0) {
       fail(
-        `Logto serves ${result.missing.join(", ")}, which LOGTO_JWKS lacks. Convex rejects every sign-in signed with it. Run: npx convex-logto sync-jwks ${passthrough.join(" ")}`.trimEnd(),
+        `Logto serves ${result.missing.join(", ")}, which LOGTO_JWKS lacks. Convex rejects every sign-in signed with it. Run: npx convex-logto sync-jwks ${redact(passthrough).join(" ")}`.trimEnd(),
       );
       return 1;
     }
