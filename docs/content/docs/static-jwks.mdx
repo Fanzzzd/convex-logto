@@ -36,7 +36,8 @@ without one.
 
 ## Set it up
 
-Run both steps on every deployment: dev, preview, and production.
+Run both steps on every deployment: dev and production, plus the preview
+defaults if you use preview deployments (see [Preview deployments](#preview-deployments)).
 
 1. Copy the keys. Run this from the directory where your Convex project's
    `convex` package is installed:
@@ -48,7 +49,9 @@ Run both steps on every deployment: dev, preview, and production.
 
    It reads the deployment's own `LOGTO_ENDPOINT`, fetches
    `${endpoint}/oidc/jwks`, keeps the RS256 keys, and writes them to
-   `LOGTO_JWKS`. A deployment can never receive another tenant's keys.
+   `LOGTO_JWKS`. A deployment can never receive another tenant's keys. An app
+   that passes `endpoint` to `logtoAuthConfig` instead of setting
+   `LOGTO_ENDPOINT` passes the same URL as `--endpoint <url>`.
 
 2. Pass the variable to `logtoAuthConfig`:
 
@@ -68,6 +71,22 @@ pass it, so apps that do not opt in are unaffected.
 is not JSON, JSON that is not a JWKS, and a JWKS without an RS256 key each
 throw an error naming `LOGTO_JWKS`.
 
+## Preview deployments
+
+A preview deployment does not exist until `npx convex deploy` creates it, so
+there is nothing for `sync-jwks` to write to beforehand, and its first push
+would read an unset `LOGTO_JWKS`. Preview deployments start from the project's
+default variables for the `preview` type. Write the keys there:
+
+```bash
+npx convex-logto sync-jwks --defaults preview
+npx convex-logto check-jwks --defaults preview
+```
+
+`--defaults` reads `LOGTO_ENDPOINT` from the same defaults. A default applies
+when a preview deployment is created, so after a key rotation also sync any
+preview deployment that is still running, by name with `--deployment`.
+
 ## After rotating keys in Logto
 
 <Callout type="warn">
@@ -80,7 +99,7 @@ sync is the whole fix. No redeploy follows it.
 
 Logto can stage a rotation: it publishes the new key as the next key before it
 signs anything. Self-hosted Logto stages when `PRIVATE_KEY_ROTATION_GRACE_PERIOD`
-is above 0; Logto Cloud sets its own default. Sync during that window and no
+is above 0 (the default is 0); Logto Cloud can configure its own default. Sync during that window and no
 sign-in fails. With the self-hosted default of 0, the new key signs at once, so
 sync right after rotating.
 
@@ -92,9 +111,11 @@ key as the previous one, but signs with the EC key. `sync-jwks` and
 
 `check-jwks` exits 1 when Logto serves a key `LOGTO_JWKS` lacks, a staged next
 key included, or signs with a key a static JWKS cannot verify. It warns,
-without failing, about stored keys Logto no longer serves and about a served
-non-RSA key that is not the signing key, which may be a staged next key. Under
-GitHub Actions it prints annotations.
+without failing, about stored keys Logto no longer serves and about a staged
+next key that is not RSA, because every sign-in fails once Logto promotes it.
+An EC key Logto still serves as the previous one after a rotation to RSA is
+only noted on stdout; nothing signs with it. Under GitHub Actions it prints
+annotations.
 
 ```yaml title=".github/workflows/release.yml"
 - name: Convex prod's LOGTO_JWKS matches Logto
@@ -115,7 +136,7 @@ because Convex refuses to remove a variable `auth.config.ts` still reads.
 ## CLI reference
 
 ```bash
-npx convex-logto <command> [--allow-insecure-http] [convex env options]
+npx convex-logto <command> [options] [convex env options]
 ```
 
 | Command | Effect |
@@ -125,7 +146,10 @@ npx convex-logto <command> [--allow-insecure-http] [convex env options]
 
 | Option | Effect |
 | --- | --- |
-| `--allow-insecure-http` | Accepts a non-loopback `http://` `LOGTO_ENDPOINT`, the same opt-in as `allowInsecureHttp`. |
-| Anything else | Passed to `convex env` unchanged: `--prod`, `--deployment-name <name>`, `--preview-name <name>`, `--url <url>`, `--admin-key <key>`, `--env-file <path>`. `CONVEX_DEPLOY_KEY` works as it does for `npx convex env`. |
+| `--endpoint <url>` | The Logto endpoint, for an app that passes `endpoint` to `logtoAuthConfig`. Default: the deployment's `LOGTO_ENDPOINT`. |
+| `--defaults <type>` | Reads and writes the project's default variables for `dev`, `preview` or `prod` instead of one deployment's. |
+| `--allow-insecure-http` | Accepts a non-loopback `http://` endpoint, the same opt-in as `allowInsecureHttp`. |
+| Anything else | Passed to `convex env` unchanged: `--prod`, `--deployment <ref>`, `--url <url>`, `--admin-key <key>`, `--env-file <path>`. `CONVEX_DEPLOY_KEY` works as it does for `npx convex env`. |
 
-Exit codes: 0 on success, 1 on failure or drift, 2 for a usage error.
+Exit codes: 0 on success, 1 on failure or drift (including a deployment flag
+`convex env` rejects), 2 for a usage error in `convex-logto`'s own options.

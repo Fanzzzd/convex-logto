@@ -348,7 +348,7 @@ export default {
 
 The issuer stays `${endpoint}/oidc`, so `tokenIdentifier` does not change. Sync before switching `auth.config.ts`, because Convex refuses to push a config that reads an unset variable; the package never reads `LOGTO_JWKS` unless you pass it.
 
-**After rotating keys in Logto, run `sync-jwks` on every deployment, or every new sign-in is rejected.** Convex re-reads `auth.config.ts` when the variable changes, so no redeploy follows. `npx convex-logto check-jwks` exits 1 when Logto serves a key `LOGTO_JWKS` lacks; run it in CI before deploying. Every other flag goes to `convex env` unchanged (`--prod`, `--deployment-name`, `--preview-name`, `--url`, `--admin-key`, `--env-file`, or `CONVEX_DEPLOY_KEY`). Details: [Static JWKS](https://convex-logto-docs.vercel.app/docs/static-jwks).
+**After rotating keys in Logto, run `sync-jwks` on every deployment, or every new sign-in is rejected.** Convex re-reads `auth.config.ts` when the variable changes, so no redeploy follows. `npx convex-logto check-jwks` exits 1 when Logto serves a key `LOGTO_JWKS` lacks; run it in CI before deploying. Every other flag goes to `convex env` unchanged (`--prod`, `--deployment`, `--url`, `--admin-key`, `--env-file`, or `CONVEX_DEPLOY_KEY`). Preview deployments take the keys from the project's preview defaults: `sync-jwks --defaults preview`. Details: [Static JWKS](https://convex-logto-docs.vercel.app/docs/static-jwks).
 
 ## API
 

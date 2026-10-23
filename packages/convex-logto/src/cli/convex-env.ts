@@ -1,8 +1,10 @@
 // The real DeploymentEnv: the project's own Convex CLI, run as
 // `convex env get|set` with the caller's deployment flags passed through, so
-// `--prod`, `--deployment-name`, `--preview-name`, `--url`/`--admin-key`,
-// `--env-file` and CONVEX_DEPLOY_KEY select a deployment exactly as they do
-// for `npx convex env`.
+// `--prod`, `--deployment`, `--url`/`--admin-key`, `--env-file` and
+// CONVEX_DEPLOY_KEY select a deployment exactly as they do for
+// `npx convex env`. With a deployment type it runs `convex env default
+// get|set --type <type>` instead: the project's defaults, which is how a
+// preview deployment has LOGTO_JWKS before it exists.
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -42,7 +44,12 @@ function convexCliPath(cwd: string): string {
   );
 }
 
-function run(cli: string, args: string[], cwd: string): Promise<string> {
+function run(
+  cli: string,
+  args: string[],
+  cwd: string,
+  label: string,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cli, ...args], {
       cwd,
@@ -63,28 +70,46 @@ function run(cli: string, args: string[], cwd: string): Promise<string> {
       else
         reject(
           new JwksSyncError(
-            `\`convex ${args.slice(0, 2).join(" ")}\` failed (exit ${code}).\n${stderr.trim()}`,
+            `\`convex ${label}\` failed (exit ${code}).\n${stderr.trim()}`,
           ),
         );
     });
   });
 }
 
+/** Project-level default environment variables, per deployment type. */
+export type DefaultsType = "dev" | "preview" | "prod";
+
 export function convexEnv(
   passthrough: readonly string[],
-  cwd: string = process.cwd(),
+  options: { cwd?: string; defaults?: DefaultsType } = {},
 ): DeploymentEnv {
+  const cwd = options.cwd ?? process.cwd();
   const cli = convexCliPath(cwd);
+  const scope = options.defaults === undefined ? ["env"] : ["env", "default"];
+  const flags =
+    options.defaults === undefined
+      ? [...passthrough]
+      : [...passthrough, "--type", options.defaults];
   return {
     async get(name) {
       // An unset variable prints nothing to stdout and still exits 0.
-      const value = (
-        await run(cli, ["env", "get", ...passthrough, name], cwd)
-      ).replace(/\r?\n$/, "");
+      const output = await run(
+        cli,
+        [...scope, "get", ...flags, name],
+        cwd,
+        [...scope, "get", name].join(" "),
+      );
+      const value = output.replace(/\r?\n$/, "");
       return value === "" ? undefined : value;
     },
     async set(name, value) {
-      await run(cli, ["env", "set", ...passthrough, "--", name, value], cwd);
+      await run(
+        cli,
+        [...scope, "set", ...flags, "--", name, value],
+        cwd,
+        [...scope, "set", name].join(" "),
+      );
     },
   };
 }
