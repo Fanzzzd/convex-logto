@@ -2,6 +2,7 @@
 // Everything here runs in Convex's V8 runtime: Web APIs only.
 
 import { ConvexError } from "convex/values";
+import { decodeBase64Url, decodeJwtSegment, isRecord } from "./decode.js";
 import { buildLogtoEndpointUrl } from "./endpoint.js";
 
 /** Default lifetime of a sign-in transaction (state + PKCE verifier). */
@@ -263,49 +264,13 @@ export type DevicePublicKey = {
   y: string;
 };
 
-/**
- * A JWT segment is base64url over **UTF-8 bytes**. `atob` alone yields one
- * latin-1 character per byte, which mojibakes every multi-byte claim. A `name`
- * of `王小明` decodes as `ç\u008e\u008bå°\u008fæ\u0098\u008e`. So the bytes have
- * to go through a UTF-8 decode. Returns `undefined` rather than a partial
- * result, because nothing downstream can act on half-decoded claims.
- */
-export function decodeJwtSegment(segment: string): unknown {
-  const bytes = fromBase64Url(segment);
-  if (bytes === null) return undefined;
-  try {
-    return JSON.parse(jwtSegmentDecoder.decode(bytes));
-  } catch {
-    return undefined;
-  }
-}
-
-const jwtSegmentDecoder = /* @__PURE__ */ new TextDecoder("utf-8", {
-  fatal: true,
-});
-
-function fromBase64Url(value: string): Uint8Array<ArrayBuffer> | null {
-  if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
-  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
-  try {
-    const binary = atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="));
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index++) {
-      bytes[index] = binary.charCodeAt(index);
-    }
-    return bytes;
-  } catch {
-    return null;
-  }
-}
-
 /** Verify an ECDSA P-256 proof over the presented rotating session token. */
 export async function verifyDeviceProof(options: {
   publicKey: DevicePublicKey;
   sessionToken: string;
   proof: string;
 }): Promise<boolean> {
-  const signature = fromBase64Url(options.proof);
+  const signature = decodeBase64Url(options.proof);
   // WebCrypto ECDSA signatures use fixed-width IEEE P1363 r || s encoding.
   if (signature?.byteLength !== 64) return false;
   try {
@@ -417,10 +382,6 @@ export function buildEndSessionUrl(options: {
     params.set("post_logout_redirect_uri", options.postLogoutRedirectUri);
   }
   return buildLogtoEndpointUrl(options.endpoint, "session/end", params);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**

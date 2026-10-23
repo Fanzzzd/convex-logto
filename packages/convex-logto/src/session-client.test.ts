@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SessionAuthEngine,
   SessionStorageArea,
-  decodeJwtPayload,
   type SessionSnapshot,
   type SessionStorageAdapter,
   type SessionTransport,
@@ -18,6 +17,7 @@ import {
   type TokenStorageKind,
 } from "./session-client";
 import type { LogtoAuthEvent } from "./auth-events";
+import { decodeJwtPayload } from "./component/decode";
 import type { LogtoSessionApi } from "./session";
 import {
   SessionDeviceBindingError,

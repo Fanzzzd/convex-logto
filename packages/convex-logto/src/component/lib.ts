@@ -54,6 +54,7 @@ import {
   type DevicePublicKey,
   type ResourceTokenClaims,
 } from "./core.js";
+import { isRecord } from "./decode.js";
 import { buildLogtoEndpointUrl } from "./endpoint.js";
 import { readBoundedBody } from "./http_body.js";
 
@@ -408,10 +409,6 @@ function isTerminalSessionError(error: unknown): boolean {
     "kind" in data &&
     data.kind === "terminal"
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function basicAuth(config: OidcConfig): string {

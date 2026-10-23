@@ -2,6 +2,7 @@ import { getFunctionName, type FunctionReference } from "convex/server";
 import { ConvexError } from "convex/values";
 import { isSafeReturnTo } from "./callback";
 import { SESSION_GC_AFTER_MS } from "./component/core.js";
+import { decodeJwtPayload, isRecord } from "./component/decode.js";
 import { normalizeHttpNavigationUrl } from "./component/endpoint.js";
 import { readBoundedBody } from "./component/http_body.js";
 import type { SessionTransport, StoredSession } from "./session-client";
@@ -136,10 +137,6 @@ const MAX_COOKIE_SCOPE_COUNT = 32;
 const MAX_COOKIE_RESPONSE_BYTES = 256 * 1024;
 const COOKIE_TRANSPORT_TIMEOUT_MS = 10 * 1000;
 
-function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function isCookieRoute(value: string): value is CookieRoute {
   return (
     value === "sign-in" ||
@@ -237,31 +234,10 @@ const MAX_ID_TOKEN_COOKIE_BYTES = 3 * 1024;
 
 /** Remaining lifetime of an ID token, in whole seconds, or 0 when it is unusable. */
 function idTokenMaxAge(idToken: string): number {
-  const parts = idToken.split(".");
-  const payload = parts.length === 3 ? parts[1] : undefined;
-  if (payload === undefined) return 0;
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(
-      new TextDecoder().decode(decodeBase64Url(payload)),
-    ) as unknown;
-  } catch {
-    return 0;
-  }
-  const exp = isRecord(decoded) ? decoded.exp : undefined;
+  const exp = decodeJwtPayload(idToken)?.exp;
   if (typeof exp !== "number") return 0;
   const remaining = Math.floor(exp - Date.now() / 1000);
   return remaining > 0 ? remaining : 0;
-}
-
-function decodeBase64Url(segment: string): Uint8Array {
-  const padded = segment.replace(/-/g, "+").replace(/_/g, "/");
-  const binary = atob(padded.padEnd(Math.ceil(padded.length / 4) * 4, "="));
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
 }
 
 /**

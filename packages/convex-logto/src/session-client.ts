@@ -19,9 +19,9 @@ import { classifySignInSearch, isSafeReturnTo } from "./callback";
 import { asUserClaims, type LogtoUserClaims } from "./claims";
 import {
   SESSION_LABEL_MAX_LENGTH,
-  decodeJwtSegment,
   sessionLabelTooLong,
 } from "./component/core";
+import { decodeJwtPayload, isRecord } from "./component/decode";
 import { normalizeHttpNavigationUrl } from "./component/endpoint";
 import {
   SessionDeviceBindingError,
@@ -210,20 +210,6 @@ function isMissingSignOutEverywhereAction(error: unknown): boolean {
   );
 }
 
-export function decodeJwtPayload(
-  token: string,
-): Record<string, unknown> | null {
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  const payload = parts[1];
-  if (payload === undefined) return null;
-  // Shared with the component's own ID-token decode so both halves read a
-  // non-ASCII claim the same way. It also matches the Logto SDK's decode, or
-  // migrating from bridge mode would start garbling names.
-  const decoded = decodeJwtSegment(payload);
-  return isRecord(decoded) ? decoded : null;
-}
-
 function idTokenExpMs(token: string): number {
   const exp = decodeJwtPayload(token)?.exp;
   return typeof exp === "number" ? exp * 1000 : 0;
@@ -268,10 +254,6 @@ type StoredValue =
   | { status: "missing" }
   | { status: "invalid" }
   | { status: "value"; value: unknown };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * Namespaced browser storage for the three session-mode artifacts:

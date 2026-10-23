@@ -8,6 +8,7 @@ import {
   internalMutationGeneric,
 } from "convex/server";
 import { v } from "convex/values";
+import { isRecord } from "./component/decode.js";
 import { readBoundedBody } from "./component/http_body.js";
 import type { LogtoSessionComponent } from "./session";
 
@@ -73,10 +74,6 @@ export type LogtoWebhookPayload = {
 };
 
 const encoder = /* @__PURE__ */ new TextEncoder();
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isNullableString(value: unknown): boolean {
   return value === null || typeof value === "string";
