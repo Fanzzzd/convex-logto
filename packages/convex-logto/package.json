@@ -34,7 +34,9 @@
   "files": [
     "dist",
     "src/component",
+    "src/shared",
     "!src/component/**/*.test.ts",
+    "!src/shared/**/*.test.ts",
     "README.md",
     "LICENSE"
   ],

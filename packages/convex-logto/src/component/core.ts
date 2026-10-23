@@ -2,8 +2,17 @@
 // Everything here runs in Convex's V8 runtime: Web APIs only.
 
 import { ConvexError } from "convex/values";
-import { decodeBase64Url, decodeJwtSegment, isRecord } from "./decode.js";
-import { buildLogtoEndpointUrl } from "./endpoint.js";
+import {
+  decodeBase64Url,
+  decodeJwtSegment,
+  isRecord,
+} from "../shared/decode.js";
+import {
+  SESSION_LABEL_MAX_LENGTH,
+  normalizeDisplayText,
+  sessionLabelTooLong,
+} from "../shared/display-text.js";
+import { buildLogtoEndpointUrl } from "../shared/endpoint.js";
 
 /** Default lifetime of a sign-in transaction (state + PKCE verifier). */
 export const TRANSACTION_TTL_MS = 10 * 60 * 1000;
@@ -16,9 +25,6 @@ export const TRANSACTION_TTL_MS = 10 * 60 * 1000;
 export const DEFAULT_REUSE_WINDOW_MS = 10 * 1000;
 /** Maximum out-of-order successful session-token responses retained per session. */
 export const SESSION_TOKEN_GENERATION_LIMIT = 8;
-
-/** Longest accepted user-chosen session label, in code points. */
-export const SESSION_LABEL_MAX_LENGTH = 64;
 
 /**
  * Longest accepted sign-in redirect URI / `returnTo`, in code points.
@@ -82,49 +88,6 @@ export type SessionClientDescriptor = {
   os?: string;
   browser?: string;
 };
-
-/**
- * Every invisible character class, not a hand-picked list of bidi overrides:
- * `Cc` controls, `Cf` format characters (the bidi embeddings and isolates, but
- * also RLM/LRM/ALM and the zero-width joiners `\s` never matches), and the line
- * and paragraph separators. The UI renders a label next to other sessions, and
- * any of these can make one entry impersonate another.
- */
-const INVISIBLE_DISPLAY_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
-
-/** Emoji sequences join with ZWJ; dropping it would split families apart. */
-const ZERO_WIDTH_JOINER = "\u200d";
-
-/**
- * Collapse whitespace and drop invisible characters, so a label cannot smuggle
- * newlines or direction changes into a UI that lists it beside other sessions.
- */
-function normalizeDisplayText(raw: string): string {
-  // Code points, not graphemes. The limit these feed is a storage bound, and
-  // per-code-point filtering is what strips the invisible characters.
-  return Array.from(raw)
-    .filter(
-      (character) =>
-        character === ZERO_WIDTH_JOINER ||
-        !INVISIBLE_DISPLAY_CHARACTERS.test(character),
-    )
-    .join("")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/**
- * Would this label be rejected for its length? Exported so the browser half can
- * pre-empt the round-trip against *exactly* the rule the component applies:
- * normalization first, then a code-point count. Measuring the raw string
- * instead would reject a label the component would have accepted, because
- * normalization collapses whitespace and drops invisible characters.
- */
-export function sessionLabelTooLong(raw: string): boolean {
-  return (
-    Array.from(normalizeDisplayText(raw)).length > SESSION_LABEL_MAX_LENGTH
-  );
-}
 
 /**
  * Normalize a user-chosen session label. Rejects rather than truncates. A

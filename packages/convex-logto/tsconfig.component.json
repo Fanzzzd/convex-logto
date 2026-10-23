@@ -3,11 +3,16 @@
   // dist/component/ as the component's root directory and bundles the function
   // modules it finds there, so the file structure must be preserved 1:1,
   // matching the official @convex-dev component packages.
+  //
+  // Every file under src/component/ becomes a component module, so the
+  // V8-safe helpers it shares with the rest of the package live in src/shared/
+  // and tsc emits the ones it imports into dist/shared/. The CLI's esbuild bundle
+  // follows the relative imports out of the component directory.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
-    "outDir": "dist/component",
-    "rootDir": "src/component",
+    "outDir": "dist",
+    "rootDir": "src",
     "sourceMap": true,
     "declarationMap": true
   },
