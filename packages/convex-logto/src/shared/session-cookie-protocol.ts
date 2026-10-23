@@ -9,7 +9,7 @@ export const LOGTO_SESSION_CSRF_HEADER = "x-convex-logto-csrf";
 /** Fixed value for {@link LOGTO_SESSION_CSRF_HEADER}. */
 export const LOGTO_SESSION_CSRF_VALUE = "1";
 
-/** Default mount point for the four cookie transport routes. */
+/** Default mount point for the six cookie transport routes. */
 export const LOGTO_SESSION_COOKIE_BASE_PATH = "/api/logto-session";
 
 /**

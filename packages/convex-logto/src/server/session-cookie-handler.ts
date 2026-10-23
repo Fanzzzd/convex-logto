@@ -25,8 +25,8 @@ export type LogtoSessionCookieHandlerOptions = {
   /** Exact browser origins allowed to call the handler. Wildcards are rejected. */
   allowedOrigins: readonly string[];
   /**
-   * Mount point containing `sign-in`, `callback`, `token`, `sign-out` and
-   * `sessions`.
+   * Mount point containing `sign-in`, `callback`, `token`, `sign-out`,
+   * `sessions` and `tokens`.
    */
   basePath?: string;
   /**
@@ -554,7 +554,7 @@ function validateRedirectUri(value: string, requestOrigin: string): string {
 }
 
 /**
- * Build the same-site cookie transport's five-route standard-fetch handler.
+ * Build the same-site cookie transport's six-route standard-fetch handler.
  * The returned function can be exported directly as a Next.js POST/OPTIONS
  * handler or called from TanStack Start and Convex HTTP actions.
  */
@@ -643,10 +643,8 @@ export function createLogtoSessionCookieHandler(
           );
           const returnTo = optionalString(body, "returnTo");
           if (returnTo !== undefined && !isSafeReturnTo(returnTo)) {
-            return jsonResponse(
-              { error: "returnTo must be a same-origin path" },
-              { status: 400 },
-              origin,
+            throw new RequestValidationError(
+              "returnTo must be a same-origin path",
             );
           }
           const result = await options.action(options.sessionApi.signIn, {

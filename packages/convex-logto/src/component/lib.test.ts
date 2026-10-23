@@ -1,11 +1,13 @@
 import { getFunctionName, type FunctionReference } from "convex/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  abandonRefreshWithRotation,
   beginRefresh,
   beginSubjectRevocationByToken,
   completeRefresh,
   completeWebhookDelivery,
   consumeSessionForSignOut,
+  consumeTransaction,
   devicePublicKeyForToken,
   exchange,
   forgetWebhookDelivery,
@@ -28,6 +30,8 @@ import {
   SESSION_LIST_SCAN_BYTES,
   SESSION_LIST_SCAN_LIMIT,
   SESSION_TOKEN_GENERATION_LIMIT,
+  WEBHOOK_DELIVERY_GC_AFTER_MS,
+  hashToken,
   toBase64Url,
 } from "./core";
 
@@ -1026,6 +1030,256 @@ describe("bounded token endpoint", () => {
   });
 });
 
+/**
+ * Runs `refresh` against the real claim mutations over
+ * {@link sessionMutationHarness}, so a test can assert what is left of the
+ * session row after Logto fails, not only which mutation the action called.
+ */
+async function wiredRefreshHarness() {
+  const harness = sessionMutationHarness({
+    ...refreshFixture(),
+    tokenHash: await hashToken(refreshArgs.sessionToken),
+  });
+  const mutations: Record<
+    string,
+    (ctx: unknown, args: Record<string, unknown>) => Promise<unknown>
+  > = {
+    "lib:beginRefresh": internalHandler(beginRefresh),
+    "lib:completeRefresh": internalHandler(completeRefresh),
+    "lib:releaseClaim": internalHandler(releaseClaim),
+    "lib:killSession": internalHandler(killSession),
+    "lib:abandonRefreshWithRotation": internalHandler(
+      abandonRefreshWithRotation,
+    ),
+  };
+  const called: string[] = [];
+  const runMutation = (reference: unknown, args: Record<string, unknown>) => {
+    const name = getFunctionName(
+      reference as FunctionReference<"mutation", "internal">,
+    );
+    called.push(name);
+    const handler = mutations[name];
+    if (handler === undefined) throw new Error(`unexpected mutation ${name}`);
+    return handler({ db: harness.db }, args);
+  };
+  return {
+    harness,
+    called,
+    run: () =>
+      refreshActionHandler(
+        { runQuery: () => Promise.resolve(null), runMutation },
+        refreshArgs,
+      ),
+  };
+}
+
+describe("refresh failures against the session row", () => {
+  it("releases the claim and keeps the session when Logto cannot be reached", async () => {
+    // A connection refused or a DNS failure rejects before any response, so
+    // the grant never reached Logto. Only our own abort is an unknown outcome;
+    // treating this one like it would force every user to sign in again after
+    // each Logto outage.
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new TypeError("fetch failed"));
+    const wired = await wiredRefreshHarness();
+    try {
+      await expect(wired.run()).rejects.toMatchObject({
+        data: { kind: "transient", code: "logto_unreachable" },
+      });
+      expect(wired.called).toEqual(["lib:beginRefresh", "lib:releaseClaim"]);
+      expect(wired.harness.session()).toMatchObject({
+        logtoRefreshToken: "refresh-token",
+        refreshingSince: undefined,
+        refreshClaimId: undefined,
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("keeps the session when Logto answers with an error code it uses for every session", async () => {
+    // `invalid_target` and its kin describe the request, not this grant. Logto
+    // answers the same for every session in the deployment, so a terminal
+    // reading would delete them all, one refresh at a time.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: "invalid_target" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const wired = await wiredRefreshHarness();
+    try {
+      await expect(wired.run()).rejects.toMatchObject({
+        data: { kind: "transient", code: "invalid_target" },
+      });
+      expect(wired.called).toEqual(["lib:beginRefresh", "lib:releaseClaim"]);
+      expect(wired.harness.deleted).toEqual([]);
+      expect(wired.harness.session()).toMatchObject({
+        logtoRefreshToken: "refresh-token",
+        refreshClaimId: undefined,
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("deletes the session only for invalid_grant", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: "invalid_grant" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const wired = await wiredRefreshHarness();
+    try {
+      await expect(wired.run()).rejects.toMatchObject({
+        data: { kind: "terminal", code: "invalid_grant" },
+      });
+      expect(wired.called).toEqual(["lib:beginRefresh", "lib:killSession"]);
+      expect(wired.harness.session()).toBeNull();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});
+
+describe("consumeTransaction", () => {
+  type TransactionRow = {
+    _id: string;
+    state: string;
+    codeVerifier: string;
+    redirectUri: string;
+    returnTo?: string;
+    expiresAt: number;
+  };
+
+  /**
+   * This fake applies a delete immediately and cannot roll it back. In Convex
+   * the throw that follows aborts the mutation and the delete with it, so a
+   * failed consume leaves the row for GC. What a test here can pin down is
+   * that the failure throws, which is the thing that buys the rollback.
+   */
+  function transactionHarness(initial: TransactionRow[]) {
+    let rows = initial.map((row) => ({ ...row }));
+    const deleted: string[] = [];
+    const db = {
+      query: (table: string) => ({
+        withIndex: (
+          _index: string,
+          configure: (query: {
+            eq(field: string, value: string): unknown;
+          }) => unknown,
+        ) => {
+          let state = "";
+          configure({
+            eq(_field, value) {
+              state = value;
+              return this;
+            },
+          });
+          return {
+            unique: () =>
+              Promise.resolve(
+                table === "transactions"
+                  ? (rows.find((row) => row.state === state) ?? null)
+                  : null,
+              ),
+          };
+        },
+      }),
+      delete: (id: string) => {
+        deleted.push(id);
+        rows = rows.filter((row) => row._id !== id);
+        return Promise.resolve();
+      },
+    };
+    return { db, deleted, rows: () => rows };
+  }
+
+  const consume = internalHandler<
+    { state: string; redirectUri: string; now: number },
+    { codeVerifier: string; returnTo?: string }
+  >(consumeTransaction);
+
+  const pending: TransactionRow = {
+    _id: "transaction-1",
+    state: "state-1",
+    codeVerifier: "verifier",
+    redirectUri: "https://app.example.com/callback",
+    returnTo: "/dashboard",
+    expiresAt: 2_000_000,
+  };
+
+  it("hands back the verifier once and deletes the transaction", async () => {
+    const harness = transactionHarness([pending]);
+    await expect(
+      consume(
+        { db: harness.db },
+        { state: "state-1", redirectUri: pending.redirectUri, now: 1_000_000 },
+      ),
+    ).resolves.toEqual({ codeVerifier: "verifier", returnTo: "/dashboard" });
+    expect(harness.rows()).toEqual([]);
+    // A replayed callback with the same state finds nothing.
+    await expect(
+      consume(
+        { db: harness.db },
+        { state: "state-1", redirectUri: pending.redirectUri, now: 1_000_001 },
+      ),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "transaction_not_found" },
+    });
+  });
+
+  it("fails terminally on a redirect URI the sign-in did not start with", async () => {
+    // Throwing after the delete is what rolls the delete back in Convex.
+    const harness = transactionHarness([pending]);
+    await expect(
+      consume(
+        { db: harness.db },
+        {
+          state: "state-1",
+          redirectUri: "https://evil.example.com/callback",
+          now: 1_000_000,
+        },
+      ),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "redirect_uri_mismatch" },
+    });
+    expect(harness.deleted).toEqual(["transaction-1"]);
+  });
+
+  it("fails terminally on an expired transaction", async () => {
+    const harness = transactionHarness([pending]);
+    await expect(
+      consume(
+        { db: harness.db },
+        {
+          state: "state-1",
+          redirectUri: pending.redirectUri,
+          now: pending.expiresAt + 1,
+        },
+      ),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "transaction_not_found" },
+    });
+    expect(harness.deleted).toEqual(["transaction-1"]);
+  });
+
+  it("fails terminally on an unknown state without deleting anything", async () => {
+    const harness = transactionHarness([pending]);
+    await expect(
+      consume(
+        { db: harness.db },
+        { state: "other", redirectUri: pending.redirectUri, now: 1_000_000 },
+      ),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "transaction_not_found" },
+    });
+    expect(harness.deleted).toEqual([]);
+  });
+});
+
 describe("refresh claim ownership", () => {
   it("records the opaque claim id before allowing an action to call Logto", async () => {
     const harness = sessionMutationHarness(refreshFixture());
@@ -1936,86 +2190,82 @@ describe("gc token generations", () => {
   });
 });
 
-describe("gc revocation watermarks", () => {
-  type Row = Record<string, unknown> & { _id: string };
+type GcRow = Record<string, unknown> & { _id: string };
 
-  /**
-   * A small index-aware fake for the whole `gc` mutation. The watermark sweep
-   * needs a chained `eq(...).lte(...)`, which the refresh harness above does
-   * not model.
-   */
-  function gcHarness(tables: Record<string, Row[]>) {
-    const store: Record<string, Row[]> = {};
-    for (const [table, rows] of Object.entries(tables)) {
-      store[table] = rows.map((row) => ({ ...row }));
-    }
-    const db = {
-      query: (table: string) => ({
-        withIndex: (
-          _index: string,
-          configure?: (query: unknown) => unknown,
-        ) => {
-          const conditions: Array<(row: Row) => boolean> = [];
-          const compare =
-            (
-              field: string,
-              value: unknown,
-              ok: (a: number, b: number) => boolean,
-            ) =>
-            (row: Row) =>
-              typeof row[field] === "number" &&
-              typeof value === "number" &&
-              ok(row[field], value);
-          const builder = {
-            eq(field: string, value: unknown) {
-              conditions.push((row) => row[field] === value);
-              return this;
-            },
-            lt(field: string, value: unknown) {
-              conditions.push(compare(field, value, (a, b) => a < b));
-              return this;
-            },
-            lte(field: string, value: unknown) {
-              conditions.push(compare(field, value, (a, b) => a <= b));
-              return this;
-            },
-          };
-          configure?.(builder);
-          const matching = () =>
-            (store[table] ?? []).filter((row) =>
-              conditions.every((condition) => condition(row)),
-            );
-          const result = {
-            first: () => Promise.resolve(matching()[0] ?? null),
-            unique: () => Promise.resolve(matching()[0] ?? null),
-            collect: () => Promise.resolve(matching()),
-            take: (count: number) =>
-              Promise.resolve(matching().slice(0, count)),
-            order: () => result,
-          };
-          return result;
-        },
-      }),
-      delete: (id: string) => {
-        for (const rows of Object.values(store)) {
-          const index = rows.findIndex((row) => row._id === id);
-          if (index >= 0) rows.splice(index, 1);
-        }
-        return Promise.resolve();
-      },
-      get: (id: string) =>
-        Promise.resolve(
-          Object.values(store)
-            .flat()
-            .find((row) => row._id === id) ?? null,
-        ),
-    };
-    return {
-      db,
-      rows: (table: string) => (store[table] ?? []).map((row) => row._id),
-    };
+/**
+ * A small index-aware fake for the whole `gc` mutation. The watermark sweep
+ * needs a chained `eq(...).lte(...)`, which the refresh harness above does
+ * not model.
+ */
+function gcHarness(tables: Record<string, GcRow[]>) {
+  const store: Record<string, GcRow[]> = {};
+  for (const [table, rows] of Object.entries(tables)) {
+    store[table] = rows.map((row) => ({ ...row }));
   }
+  const db = {
+    query: (table: string) => ({
+      withIndex: (_index: string, configure?: (query: unknown) => unknown) => {
+        const conditions: Array<(row: GcRow) => boolean> = [];
+        const compare =
+          (
+            field: string,
+            value: unknown,
+            ok: (a: number, b: number) => boolean,
+          ) =>
+          (row: GcRow) =>
+            typeof row[field] === "number" &&
+            typeof value === "number" &&
+            ok(row[field], value);
+        const builder = {
+          eq(field: string, value: unknown) {
+            conditions.push((row) => row[field] === value);
+            return this;
+          },
+          lt(field: string, value: unknown) {
+            conditions.push(compare(field, value, (a, b) => a < b));
+            return this;
+          },
+          lte(field: string, value: unknown) {
+            conditions.push(compare(field, value, (a, b) => a <= b));
+            return this;
+          },
+        };
+        configure?.(builder);
+        const matching = () =>
+          (store[table] ?? []).filter((row) =>
+            conditions.every((condition) => condition(row)),
+          );
+        const result = {
+          first: () => Promise.resolve(matching()[0] ?? null),
+          unique: () => Promise.resolve(matching()[0] ?? null),
+          collect: () => Promise.resolve(matching()),
+          take: (count: number) => Promise.resolve(matching().slice(0, count)),
+          order: () => result,
+        };
+        return result;
+      },
+    }),
+    delete: (id: string) => {
+      for (const rows of Object.values(store)) {
+        const index = rows.findIndex((row) => row._id === id);
+        if (index >= 0) rows.splice(index, 1);
+      }
+      return Promise.resolve();
+    },
+    get: (id: string) =>
+      Promise.resolve(
+        Object.values(store)
+          .flat()
+          .find((row) => row._id === id) ?? null,
+      ),
+  };
+  return {
+    db,
+    rows: (table: string) => (store[table] ?? []).map((row) => row._id),
+  };
+}
 
+describe("gc revocation watermarks", () => {
   const NOW = Date.now();
   const ANCIENT = NOW - REVOCATION_MARKER_GC_AFTER_MS - 60_000;
   const scheduled: unknown[] = [];
@@ -2164,6 +2414,84 @@ describe("gc revocation watermarks", () => {
     expect(harness.rows("subjectRevocations")).toEqual(["subject-marker"]);
     expect(harness.rows("sidRevocations")).toEqual(["sid-marker"]);
   });
+});
+
+describe("gc resource tokens and webhook deliveries", () => {
+  // Not exported from lib.ts. Mirrors GC_SMALL_DOCUMENT_BATCH_SIZE there.
+  const SMALL_DOCUMENT_BATCH = 500;
+  const NOW = Date.now();
+  const STALE_DELIVERY = NOW - WEBHOOK_DELIVERY_GC_AFTER_MS - 60_000;
+  const scheduled: string[] = [];
+  const scheduler = {
+    runAfter: (_delay: number, reference: unknown) => {
+      scheduled.push(
+        getFunctionName(reference as FunctionReference<"mutation", "internal">),
+      );
+      return Promise.resolve();
+    },
+  };
+
+  beforeEach(() => {
+    scheduled.length = 0;
+  });
+
+  it("collects expired tokens and stale deliveries and keeps the rest", async () => {
+    // A completed delivery is the replay guard for its body. It may go once
+    // Logto has stopped retrying, and not before.
+    const harness = gcHarness({
+      resourceTokens: [
+        { _id: "expired-token", sessionId: "s1", expiresAt: NOW - 1_000 },
+        { _id: "live-token", sessionId: "s1", expiresAt: NOW + 3_600_000 },
+      ],
+      webhookDeliveries: [
+        { _id: "stale-delivery", bodyHash: "a", seenAt: STALE_DELIVERY },
+        { _id: "recent-delivery", bodyHash: "b", seenAt: NOW - 60_000 },
+      ],
+    });
+
+    await expect(
+      gcHandler({ db: harness.db, scheduler }, {}),
+    ).resolves.toBeNull();
+    expect(harness.rows("resourceTokens")).toEqual(["live-token"]);
+    expect(harness.rows("webhookDeliveries")).toEqual(["recent-delivery"]);
+    // Nothing filled a batch, so the chain ends and the watermark sweep runs.
+    expect(scheduled).toEqual(["lib:gcRevocationMarkers"]);
+  });
+
+  it.each([
+    [
+      "resourceTokens",
+      (index: number) => ({
+        _id: `token-${index}`,
+        sessionId: "s1",
+        expiresAt: NOW - 1_000 - index,
+      }),
+    ],
+    [
+      "webhookDeliveries",
+      (index: number) => ({
+        _id: `delivery-${index}`,
+        bodyHash: `hash-${index}`,
+        seenAt: STALE_DELIVERY - index,
+      }),
+    ],
+  ] as const)(
+    "reschedules itself when %s fills its batch",
+    async (table, row) => {
+      // A daily cron that took one batch per run would never catch up with a
+      // table that grows faster than that.
+      const harness = gcHarness({
+        [table]: Array.from({ length: SMALL_DOCUMENT_BATCH + 1 }, (_, index) =>
+          row(index),
+        ),
+      });
+
+      await gcHandler({ db: harness.db, scheduler }, {});
+      expect(harness.rows(table)).toHaveLength(1);
+      // The watermark sweep waits for the last batch of the chain.
+      expect(scheduled).toEqual(["lib:gc"]);
+    },
+  );
 });
 
 describe("webhook delivery dedupe", () => {

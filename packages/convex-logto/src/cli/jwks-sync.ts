@@ -28,7 +28,13 @@ export type DeploymentEnv = {
 export type JwksSyncOptions = {
   env: DeploymentEnv;
   fetch?: typeof globalThis.fetch;
-  /** Accept a non-loopback `http:` LOGTO_ENDPOINT. */
+  /**
+   * The Logto endpoint, for an app that passes `endpoint` to
+   * `logtoAuthConfig` instead of setting LOGTO_ENDPOINT. Defaults to the
+   * deployment's own LOGTO_ENDPOINT.
+   */
+  endpoint?: string;
+  /** Accept a non-loopback `http:` endpoint. */
   allowInsecureHttp?: boolean;
 };
 
@@ -42,8 +48,14 @@ export type SyncJwksResult = {
 export type CheckJwksResult = {
   jwksUrl: string;
   /**
-   * Served keys a static JWKS cannot verify, other than the signing key. One
-   * of them may be a staged next key, which breaks sign-in once promoted.
+   * A staged next key a static JWKS cannot verify. Logto serves three keys only
+   * while a rotation is staged, and the second is then the next key: every
+   * sign-in fails the moment Logto promotes it.
+   */
+  unusableNext?: string;
+  /**
+   * Other served keys a static JWKS cannot verify. Usually the EC key Logto
+   * keeps as the previous one after a rotation to RSA, which is harmless.
    */
   unusable: string[];
   /** Keys Logto may sign with that LOGTO_JWKS lacks. Non-empty means sign-ins fail. */
@@ -62,17 +74,22 @@ function keyId(key: LogtoJwk): string {
   return key.kid ?? `n=${key.n.slice(0, 16)}…`;
 }
 
-async function liveKeys(
-  options: JwksSyncOptions,
-): Promise<{ jwksUrl: string; keys: LogtoJwk[]; unusable: string[] }> {
-  const rawEndpoint = (await options.env.get("LOGTO_ENDPOINT"))?.trim();
+async function liveKeys(options: JwksSyncOptions): Promise<{
+  jwksUrl: string;
+  keys: LogtoJwk[];
+  unusableNext?: string;
+  unusable: string[];
+}> {
+  // By default the keys come from the deployment's own LOGTO_ENDPOINT, so a
+  // deployment can never be handed another tenant's keys.
+  const rawEndpoint = (
+    options.endpoint ?? (await options.env.get("LOGTO_ENDPOINT"))
+  )?.trim();
   if (!rawEndpoint) {
     throw new JwksSyncError(
-      "LOGTO_ENDPOINT is not set on this deployment. Set it first: npx convex env set LOGTO_ENDPOINT https://auth.example.com",
+      "LOGTO_ENDPOINT is not set on this deployment. Set it first (npx convex env set LOGTO_ENDPOINT https://auth.example.com), or pass --endpoint.",
     );
   }
-  // The keys come from the deployment's own LOGTO_ENDPOINT, so a deployment
-  // can never be handed another tenant's keys.
   let jwksUrl: string;
   try {
     jwksUrl = buildLogtoEndpointUrl(
@@ -81,7 +98,7 @@ async function liveKeys(
     );
   } catch (error) {
     throw new JwksSyncError(
-      `LOGTO_ENDPOINT on this deployment is unusable: ${String(error instanceof Error ? error.message : error)}`,
+      `The Logto endpoint ${rawEndpoint} is unusable: ${String(error instanceof Error ? error.message : error)}`,
     );
   }
   let served: unknown[];
@@ -108,12 +125,17 @@ async function liveKeys(
       `Logto signs with ${describeServedKey(signing)}, which Convex cannot verify from a static JWKS (RS256 only; ${jwksUrl}). Rotate the OIDC signing key to RSA in the Logto Console, then run this again.`,
     );
   }
+  const others = served.slice(1);
+  // Three keys means a staged rotation: current, next, previous.
+  const next = served.length === 3 ? served[1] : undefined;
   return {
     jwksUrl,
     keys: usable,
-    unusable: served
-      .slice(1)
-      .filter((key) => !isUsable(key))
+    ...(next !== undefined && !isUsable(next)
+      ? { unusableNext: describeServedKey(next) }
+      : {}),
+    unusable: others
+      .filter((key) => key !== next && !isUsable(key))
       .map(describeServedKey),
   };
 }
@@ -151,7 +173,7 @@ export async function syncJwks(
 export async function checkJwks(
   options: JwksSyncOptions,
 ): Promise<CheckJwksResult> {
-  const { jwksUrl, keys, unusable } = await liveKeys(options);
+  const { jwksUrl, keys, unusableNext, unusable } = await liveKeys(options);
   const stored = await options.env.get("LOGTO_JWKS");
   if (stored === undefined) {
     throw new JwksSyncError(
@@ -169,6 +191,7 @@ export async function checkJwks(
   const kept = new Map(storedKeys.map((key) => [key.n, keyId(key)]));
   return {
     jwksUrl,
+    ...(unusableNext === undefined ? {} : { unusableNext }),
     unusable,
     missing: [...live].filter(([n]) => !kept.has(n)).map(([, id]) => id),
     stale: [...kept].filter(([n]) => !live.has(n)).map(([, id]) => id),

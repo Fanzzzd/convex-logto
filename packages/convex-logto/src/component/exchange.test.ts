@@ -2,11 +2,14 @@ import { getFunctionName, type FunctionReference } from "convex/server";
 import { ConvexError } from "convex/values";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  abandonRefreshWithRotation,
   beginTokenExchange,
   cachedResourceToken,
   completeTokenExchange,
   exchangeToken,
   fetchUserInfo,
+  killSession,
+  releaseClaim,
 } from "./lib";
 import {
   MAX_CACHEABLE_ACCESS_TOKEN_LENGTH,
@@ -15,6 +18,7 @@ import {
   TOKEN_AUDIENCE_MAX_LENGTH,
   accessTokenExpiresAt,
   decideExchange,
+  hashToken,
   tokenAudienceKey,
   tokenScopeKey,
   TOKEN_SCOPE_MAX_COUNT,
@@ -1050,5 +1054,248 @@ describe("fetchUserInfo", () => {
     });
     expect(harness.userInfoRequests).toHaveLength(1);
     expect(harness.tokenRequests).toHaveLength(0);
+  });
+});
+
+// --- exchange failure paths, wired to the real mutations ---------------------
+
+/**
+ * Runs `exchangeToken` against the real claim mutations over
+ * {@link exchangeHarness}, so a test can assert what is left of the session row
+ * after Logto fails, not only which mutation the action chose to call.
+ */
+async function wiredExchangeHarness(
+  respond: (signal: AbortSignal | undefined) => Promise<Response>,
+) {
+  const sessionToken = "session-token";
+  const harness = exchangeHarness(
+    sessionFixture({ tokenHash: await hashToken(sessionToken) }),
+  );
+  const mutations: Record<
+    string,
+    (ctx: unknown, args: Record<string, unknown>) => Promise<unknown>
+  > = {
+    "lib:beginTokenExchange": handlerOf(beginTokenExchange),
+    "lib:completeTokenExchange": handlerOf(completeTokenExchange),
+    "lib:releaseClaim": handlerOf(releaseClaim),
+    "lib:abandonRefreshWithRotation": handlerOf(abandonRefreshWithRotation),
+    "lib:killSession": handlerOf(killSession),
+  };
+  const called: string[] = [];
+  const runMutation = (reference: unknown, args: Record<string, unknown>) => {
+    const name = getFunctionName(
+      reference as FunctionReference<"mutation", "internal">,
+    );
+    called.push(name);
+    const handler = mutations[name];
+    if (handler === undefined) throw new Error(`unexpected mutation ${name}`);
+    return handler({ db: harness.db }, args);
+  };
+  const runQuery = (reference: unknown) => {
+    const name = getFunctionName(
+      reference as FunctionReference<"query", "internal">,
+    );
+    if (name === "lib:devicePublicKeyForToken") return Promise.resolve(null);
+    if (name === "lib:cachedResourceToken") return Promise.resolve(null);
+    throw new Error(`unexpected query ${name}`);
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((_input: unknown, init?: { signal?: AbortSignal }) =>
+      respond(init?.signal),
+    ),
+  );
+  const handler = handlerOf<Record<string, unknown>, unknown>(exchangeToken);
+  return {
+    harness,
+    called,
+    run: () =>
+      handler(
+        { runQuery, runMutation },
+        {
+          endpoint: "https://auth.example.com",
+          appId: "app",
+          clientSecret: "secret",
+          sessionToken,
+          organizationId: "org-1",
+        },
+      ),
+  };
+}
+
+function tokenEndpointAnswer(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+describe("exchangeToken failure paths", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("keeps the claim on a 5xx, because Logto may already have rotated the grant", async () => {
+    const wired = await wiredExchangeHarness(() =>
+      Promise.resolve(tokenEndpointAnswer(503, {})),
+    );
+    await expect(wired.run()).rejects.toMatchObject({
+      data: { kind: "transient", code: "logto_outcome_unknown" },
+    });
+    expect(wired.called).toEqual(["lib:beginTokenExchange"]);
+    const claimed = wired.harness.session();
+    expect(claimed).toMatchObject({
+      logtoRefreshToken: "refresh-token",
+      refreshClaimId: expect.any(String),
+      refreshingSince: expect.any(Number),
+    });
+
+    // The retained claim is the point. A retry inside the claim timeout waits
+    // instead of re-presenting the token; one after it deletes the session
+    // rather than spending a refresh token Logto may already have superseded.
+    await expect(wired.run()).rejects.toMatchObject({
+      data: { kind: "transient", code: "refresh_in_flight" },
+    });
+    await expect(
+      beginHandler(
+        { db: wired.harness.db },
+        {
+          presentedHash: claimed!.tokenHash,
+          claimId: "successor",
+          now: claimed!.refreshingSince! + 60_000,
+          reuseWindowMs: 10_000,
+        },
+      ),
+    ).resolves.toEqual({ outcome: "claim-expired" });
+    expect(wired.harness.session()).toBeNull();
+  });
+
+  it("keeps the claim when its own timeout aborts the request", async () => {
+    vi.useFakeTimers();
+    let markFetchStarted = () => {};
+    const fetchStarted = new Promise<void>((resolve) => {
+      markFetchStarted = resolve;
+    });
+    const wired = await wiredExchangeHarness(
+      (signal) =>
+        new Promise<Response>((_resolve, reject) => {
+          markFetchStarted();
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    const promise = wired.run();
+    void promise.catch(() => {});
+    await fetchStarted;
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(promise).rejects.toMatchObject({
+      data: { kind: "transient", code: "logto_outcome_unknown" },
+    });
+    expect(wired.called).toEqual(["lib:beginTokenExchange"]);
+    expect(wired.harness.session()).toMatchObject({
+      refreshClaimId: expect.any(String),
+    });
+  });
+
+  it("persists a reported rotation and keeps the session when no access_token came back", async () => {
+    // Logto answered with a token response, so the rotation state is known.
+    // Dropping the new refresh token would make the next refresh present a
+    // superseded one, which Logto treats as reuse and answers by destroying
+    // the grant.
+    const wired = await wiredExchangeHarness(() =>
+      Promise.resolve(
+        tokenEndpointAnswer(200, { refresh_token: "rotated-token" }),
+      ),
+    );
+    await expect(wired.run()).rejects.toMatchObject({
+      data: { kind: "transient", code: "no_access_token" },
+    });
+    expect(wired.called).toEqual([
+      "lib:beginTokenExchange",
+      "lib:abandonRefreshWithRotation",
+    ]);
+    expect(wired.harness.session()).toMatchObject({
+      logtoRefreshToken: "rotated-token",
+      refreshingSince: undefined,
+      refreshClaimId: undefined,
+    });
+    expect(wired.harness.tokens()).toEqual([]);
+  });
+
+  it("keeps the stored refresh token when the token response rotated nothing", async () => {
+    const wired = await wiredExchangeHarness(() =>
+      Promise.resolve(tokenEndpointAnswer(200, { scope: "openid" })),
+    );
+    await expect(wired.run()).rejects.toMatchObject({
+      data: { kind: "transient", code: "no_access_token" },
+    });
+    expect(wired.harness.session()).toMatchObject({
+      logtoRefreshToken: "refresh-token",
+      refreshClaimId: undefined,
+    });
+  });
+
+  it("releases the claim and keeps the session when Logto answers 401 invalid_client", async () => {
+    // A decision from Logto proves it processed nothing, so the stored refresh
+    // token is still current and safe to spend again once the secret is fixed.
+    const wired = await wiredExchangeHarness(() =>
+      Promise.resolve(tokenEndpointAnswer(401, { error: "invalid_client" })),
+    );
+    await expect(wired.run()).rejects.toMatchObject({
+      data: { kind: "transient", code: "invalid_client" },
+    });
+    expect(wired.called).toEqual([
+      "lib:beginTokenExchange",
+      "lib:releaseClaim",
+    ]);
+    expect(wired.harness.session()).toMatchObject({
+      logtoRefreshToken: "refresh-token",
+      refreshClaimId: undefined,
+      refreshingSince: undefined,
+    });
+  });
+
+  it("answers invalid_grant as terminal for the request but keeps the session", async () => {
+    // On this path the grant Logto refused is the *exchange*: a mistyped
+    // organization id reaches it as invalid_grant. Terminal tells the client
+    // not to retry the same request; deleting the session would sign out a
+    // user whose refresh grant is fine.
+    const wired = await wiredExchangeHarness(() =>
+      Promise.resolve(tokenEndpointAnswer(400, { error: "invalid_grant" })),
+    );
+    await expect(wired.run()).rejects.toMatchObject({
+      data: { kind: "terminal", code: "invalid_grant" },
+    });
+    expect(wired.called).toEqual([
+      "lib:beginTokenExchange",
+      "lib:releaseClaim",
+    ]);
+    expect(wired.harness.session()).toMatchObject({
+      logtoRefreshToken: "refresh-token",
+      refreshClaimId: undefined,
+    });
+  });
+
+  it("releases the claim when Logto cannot be reached at all", async () => {
+    // A connection that fails before any response never put the grant on the
+    // wire, unlike our own timeout. Keeping the claim here would turn every
+    // Logto outage into a forced reauthentication.
+    const wired = await wiredExchangeHarness(() =>
+      Promise.reject(new TypeError("fetch failed")),
+    );
+    await expect(wired.run()).rejects.toMatchObject({
+      data: { kind: "transient", code: "logto_unreachable" },
+    });
+    expect(wired.called).toEqual([
+      "lib:beginTokenExchange",
+      "lib:releaseClaim",
+    ]);
+    expect(wired.harness.session()).toMatchObject({
+      refreshClaimId: undefined,
+    });
   });
 });

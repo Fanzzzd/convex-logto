@@ -2058,18 +2058,89 @@ describe("external events", () => {
     // engine watches is its own. Another tab signing in replaces that
     // credential without telling us; revoking the session we *used* to hold
     // must not delete the one that took its place.
-    const { engine, storage } = makeHarness();
+    const { engine, storage, handlers } = makeHarness();
     storage.writeSession({ token: "t1", sessionId: "s1" });
     storage.writeIdToken(freshToken());
     engine.start();
     await settled(engine);
     storage.writeSession({ token: "t2", sessionId: "s2" });
+    handlers.refresh.mockResolvedValue({
+      ...sessionResult(3),
+      sessionId: "s2",
+    });
 
     engine.handleRevoked();
 
     await vi.waitFor(() => expect(engine.getSnapshot().sessionId).toBe("s2"));
-    expect(storage.readSession()).toEqual({ token: "t2", sessionId: "s2" });
-    expect(storage.readIdToken()).not.toBeNull();
+    expect(handlers.refresh).toHaveBeenCalledWith({ sessionToken: "t2" });
+    expect(storage.readSession()).toEqual({
+      token: "session-token-3",
+      sessionId: "s2",
+    });
+    expect(engine.getSnapshot().status).toBe("authenticated");
+  });
+
+  it("an adopted session's token replaces the revoked one this tab served", async () => {
+    // Per-tab token storage keeps the revoked session's ID token fresh in this
+    // tab, and Convex holds it. Serving it again would keep this tab acting as
+    // whoever signed in before, for the rest of that token's life.
+    const { engine, storage, handlers } = makeHarness({
+      tokenStorage: "session",
+    });
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    storage.writeIdToken(freshToken("alice"));
+    engine.start();
+    await settled(engine);
+    const aliceToken = await engine.fetchAccessToken(false);
+
+    // Another tab signs in as bob over alice's session, then revokes it.
+    storage.writeSession({ token: "t2", sessionId: "s2" });
+    const bob = { ...sessionResult(3, "bob"), sessionId: "s2" };
+    handlers.refresh.mockResolvedValue(bob);
+    const statuses: string[] = [];
+    engine.subscribe(() => statuses.push(engine.getSnapshot().status));
+
+    engine.handleRevoked();
+
+    await vi.waitFor(() => expect(engine.getSnapshot().user?.sub).toBe("bob"));
+    // Through "restoring", so ConvexProviderWithAuth calls setAuth again.
+    expect(statuses[0]).toBe("restoring");
+    expect(engine.getSnapshot()).toMatchObject({
+      status: "authenticated",
+      sessionId: "s2",
+    });
+    const served = await engine.fetchAccessToken(false);
+    expect(served).toBe(bob.idToken);
+    expect(served).not.toBe(aliceToken);
+  });
+
+  it("adoption starts its own refresh instead of merging into one from before", async () => {
+    // A refresh begun for the revoked session resolves null once the
+    // generation moves on. Merging into it read as a failed refresh and signed
+    // the adopted session out.
+    const { engine, storage, handlers } = makeHarness();
+    storage.writeSession({ token: "t1", sessionId: "s1" });
+    storage.writeIdToken(freshToken());
+    engine.start();
+    await settled(engine);
+    const stale = deferred<ReturnType<typeof sessionResult>>();
+    handlers.refresh.mockImplementationOnce(() => stale.promise);
+    await engine.fetchAccessToken(false);
+    const forced = engine.fetchAccessToken(true);
+    await vi.waitFor(() => expect(handlers.refresh).toHaveBeenCalledTimes(1));
+
+    storage.writeSession({ token: "t2", sessionId: "s2" });
+    handlers.refresh.mockResolvedValueOnce({
+      ...sessionResult(3),
+      sessionId: "s2",
+    });
+    engine.handleRevoked();
+    stale.resolve(sessionResult(2));
+    await forced;
+
+    await vi.waitFor(() => expect(engine.getSnapshot().sessionId).toBe("s2"));
+    expect(handlers.refresh).toHaveBeenCalledTimes(2);
+    expect(handlers.refresh).toHaveBeenLastCalledWith({ sessionToken: "t2" });
     expect(engine.getSnapshot().status).toBe("authenticated");
   });
 
@@ -2609,6 +2680,64 @@ describe("token exchange", () => {
       organizationId: "org-1",
       scopes: ["manage"],
     });
+  });
+
+  it("an exchange queued behind a refresh presents the rotated session token", async () => {
+    // The lock serializes them across tabs. A credential read before queueing
+    // is the pre-rotation token, and presented after the reuse window it reads
+    // as theft and deletes the session.
+    let tail = Promise.resolve();
+    Object.defineProperty(navigator, "locks", {
+      configurable: true,
+      value: {
+        request: <T>(_name: string, fn: () => Promise<T>) => {
+          const run = tail.then(fn);
+          tail = run.then(
+            () => undefined,
+            () => undefined,
+          );
+          return run;
+        },
+      },
+    });
+    try {
+      const harness = makeHarness({
+        storedSession: { token: "t1", sessionId: "s1" },
+        storedIdToken: freshToken(),
+      });
+      harness.engine.start();
+      await settled(harness.engine);
+      const rotation = deferred<ReturnType<typeof sessionResult>>();
+      harness.handlers.refresh.mockImplementationOnce(() => rotation.promise);
+      harness.handlers.exchangeToken.mockResolvedValue({
+        claims: {
+          audience: "organization:org-1",
+          scopes: [],
+          expiresAt: 5_000_000,
+        },
+        minted: true,
+      });
+
+      await harness.engine.fetchAccessToken(false);
+      const refresh = harness.engine.fetchAccessToken(true);
+      await vi.waitFor(() =>
+        expect(harness.handlers.refresh).toHaveBeenCalledTimes(1),
+      );
+      // The refresh holds the lock now; the exchange queues behind it.
+      const exchange = harness.engine.getOrganizationTokenClaims("org-1");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(harness.handlers.exchangeToken).not.toHaveBeenCalled();
+      rotation.resolve({ ...sessionResult(2), sessionId: "s1" });
+      await refresh;
+      await exchange;
+
+      expect(harness.handlers.exchangeToken).toHaveBeenCalledWith({
+        sessionToken: "session-token-2",
+        organizationId: "org-1",
+      });
+    } finally {
+      Reflect.deleteProperty(navigator, "locks");
+    }
   });
 
   it("forwards forceRefresh, and omits it entirely when unasked", async () => {

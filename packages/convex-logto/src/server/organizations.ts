@@ -24,8 +24,8 @@ import {
  * user from an organization, or taking away a role, therefore does not take
  * effect at once. Nothing here re-reads Logto, by design, because that is what
  * makes the check free. Deleting or suspending the *user* is different. The
- * webhook in `convex-logto/webhooks` revokes their sessions, which is
- * immediate.
+ * webhook route `registerLogtoWebhook` (with its `sessions` option) revokes
+ * their sessions, which is immediate.
  *
  * When a membership change has to bite immediately, do not reach for these
  * helpers. Keep the membership in your own table and check that, so the

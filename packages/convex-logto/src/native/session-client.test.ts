@@ -445,6 +445,32 @@ describe("native session adapters", () => {
     expect(onAuthError).toHaveBeenCalledWith(expect.any(SessionSignOutError));
   });
 
+  it("lets the user sign in again after a sign-out whose cleanup failed", async () => {
+    // The failed delete fails that sign-out and nothing else. Signing in again
+    // is how the user recovers, so it must not trip over the same report.
+    const secureStore = fakeSecureStore();
+    await seedSession(secureStore, freshToken());
+    const deleteItem = secureStore.deleteItemAsync;
+    secureStore.deleteItemAsync = vi
+      .fn()
+      .mockRejectedValue(new Error("keystore delete failed"));
+    const { engine } = makeHarness({ secureStore });
+    engine.start();
+    await settled(engine);
+    await expect(engine.signOut()).rejects.toMatchObject({
+      name: "SessionSignOutError",
+    });
+    // The keychain recovers; the credentials it kept are still on record.
+    secureStore.deleteItemAsync = deleteItem;
+
+    await engine.signIn();
+
+    expect(engine.getSnapshot()).toMatchObject({
+      status: "authenticated",
+      sessionId: "session-id-1",
+    });
+  });
+
   it("rejects loudly when durable cleanup and server revocation both fail", async () => {
     const secureStore = fakeSecureStore();
     await seedSession(secureStore, freshToken());
@@ -695,10 +721,10 @@ describe("native storage faults", () => {
     );
   });
 
-  it("keeps reporting a credential that survived its delete", async () => {
-    // Unlike a write fault, the flush that reports this one does not consume
-    // it. The credential is still on the device, so sign-out has not happened
-    // and every later flush must keep saying so.
+  it("keeps reporting a credential that survived its delete, to sign-out only", async () => {
+    // The credential is still on the device, so sign-out has not happened and
+    // every later check must keep saying so. The flush must not: signing in
+    // again and refreshing await it, and they are how the user recovers.
     const secureStore = fakeSecureStore();
     await seedSession(secureStore, freshToken());
     const storage = new NativeSessionStorageArea(
@@ -711,10 +737,16 @@ describe("native storage faults", () => {
     );
 
     storage.clearAll();
+    // The refused delete of the non-credential `txn` stash is an ordinary
+    // write fault: reported once, then consumed.
     await expect(storage.flush()).rejects.toBeInstanceOf(
       NativeSessionStorageError,
     );
-    await expect(storage.flush()).rejects.toBeInstanceOf(
+    await expect(storage.flush()).resolves.toBeUndefined();
+    await expect(storage.assertCredentialsRemoved()).rejects.toBeInstanceOf(
+      NativeSessionStorageError,
+    );
+    await expect(storage.assertCredentialsRemoved()).rejects.toBeInstanceOf(
       NativeSessionStorageError,
     );
 
@@ -723,6 +755,28 @@ describe("native storage faults", () => {
       return Promise.resolve();
     });
     storage.clearAll();
-    await expect(storage.flush()).resolves.toBeUndefined();
+    await expect(storage.assertCredentialsRemoved()).resolves.toBeUndefined();
+  });
+
+  it("forgets a refused delete once a new sign-in overwrites the key", async () => {
+    const secureStore = fakeSecureStore();
+    await seedSession(secureStore, freshToken());
+    const storage = new NativeSessionStorageArea(
+      "https://native.convex.cloud",
+      secureStore,
+    );
+    await storage.prepare();
+    const deleteItem = secureStore.deleteItemAsync;
+    secureStore.deleteItemAsync = vi.fn(() =>
+      Promise.reject(new Error("keychain delete failed")),
+    );
+    storage.clearAll();
+    await storage.flush().catch(() => {});
+    secureStore.deleteItemAsync = deleteItem;
+
+    storage.writeSession({ token: "t2", sessionId: "s2" });
+    storage.writeIdToken(freshToken());
+    await storage.flush();
+    await expect(storage.assertCredentialsRemoved()).resolves.toBeUndefined();
   });
 });

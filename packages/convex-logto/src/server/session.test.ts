@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { DEFAULT_REUSE_WINDOW_MS } from "../component/core";
 import { ORGANIZATIONS_SCOPE } from "../shared/claims";
 import {
   assertSubjectHasActiveSession,
@@ -12,7 +13,7 @@ it("keeps the legacy assertion name as a deprecated compatibility alias", () => 
 });
 
 describe("assertSubjectHasActiveSession", () => {
-  it("allows a bearer when another active session remains for its subject", async () => {
+  it("asks the component about the ctx.auth subject and allows on a true answer", async () => {
     const query = { fn: "hasActiveSessionForSubject" };
     const component = {
       lib: { hasActiveSessionForSubject: query },
@@ -29,6 +30,24 @@ describe("assertSubjectHasActiveSession", () => {
       assertSubjectHasActiveSession(ctx, component),
     ).resolves.toBeUndefined();
     expect(runQuery).toHaveBeenCalledWith(query, { subject: "user-1" });
+  });
+
+  it("rejects an unauthenticated caller without querying the component", async () => {
+    const component = {
+      lib: { hasActiveSessionForSubject: { fn: "active" } },
+    } as unknown as LogtoSessionComponent;
+    const runQuery = vi.fn();
+    const ctx = {
+      auth: { getUserIdentity: vi.fn().mockResolvedValue(null) },
+      runQuery,
+    };
+
+    await expect(
+      assertSubjectHasActiveSession(ctx, component),
+    ).rejects.toMatchObject({
+      data: { kind: "terminal", code: "unauthenticated" },
+    });
+    expect(runQuery).not.toHaveBeenCalled();
   });
 
   it("rejects when no active session remains for the subject", async () => {
@@ -390,5 +409,118 @@ describe("logtoSessionApi exchangeToken targets", () => {
       data: { kind: "terminal", code: "missing_token_target" },
     });
     expect(runAction).not.toHaveBeenCalled();
+  });
+});
+
+describe("logtoSessionApi session management", () => {
+  const actions = {
+    listSessions: { fn: "listSessions" },
+    renameSession: { fn: "renameSession" },
+    revokeSession: { fn: "revokeSession" },
+  };
+  const component = { lib: actions } as unknown as LogtoSessionComponent;
+
+  type Handler = (
+    ctx: { runAction: ReturnType<typeof vi.fn> },
+    args: Record<string, unknown>,
+  ) => Promise<unknown>;
+
+  function handlerFor(
+    name: keyof typeof actions,
+    options: Record<string, unknown> = {},
+  ) {
+    const api = logtoSessionApi(component, {
+      endpoint: "https://auth.example.com",
+      appId: "app-1",
+      clientSecret: "secret",
+      ...options,
+    });
+    return (api[name] as unknown as Record<string, Handler>)["_handler"]!;
+  }
+
+  it.each([
+    [
+      "listSessions",
+      { sessionToken: "caller-session-token", deviceProof: "proof" },
+      { sessions: [], truncated: false },
+      {},
+    ],
+    [
+      "renameSession",
+      {
+        sessionToken: "caller-session-token",
+        deviceProof: "proof",
+        targetSessionId: "session-2",
+        label: "Work laptop",
+      },
+      true,
+      { targetSessionId: "session-2", label: "Work laptop" },
+    ],
+    [
+      "revokeSession",
+      {
+        sessionToken: "caller-session-token",
+        deviceProof: "proof",
+        targetSessionId: "session-2",
+      },
+      true,
+      { targetSessionId: "session-2" },
+    ],
+  ] as const)(
+    "%s presents the caller's token with now and the default reuse window",
+    async (name, args, answer, extra) => {
+      const runAction = vi.fn().mockResolvedValue(answer);
+      const now = vi.spyOn(Date, "now").mockReturnValue(1_234_567);
+
+      const result = await handlerFor(name)({ runAction }, { ...args });
+
+      now.mockRestore();
+      expect(result).toEqual(answer);
+      // Exactly these keys. In particular no subject: the component derives
+      // it from the presented token, never from an argument.
+      expect(runAction).toHaveBeenCalledWith(actions[name], {
+        sessionToken: "caller-session-token",
+        deviceProof: "proof",
+        ...extra,
+        now: 1_234_567,
+        reuseWindowMs: DEFAULT_REUSE_WINDOW_MS,
+      });
+    },
+  );
+
+  it.each(["listSessions", "renameSession", "revokeSession"] as const)(
+    "%s passes the configured reuse window",
+    async (name) => {
+      const runAction = vi.fn().mockResolvedValue(true);
+
+      await handlerFor(name, { reuseWindowMs: 321 })(
+        { runAction },
+        { sessionToken: "session-token", targetSessionId: "session-2" },
+      );
+
+      expect(runAction).toHaveBeenCalledWith(
+        actions[name],
+        expect.objectContaining({
+          sessionToken: "session-token",
+          deviceProof: undefined,
+          now: expect.any(Number),
+          reuseWindowMs: 321,
+        }),
+      );
+    },
+  );
+
+  it("renameSession forwards an absent label so the component clears it", async () => {
+    const runAction = vi.fn().mockResolvedValue(true);
+
+    await handlerFor("renameSession")(
+      { runAction },
+      { sessionToken: "session-token", targetSessionId: "session-2" },
+    );
+
+    expect(runAction).toHaveBeenCalledWith(
+      actions.renameSession,
+      expect.objectContaining({ label: undefined }),
+    );
   });
 });

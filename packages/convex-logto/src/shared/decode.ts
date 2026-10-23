@@ -1,5 +1,6 @@
-// Decoding primitives for untrusted input, shared by the component, the
-// server entry, and the browser/native clients. Keep this module V8-safe,
+// Byte-level primitives shared by the component, the server entry, and the
+// browser/native clients: decoding untrusted input, and the hex form every
+// hash in this package is stored and compared in. Keep this module V8-safe,
 // because the component imports it.
 
 const utf8Decoder = /* @__PURE__ */ new TextDecoder("utf-8", { fatal: true });
@@ -54,4 +55,13 @@ export function decodeJwtPayload(
   if (parts.length !== 3) return null;
   const decoded = decodeJwtSegment(parts[1] ?? "");
   return isRecord(decoded) ? decoded : null;
+}
+
+/** Lowercase hex of a byte buffer, e.g. a SHA-256 digest. */
+export function toHex(buffer: ArrayBuffer): string {
+  let hex = "";
+  for (const byte of new Uint8Array(buffer)) {
+    hex += byte.toString(16).padStart(2, "0");
+  }
+  return hex;
 }

@@ -201,6 +201,193 @@ describe("fixed CSRF policy", () => {
     );
     expect(action).not.toHaveBeenCalled();
   });
+
+  it("refuses a preflight from an unlisted Origin without CORS headers", async () => {
+    const { handler, action } = makeHarness();
+    const response = await handler(
+      new Request(`${APP_ORIGIN}${BASE_PATH}/token`, {
+        method: "OPTIONS",
+        headers: {
+          Origin: "https://attacker.example",
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": `${LOGTO_SESSION_CSRF_HEADER}, content-type`,
+        },
+      }),
+    );
+    expect(response.status).toBe(403);
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    expect(response.headers.get("access-control-allow-credentials")).toBeNull();
+    expect(response.headers.get("access-control-allow-headers")).toBeNull();
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["omits the CSRF header", "content-type"],
+    ["requests no headers at all", null],
+  ])("refuses a preflight that %s", async (_name, requestedHeaders) => {
+    const { handler, action } = makeHarness();
+    const headers = new Headers({
+      Origin: APP_ORIGIN,
+      "Access-Control-Request-Method": "POST",
+    });
+    if (requestedHeaders !== null)
+      headers.set("Access-Control-Request-Headers", requestedHeaders);
+    const response = await handler(
+      new Request(`${APP_ORIGIN}${BASE_PATH}/token`, {
+        method: "OPTIONS",
+        headers,
+      }),
+    );
+    expect(response.status).toBe(403);
+    // Never grants the methods or headers a real request would need.
+    expect(response.headers.get("access-control-allow-headers")).toBeNull();
+    expect(response.headers.get("access-control-allow-methods")).toBeNull();
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it("refuses a preflight for a method other than POST", async () => {
+    const { handler } = makeHarness();
+    const response = await handler(
+      new Request(`${APP_ORIGIN}${BASE_PATH}/token`, {
+        method: "OPTIONS",
+        headers: {
+          Origin: APP_ORIGIN,
+          "Access-Control-Request-Method": "PUT",
+          "Access-Control-Request-Headers": LOGTO_SESSION_CSRF_HEADER,
+        },
+      }),
+    );
+    expect(response.status).toBe(403);
+    expect(response.headers.get("access-control-allow-methods")).toBeNull();
+  });
+
+  it("grants exactly POST with the CSRF and content-type headers", async () => {
+    const { handler } = makeHarness();
+    const response = await handler(
+      new Request(`${APP_ORIGIN}${BASE_PATH}/sign-out`, {
+        method: "OPTIONS",
+        headers: {
+          Origin: APP_ORIGIN,
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": `Content-Type, ${LOGTO_SESSION_CSRF_HEADER.toUpperCase()}`,
+        },
+      }),
+    );
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-methods")).toBe("POST");
+    expect(response.headers.get("access-control-allow-headers")).toBe(
+      `${LOGTO_SESSION_CSRF_HEADER}, content-type`,
+    );
+    expect(response.headers.get("vary")).toBe("Origin");
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it.each([
+    ["an unlisted Origin", { origin: "https://attacker.example" }],
+    ["no Origin", { origin: null }],
+    ["no CSRF header", { csrf: null }],
+    ["a wrong CSRF header", { csrf: "wrong" }],
+  ])(
+    "does not sign out, or expire the cookies, for a request with %s",
+    async (_name, overrides) => {
+      // A third-party page can make the browser POST here with the cookie
+      // attached. If the route cleared the cookie before the CSRF check, any
+      // site could sign the user out.
+      const { handler, handlers } = makeHarness();
+      const response = await handler(
+        request("sign-out", {
+          cookie: cookie("session-token-1"),
+          body: { everywhere: true },
+          ...overrides,
+        }),
+      );
+      expect(response.status).toBe(403);
+      expect(response.headers.getSetCookie()).toEqual([]);
+      expect(handlers.signOut).not.toHaveBeenCalled();
+      expect(handlers.signOutEverywhere).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("redirect targets", () => {
+  it.each([
+    ["another origin", "https://attacker.example/callback"],
+    ["another scheme on the same host", "http://app.example.com/callback"],
+    ["another port on the same host", "https://app.example.com:8443/callback"],
+    ["a subdomain", "https://evil.app.example.com/callback"],
+  ])("rejects a sign-in redirectUri on %s", async (_name, redirectUri) => {
+    const { handler, action } = makeHarness();
+    const response = await handler(
+      request("sign-in", { body: { redirectUri } }),
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        kind: "terminal",
+        code: "invalid_request",
+        message: "redirectUri must use the calling browser origin",
+      },
+    });
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it("rejects a callback redirectUri on another origin", async () => {
+    const { handler, action } = makeHarness();
+    const response = await handler(
+      request("callback", {
+        body: {
+          code: "code-1",
+          state: "state-1",
+          redirectUri: "https://attacker.example/callback",
+        },
+      }),
+    );
+    expect(response.status).toBe(400);
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a protocol-relative URL", "//evil.com"],
+    ["an absolute URL", "https://evil.com"],
+    ["a backslash authority", "/\\evil.com"],
+    ["a relative path", "dashboard"],
+    ["an embedded control character", "/\tevil.com"],
+    ["a javascript: URL", "javascript:alert(1)"],
+  ])("rejects a sign-in returnTo that is %s", async (_name, returnTo) => {
+    const { handler, action } = makeHarness();
+    const response = await handler(
+      request("sign-in", {
+        body: { redirectUri: `${APP_ORIGIN}/callback`, returnTo },
+      }),
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        kind: "terminal",
+        code: "invalid_request",
+        message: "returnTo must be a same-origin path",
+      },
+    });
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it("keeps a same-origin returnTo with its query and fragment", async () => {
+    const { handler, handlers } = makeHarness();
+    const response = await handler(
+      request("sign-in", {
+        body: {
+          redirectUri: `${APP_ORIGIN}/callback`,
+          returnTo: "/orders?tab=open#latest",
+        },
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(handlers.signIn).toHaveBeenCalledWith({
+      redirectUri: `${APP_ORIGIN}/callback`,
+      returnTo: "/orders?tab=open#latest",
+    });
+  });
 });
 
 describe("request validation", () => {
@@ -673,6 +860,33 @@ describe("browser transport", () => {
       LOGTO_SESSION_CSRF_VALUE,
     );
   });
+
+  it.each(["//evil.com", "https://evil.com", "/\\evil.com"])(
+    "refuses a callback response whose returnTo is %s",
+    async (returnTo) => {
+      const fetchMock = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        Response.json({
+          idToken: "id-token-1",
+          sessionId: "session-id-1",
+          returnTo,
+        }),
+      );
+      const transport = createLogtoSessionCookieTransport(api, {
+        endpoint: BASE_PATH,
+        fetch: fetchMock,
+      });
+
+      await expect(
+        transport.action(api.callback, {
+          code: "code-1",
+          state: "state-1",
+          redirectUri: `${APP_ORIGIN}/callback`,
+        }),
+      ).rejects.toThrow(
+        "convex-logto: session cookie handler returned an invalid response.",
+      );
+    },
+  );
 
   it("dispatches sign out everywhere through the sign-out route selector", async () => {
     const fetchMock = vi.fn<typeof globalThis.fetch>().mockResolvedValue(

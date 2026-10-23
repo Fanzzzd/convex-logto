@@ -30,6 +30,12 @@ redirect URI, and, if you use them, its own [webhook](/docs/webhook-sync) and
 [back-channel logout](/docs/backchannel-logout) URI. Those point at the
 deployment's `.convex.site` URL, which also differs per deployment.
 
+With a [static JWKS](/docs/static-jwks), `LOGTO_JWKS` is one more per-deployment
+variable. `npx convex-logto sync-jwks` writes it (`--prod` for production), and
+preview deployments take it from the project's preview defaults
+(`npx convex-logto sync-jwks --defaults preview`), because they do not exist
+before their first push.
+
 ## Bridge mode
 
 [Bridge mode](/docs/bridge-mode) needs no `LOGTO_CLIENT_SECRET`, but its

@@ -333,6 +333,7 @@ const SYNC_REF = { fn: "sync" };
 const sessionsComponent = {
   lib: {
     recordWebhookDelivery: { fn: "record" },
+    completeWebhookDelivery: { fn: "complete" },
     forgetWebhookDelivery: { fn: "forget" },
     killSubjectSessions: { fn: "kill" },
   },
@@ -341,6 +342,7 @@ const sessionsComponent = {
 function sessionsHarness(overrides?: {
   record?: ReturnType<typeof vi.fn>;
   sync?: ReturnType<typeof vi.fn>;
+  kill?: ReturnType<typeof vi.fn>;
 }) {
   const calls: Array<{ fn: string; args: unknown }> = [];
   const handlers: Record<string, ReturnType<typeof vi.fn>> = {
@@ -348,7 +350,8 @@ function sessionsHarness(overrides?: {
       overrides?.record ??
       vi.fn().mockResolvedValue({ claimed: true, completed: false }),
     forget: vi.fn().mockResolvedValue(null),
-    kill: vi.fn().mockResolvedValue(0),
+    complete: vi.fn().mockResolvedValue(null),
+    kill: overrides?.kill ?? vi.fn().mockResolvedValue(0),
     sync: overrides?.sync ?? vi.fn().mockResolvedValue(null),
   };
   const runMutation = vi.fn((ref: unknown, args: unknown) => {
@@ -389,7 +392,22 @@ describe("registerLogtoWebhook with sessions", () => {
         bodyHash: expect.stringMatching(/^[0-9a-f]{64}$/),
       }),
     );
-    expect(calls.map((c) => c.fn)).toEqual(["record", "sync"]);
+    expect(calls.map((c) => c.fn)).toEqual(["record", "sync", "complete"]);
+  });
+
+  it("records completion with the claimed body hash after the work succeeds", async () => {
+    const { handler, runMutation, runAction, handlers } = sessionsHarness();
+    await handler(
+      { runMutation, runAction },
+      post(sign(signingKey, body), body),
+    );
+    const { bodyHash } = handlers.record.mock.calls[0]![0] as {
+      bodyHash: string;
+    };
+    expect(handlers.complete).toHaveBeenCalledWith(
+      expect.objectContaining({ bodyHash }),
+    );
+    expect(handlers.forget).not.toHaveBeenCalled();
   });
 
   it("answers 200 on a duplicate delivery WITHOUT re-running sync", async () => {
@@ -403,6 +421,65 @@ describe("registerLogtoWebhook with sessions", () => {
     expect(res.status).toBe(200);
     expect(handlers.sync).not.toHaveBeenCalled();
     expect(handlers.kill).not.toHaveBeenCalled();
+  });
+
+  it("redoes the revocation for a claimed delivery that never completed, and asks for a retry", async () => {
+    // The first attempt died (or is still running) and its claim was not
+    // released. Answering 200 here left a deleted user signed in for the
+    // whole dedupe window.
+    const { handler, runMutation, runAction, handlers } = sessionsHarness({
+      record: vi.fn().mockResolvedValue({ claimed: false, completed: false }),
+    });
+    const deleted = JSON.stringify(
+      freshPayload({
+        event: "User.Deleted",
+        data: null,
+        params: { userId: "u9" },
+      }),
+    );
+    const res = await handler(
+      { runMutation, runAction },
+      post(sign(signingKey, deleted), deleted),
+    );
+    expect(res.status).toBe(503);
+    expect(handlers.kill).toHaveBeenCalledWith({ subject: "u9" });
+    expect(handlers.sync).not.toHaveBeenCalled();
+    expect(handlers.complete).not.toHaveBeenCalled();
+  });
+
+  it("asks for a retry of an unfinished delivery with nothing to revoke, without re-running sync", async () => {
+    const { handler, runMutation, runAction, handlers } = sessionsHarness({
+      record: vi.fn().mockResolvedValue({ claimed: false, completed: false }),
+    });
+    const res = await handler(
+      { runMutation, runAction },
+      post(sign(signingKey, body), body),
+    );
+    expect(res.status).toBe(503);
+    expect(handlers.kill).not.toHaveBeenCalled();
+    expect(handlers.sync).not.toHaveBeenCalled();
+  });
+
+  it("releases the claim when the revocation itself fails", async () => {
+    const { handler, runMutation, runAction, handlers } = sessionsHarness({
+      kill: vi.fn().mockRejectedValue(new Error("backend blip")),
+    });
+    const deleted = JSON.stringify(
+      freshPayload({
+        event: "User.Deleted",
+        data: null,
+        params: { userId: "u9" },
+      }),
+    );
+    await expect(
+      handler(
+        { runMutation, runAction },
+        post(sign(signingKey, deleted), deleted),
+      ),
+    ).rejects.toThrow("backend blip");
+    expect(handlers.forget).toHaveBeenCalledTimes(1);
+    expect(handlers.sync).not.toHaveBeenCalled();
+    expect(handlers.complete).not.toHaveBeenCalled();
   });
 
   it("User.Deleted kills the subject's sessions before sync runs", async () => {
@@ -421,7 +498,12 @@ describe("registerLogtoWebhook with sessions", () => {
     );
     expect(res.status).toBe(200);
     expect(handlers.kill).toHaveBeenCalledWith({ subject: "u9" });
-    expect(calls.map((c) => c.fn)).toEqual(["record", "kill", "sync"]);
+    expect(calls.map((c) => c.fn)).toEqual([
+      "record",
+      "kill",
+      "sync",
+      "complete",
+    ]);
   });
 
   it("accepts current User.Deleted payloads with matching entity and route ids", async () => {
@@ -446,7 +528,12 @@ describe("registerLogtoWebhook with sessions", () => {
 
     expect(response.status).toBe(200);
     expect(handlers.kill).toHaveBeenCalledWith({ subject: "u-current" });
-    expect(calls.map((c) => c.fn)).toEqual(["record", "kill", "sync"]);
+    expect(calls.map((c) => c.fn)).toEqual([
+      "record",
+      "kill",
+      "sync",
+      "complete",
+    ]);
   });
 
   it.each([
@@ -484,7 +571,12 @@ describe("registerLogtoWebhook with sessions", () => {
 
       expect(response.status).toBe(200);
       expect(handlers.kill).toHaveBeenCalledWith({ subject: "u-current" });
-      expect(calls.map((c) => c.fn)).toEqual(["record", "kill", "sync"]);
+      expect(calls.map((c) => c.fn)).toEqual([
+        "record",
+        "kill",
+        "sync",
+        "complete",
+      ]);
     },
   );
 

@@ -165,6 +165,59 @@ if (unresolved.length > 0) {
 }
 
 /**
+ * The same walk over the *source*, for the `@convex-dev/component-source`
+ * export. A consumer running `convex dev --live-component-sources` bundles
+ * `src/component/convex.config.ts` straight from the tarball, and `files`
+ * ships only `src/component` and `src/shared`. An import that reaches any
+ * other directory builds fine here and breaks only for that consumer.
+ */
+const shippedSourceDirs = ["src/component", "src/shared"].map((dir) =>
+  resolve(packageDir, dir),
+);
+function sourceModules(directory, found = []) {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) sourceModules(path, found);
+    else if (entry.name.endsWith(".ts") && !entry.name.includes(".test.")) {
+      found.push(path);
+    }
+  }
+  return found;
+}
+/** `from "./x"` and bare side-effect `import "./x"`. */
+const SOURCE_SPECIFIER = /\b(?:from|import)\s*["'](\.[^"']*)["']/g;
+const sourceQueue = sourceModules(resolve(packageDir, "src/component"));
+const sourceSeen = new Set(sourceQueue);
+const unshipped = [];
+for (let index = 0; index < sourceQueue.length; index++) {
+  const modulePath = sourceQueue[index];
+  const source = readFileSync(modulePath, "utf8");
+  for (const [, specifier] of source.matchAll(SOURCE_SPECIFIER)) {
+    const base = resolve(dirname(modulePath), specifier).replace(/\.js$/, "");
+    const found = [`${base}.ts`, join(base, "index.ts")].find(isFile);
+    if (
+      found === undefined ||
+      !shippedSourceDirs.some((dir) => found.startsWith(`${dir}/`))
+    ) {
+      unshipped.push(
+        `${modulePath.slice(packageDir.length + 1)} -> ${specifier}`,
+      );
+    } else if (!sourceSeen.has(found)) {
+      sourceSeen.add(found);
+      sourceQueue.push(found);
+    }
+  }
+}
+if (unshipped.length > 0) {
+  console.error(
+    `convex-logto: the component source imports ${unshipped.length} file(s) ` +
+      `outside src/component and src/shared, which the tarball does not ship:\n  ` +
+      unshipped.join("\n  "),
+  );
+  process.exit(1);
+}
+
+/**
  * The two session entries have to agree on the exports they share.
  *
  * They are separate tsup entries with separate export lists, so one can lose a
@@ -224,6 +277,22 @@ if (asymmetric.length > 0) {
       "same failure handleable in one mode and not the other.",
   );
   process.exit(1);
+}
+
+// The bin must run, not just exist: tsup can emit a file that fails on load.
+{
+  const { spawnSync } = await import("node:child_process");
+  for (const target of Object.values(manifest.bin ?? {})) {
+    const result = spawnSync(process.execPath, [resolve(packageDir, target), "--help"], {
+      encoding: "utf8",
+    });
+    if (result.status !== 0 || !result.stdout.includes("Usage:")) {
+      console.error(
+        `convex-logto: \`node ${target} --help\` failed (exit ${result.status}).\n${result.stderr}`,
+      );
+      process.exit(1);
+    }
+  }
 }
 
 // The component's entry point must also load.

@@ -4,7 +4,7 @@ import {
   httpActionGeneric,
 } from "convex/server";
 import { audienceMatches } from "../shared/claims";
-import { decodeBase64Url, isRecord } from "../shared/decode";
+import { decodeBase64Url, isRecord, toHex } from "../shared/decode";
 import { buildLogtoEndpointUrl, logtoIssuer } from "../shared/endpoint";
 import { readBoundedBody } from "../shared/http-body";
 import {
@@ -307,11 +307,7 @@ async function deliveryKey(claims: LogtoLogoutTokenClaims): Promise<string> {
     "SHA-256",
     encoder.encode(`backchannel-logout\0${claims.issuer}\0${claims.jti}`),
   );
-  let hex = "";
-  for (const byte of new Uint8Array(digest)) {
-    hex += byte.toString(16).padStart(2, "0");
-  }
-  return hex;
+  return toHex(digest);
 }
 
 /** Build the Convex HTTP action for a Logto OIDC back-channel logout URI. */
@@ -360,6 +356,7 @@ export function createLogtoBackchannelLogoutHandler(
 
     const bodyHash = await deliveryKey(claims);
     let claimed = false;
+    let revoked = false;
     try {
       const delivery = await ctx.runMutation(
         options.sessions.lib.recordWebhookDelivery,
@@ -387,6 +384,7 @@ export function createLogtoBackchannelLogoutHandler(
       } else {
         throw new Error("Verified logout token has no subject or sid.");
       }
+      revoked = true;
       // Only now is a later replay safe to answer without working. Suppressing
       // replays still matters. A `sub`-only logout token revokes everything the
       // subject has *at the time it runs*, so a replay after the user signs in
@@ -397,6 +395,11 @@ export function createLogtoBackchannelLogoutHandler(
       });
       return successResponse();
     } catch {
+      // The revocation committed and only recording it failed. The logout
+      // happened, so say so, and keep the claim: an unfinished claim is
+      // already redone on replay, and forgetting it would re-arm a replay of
+      // a `sub`-only token against sessions created after this one.
+      if (revoked) return successResponse();
       if (claimed) {
         await ctx
           .runMutation(options.sessions.lib.forgetWebhookDelivery, { bodyHash })

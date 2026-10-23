@@ -603,7 +603,16 @@ export class SessionAuthEngine {
   private settleReported = false;
   private inflightSignIn: Promise<void> | null = null;
   private inflightCompletion: Promise<void> | null = null;
-  private inflightRefresh: Promise<string | null> | null = null;
+  /**
+   * The refresh this tab has in flight, and the auth generation that started
+   * it. A caller only merges into one from its own generation: a refresh begun
+   * before a sign-out resolves `null`, and handing that to the session signed
+   * in after it would read as a failed refresh and sign that one out.
+   */
+  private inflightRefresh: {
+    generation: number;
+    promise: Promise<string | null>;
+  } | null = null;
   /**
    * The sign-out in progress, resolving to whether it handed the page to
    * Logto's end-session endpoint. A sign-out clears local state before it
@@ -1053,7 +1062,9 @@ export class SessionAuthEngine {
    * rejected).
    */
   private refreshIdToken(unacceptable: string | null): Promise<string | null> {
-    if (this.inflightRefresh) return this.inflightRefresh;
+    if (this.inflightRefresh?.generation === this.authGeneration) {
+      return this.inflightRefresh.promise;
+    }
     const generation = this.authGeneration;
     const run = async (): Promise<string | null> => {
       if (generation !== this.authGeneration) return null;
@@ -1121,10 +1132,12 @@ export class SessionAuthEngine {
         return null;
       }
     };
-    this.inflightRefresh = this.withLock(run).finally(() => {
-      this.inflightRefresh = null;
+    const promise = this.withLock(run).finally(() => {
+      if (this.inflightRefresh?.promise === promise)
+        this.inflightRefresh = null;
     });
-    return this.inflightRefresh;
+    this.inflightRefresh = { generation, promise };
+    return promise;
   }
 
   // -- user actions --
@@ -1533,12 +1546,12 @@ export class SessionAuthEngine {
   async fetchUserInfo(options?: LogtoTokenExchangeOptions): Promise<unknown> {
     const action = this.options.api.fetchUserInfo;
     if (action === undefined) throw sessionApiUpgradeError("fetchUserInfo");
-    const credential = await this.sessionCallCredential("fetchUserInfo");
     // This is also an exchange behind the scenes. It mints the opaque token
     // Logto's userinfo endpoint wants, so it takes the same lock for the same
-    // reason.
-    return await this.withLock(() =>
-      this.retrying(() =>
+    // reason, and reads the credential inside it (see `exchange`).
+    return await this.withLock(async () => {
+      const credential = await this.sessionCallCredential("fetchUserInfo");
+      return await this.retrying(() =>
         this.callSessionAction("fetchUserInfo", () =>
           this.options.transport.action(action, {
             ...credential,
@@ -1547,8 +1560,8 @@ export class SessionAuthEngine {
               : { forceRefresh: options.forceRefresh }),
           }),
         ),
-      ),
-    );
+      );
+    });
   }
 
   private async exchange(args: {
@@ -1564,7 +1577,6 @@ export class SessionAuthEngine {
   }> {
     const action = this.options.api.exchangeToken;
     if (action === undefined) throw sessionApiUpgradeError("exchangeToken");
-    const credential = await this.sessionCallCredential("exchangeToken");
     // Under the same lock as `refreshIdToken`, and retried like it.
     //
     // The component runs this exchange inside the session's refresh claim, so
@@ -1574,9 +1586,18 @@ export class SessionAuthEngine {
     // unauthenticated until the recovery loop catches up. Serializing them in
     // the browser removes the case that happens in practice; `retrying` covers
     // the rest (another tab, another device, a queued cron).
-    return await this.withLock(() =>
-      this.retrying(() => this.dispatchExchange(action, credential, args)),
-    );
+    //
+    // The credential is read inside the lock, never before it. A refresh that
+    // holds the lock rotates the session token, and a call queued behind it
+    // (and behind another exchange's retries) can wait past the reuse window.
+    // Presenting the token it read before queueing would then be reuse, and
+    // the component deletes the session for it.
+    return await this.withLock(async () => {
+      const credential = await this.sessionCallCredential("exchangeToken");
+      return await this.retrying(() =>
+        this.dispatchExchange(action, credential, args),
+      );
+    });
   }
 
   private async dispatchExchange(
@@ -2005,7 +2026,7 @@ export class SessionAuthEngine {
       stored.sessionId !== "" &&
       stored.sessionId !== watched
     ) {
-      void this.restore().catch((error: unknown) => {
+      void this.adoptStoredSession().catch((error: unknown) => {
         this.reportError(this.asError(error));
       });
       return;
@@ -2017,6 +2038,32 @@ export class SessionAuthEngine {
     });
     this.lastServed = null;
     this.setUnauthenticated();
+  }
+
+  /**
+   * Switch to the session another tab stored over ours. The ID token this tab
+   * last served belongs to the revoked session, and Convex holds it: per-tab
+   * token storage keeps it fresh here even though its session is gone, and a
+   * still-authenticated snapshot never makes Convex ask again. So refuse that
+   * token, and pass through "restoring" so `ConvexProviderWithAuth` runs
+   * `setAuth` again and fetches the adopted session's token. If the other tab
+   * signed in as someone else, this tab must not keep acting as the old user.
+   */
+  private async adoptStoredSession(): Promise<void> {
+    const generation = this.authGeneration;
+    // Before Convex has fetched anything, the token to refuse is the one this
+    // tab cached for the old session.
+    const revoked = this.lastServed ?? this.options.storage.readIdToken();
+    this.lastServed = null;
+    this.setSnapshot({ status: "restoring", sessionId: null, user: undefined });
+    const idToken = await this.refreshIdToken(revoked);
+    if (generation !== this.authGeneration) return;
+    if (idToken !== null) {
+      this.lastServed = idToken;
+      this.setAuthenticated(idToken);
+    } else if (this.snapshot.status !== "unauthenticated") {
+      this.setUnauthenticated();
+    }
   }
 
   // -- plumbing --
