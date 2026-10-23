@@ -643,10 +643,8 @@ export function createLogtoSessionCookieHandler(
           );
           const returnTo = optionalString(body, "returnTo");
           if (returnTo !== undefined && !isSafeReturnTo(returnTo)) {
-            return jsonResponse(
-              { error: "returnTo must be a same-origin path" },
-              { status: 400 },
-              origin,
+            throw new RequestValidationError(
+              "returnTo must be a same-origin path",
             );
           }
           const result = await options.action(options.sessionApi.signIn, {
