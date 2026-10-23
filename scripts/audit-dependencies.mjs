@@ -28,6 +28,22 @@ const expectedAdvisories = new Map([
       ]),
     },
   ],
+  [
+    "GHSA-86w9-cpqp-85rv",
+    {
+      moduleName: "node-forge",
+      findings: new Set(["1.4.0:examples__expo>expo>@expo/cli>node-forge"]),
+    },
+  ],
+  [
+    "GHSA-vfj7-8cjw-p6xm",
+    {
+      moduleName: "braces",
+      findings: new Set([
+        "3.0.3:examples__expo>expo>@expo/cli>@expo/metro-file-map>micromatch>braces",
+      ]),
+    },
+  ],
 ]);
 
 const pnpmCli = process.env.npm_execpath;
@@ -139,6 +155,6 @@ if (failures.length > 0) {
   process.exitCode = 1;
 } else {
   console.log(
-    "Dependency audit passed with 3 reviewed Expo-only advisory paths.",
+    "Dependency audit passed with 5 reviewed Expo-only advisory paths.",
   );
 }
