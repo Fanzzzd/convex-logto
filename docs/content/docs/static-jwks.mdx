@@ -1,0 +1,131 @@
+---
+title: Static JWKS
+description: Inline Logto's signing keys in auth.config.ts so Convex stops fetching them on every WebSocket that authenticates.
+---
+
+## Why
+
+By default `logtoAuthConfig()` returns an OIDC provider, and Convex discovers
+Logto's keys itself. Convex caches neither the discovery document nor the JWKS.
+Every WebSocket that authenticates fetches both from Logto before Convex can
+confirm the token.
+
+On one deployment with a self-hosted Logto in another region, auth confirmation
+took **870 ms** with discovery and **300 ms** with the keys inlined. The gap
+grows with the distance between your Convex deployment and Logto.
+
+Static-JWKS mode stores a copy of Logto's public keys in a deployment variable,
+`LOGTO_JWKS`. `logtoAuthConfig({ jwks })` hands it to Convex as a Custom JWT
+provider with the keys inlined as a data URI. The issuer stays
+`${endpoint}/oidc`, so `tokenIdentifier` is the same in both modes and existing
+users keep their identity.
+
+The copy goes stale when Logto's keys change. Logto never rotates keys on its
+own; they change only when someone clicks **Rotate private keys** in the
+Console. After that, sync every deployment again, or Convex rejects every new
+sign-in.
+
+## Requirements
+
+An **RSA** signing key in Logto. Convex verifies a Custom JWT provider with one
+algorithm, and this package uses RS256. Discovery mode needs the same rotation
+(see [How it works](/docs/how-it-works#why-the-id-token-and-why-theres-no-jwt-config)),
+so a working setup already has it. `sync-jwks` refuses to write a copy while
+Logto signs with anything but an RSA key, and `logtoAuthConfig` refuses a copy
+without one.
+
+## Set it up
+
+Run both steps on every deployment: dev, preview, and production.
+
+1. Copy the keys. Run this from the directory where your Convex project's
+   `convex` package is installed:
+
+   ```bash
+   npx convex-logto sync-jwks          # the deployment `npx convex` selects
+   npx convex-logto sync-jwks --prod   # production
+   ```
+
+   It reads the deployment's own `LOGTO_ENDPOINT`, fetches
+   `${endpoint}/oidc/jwks`, keeps the RS256 keys, and writes them to
+   `LOGTO_JWKS`. A deployment can never receive another tenant's keys.
+
+2. Pass the variable to `logtoAuthConfig`:
+
+   ```ts title="convex/auth.config.ts"
+   import { logtoAuthConfig } from "convex-logto";
+
+   export default {
+     providers: [logtoAuthConfig({ jwks: process.env.LOGTO_JWKS })],
+   };
+   ```
+
+Do step 1 first. Convex refuses to push an `auth.config.ts` that reads an unset
+variable. For the same reason the package never reads `LOGTO_JWKS` unless you
+pass it, so apps that do not opt in are unaffected.
+
+`logtoAuthConfig` validates the value when Convex loads the config. Text that
+is not JSON, JSON that is not a JWKS, and a JWKS without an RS256 key each
+throw an error naming `LOGTO_JWKS`.
+
+## After rotating keys in Logto
+
+<Callout type="warn">
+  Run `npx convex-logto sync-jwks` on **every deployment** after rotating keys
+  in Logto, or every new sign-in is rejected.
+</Callout>
+
+Convex re-reads `auth.config.ts` when an environment variable changes, so the
+sync is the whole fix. No redeploy follows it.
+
+Logto can stage a rotation: it publishes the new key as the next key before it
+signs anything. Self-hosted Logto stages when `PRIVATE_KEY_ROTATION_GRACE_PERIOD`
+is above 0; Logto Cloud sets its own default. Sync during that window and no
+sign-in fails. With the self-hosted default of 0, the new key signs at once, so
+sync right after rotating.
+
+Rotate to an **RSA** key. After a rotation to EC, Logto still serves the old RSA
+key as the previous one, but signs with the EC key. `sync-jwks` and
+`check-jwks` both fail in that state instead of keeping the old key.
+
+## Catch drift in CI
+
+`check-jwks` exits 1 when Logto serves a key `LOGTO_JWKS` lacks, a staged next
+key included, or signs with a key a static JWKS cannot verify. It warns,
+without failing, about stored keys Logto no longer serves and about a served
+non-RSA key that is not the signing key, which may be a staged next key. Under
+GitHub Actions it prints annotations.
+
+```yaml title=".github/workflows/release.yml"
+- name: Convex prod's LOGTO_JWKS matches Logto
+  env:
+    CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+  run: npx convex-logto check-jwks
+```
+
+Running it before each deploy stops a release from shipping onto a stale copy.
+Running it on a schedule as well catches a rotation between releases.
+
+## Go back to discovery
+
+Change `auth.config.ts` back to `logtoAuthConfig()` and push. Then remove the
+variable with `npx convex env remove LOGTO_JWKS`. The reverse order fails,
+because Convex refuses to remove a variable `auth.config.ts` still reads.
+
+## CLI reference
+
+```bash
+npx convex-logto <command> [--allow-insecure-http] [convex env options]
+```
+
+| Command | Effect |
+| --- | --- |
+| `sync-jwks` | Writes Logto's current RS256 keys to `LOGTO_JWKS`. Skips the write when the value already matches. Fails when Logto signs with a non-RSA key. |
+| `check-jwks` | Exits 1 when Logto serves a key `LOGTO_JWKS` lacks, signs with a non-RSA key, or when `LOGTO_JWKS` is unset or unreadable. |
+
+| Option | Effect |
+| --- | --- |
+| `--allow-insecure-http` | Accepts a non-loopback `http://` `LOGTO_ENDPOINT`, the same opt-in as `allowInsecureHttp`. |
+| Anything else | Passed to `convex env` unchanged: `--prod`, `--deployment-name <name>`, `--preview-name <name>`, `--url <url>`, `--admin-key <key>`, `--env-file <path>`. `CONVEX_DEPLOY_KEY` works as it does for `npx convex env`. |
+
+Exit codes: 0 on success, 1 on failure or drift, 2 for a usage error.

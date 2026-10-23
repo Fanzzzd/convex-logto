@@ -13,12 +13,13 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "verbatimModuleSyntax": true,
-    // No ambient @types packages. `@types/node` is a devDependency for the test
-    // typecheck (tsconfig.test.json), and the library must not see Node globals:
-    // it runs in Convex's V8 runtime, where `Buffer` and `node:*` do not exist.
+    // No ambient @types packages. The library must not see Node globals: it
+    // runs in Convex's V8 runtime and in browsers, where `Buffer` and `node:*`
+    // do not exist. Node-side code (tests, src/cli) is checked by
+    // tsconfig.node.json instead.
     "types": [],
     "noEmit": true
   },
   "include": ["src"],
-  "exclude": ["src/**/*.test.ts", "dist", "node_modules"]
+  "exclude": ["src/**/*.test.ts", "src/cli", "dist", "node_modules"]
 }

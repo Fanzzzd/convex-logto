@@ -34,10 +34,15 @@
   "files": [
     "dist",
     "src/component",
+    "src/shared",
     "!src/component/**/*.test.ts",
+    "!src/shared/**/*.test.ts",
     "README.md",
     "LICENSE"
   ],
+  "bin": {
+    "convex-logto": "./dist/cli.js"
+  },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -85,7 +90,7 @@
   },
   "scripts": {
     "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsup && tsc -p tsconfig.component.json && node scripts/verify-build-artifacts.mjs",
-    "check-types": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "check-types": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "lint": "oxlint --deny-warnings src",
     "format": "oxfmt src",

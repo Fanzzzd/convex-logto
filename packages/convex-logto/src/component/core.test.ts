@@ -13,7 +13,6 @@ import {
   decideRefresh,
   asDeploymentFault,
   decodeIdToken,
-  decodeJwtSegment,
   generatePkce,
   generateToken,
   hashToken,
@@ -336,19 +335,6 @@ describe("normalizeSignInTargets", () => {
       }),
     ).toThrow(/credentials/);
   });
-});
-
-it("decodeJwtSegment reads a segment as UTF-8, not one char per byte", () => {
-  // `atob` alone turns a `name` of 王小明 into ç\u008e\u008bå°\u008fæ\u0098\u008e.
-  const claims = { name: "王小明", family_name: "Müller", emoji: "🔐" };
-  const segment = fakeIdToken(claims).split(".")[1]!;
-
-  expect(decodeJwtSegment(segment)).toEqual(claims);
-});
-
-it("decodeJwtSegment refuses a segment it cannot decode", () => {
-  expect(decodeJwtSegment("not base64url!")).toBeUndefined();
-  expect(decodeJwtSegment("bm90IGpzb24")).toBeUndefined();
 });
 
 it("decodeIdToken extracts sub and exp (ms)", () => {

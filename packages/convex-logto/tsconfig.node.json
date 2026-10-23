@@ -1,0 +1,15 @@
+{
+  // Everything that runs on Node rather than in Convex's V8 runtime or a
+  // browser: the test files and the `convex-logto` bin (src/cli). The base
+  // config excludes both, so tsup and the component build never see a Node
+  // API; this config is the other half. Same options, plus `@types/node`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "noEmit": true
+  },
+  "include": ["src"],
+  // The V8 build's minimal `process.env` stub would shadow Node's `process`.
+  "exclude": ["src/server/process-env.d.ts", "dist", "node_modules"]
+}

@@ -2,7 +2,18 @@
 // Everything here runs in Convex's V8 runtime: Web APIs only.
 
 import { ConvexError } from "convex/values";
-import { buildLogtoEndpointUrl } from "./endpoint.js";
+import { audienceMatches } from "../shared/claims.js";
+import {
+  decodeBase64Url,
+  decodeJwtSegment,
+  isRecord,
+} from "../shared/decode.js";
+import {
+  SESSION_LABEL_MAX_LENGTH,
+  normalizeDisplayText,
+  sessionLabelTooLong,
+} from "../shared/display-text.js";
+import { buildLogtoEndpointUrl, logtoIssuer } from "../shared/endpoint.js";
 
 /** Default lifetime of a sign-in transaction (state + PKCE verifier). */
 export const TRANSACTION_TTL_MS = 10 * 60 * 1000;
@@ -15,9 +26,6 @@ export const TRANSACTION_TTL_MS = 10 * 60 * 1000;
 export const DEFAULT_REUSE_WINDOW_MS = 10 * 1000;
 /** Maximum out-of-order successful session-token responses retained per session. */
 export const SESSION_TOKEN_GENERATION_LIMIT = 8;
-
-/** Longest accepted user-chosen session label, in code points. */
-export const SESSION_LABEL_MAX_LENGTH = 64;
 
 /**
  * Longest accepted sign-in redirect URI / `returnTo`, in code points.
@@ -81,49 +89,6 @@ export type SessionClientDescriptor = {
   os?: string;
   browser?: string;
 };
-
-/**
- * Every invisible character class, not a hand-picked list of bidi overrides:
- * `Cc` controls, `Cf` format characters (the bidi embeddings and isolates, but
- * also RLM/LRM/ALM and the zero-width joiners `\s` never matches), and the line
- * and paragraph separators. The UI renders a label next to other sessions, and
- * any of these can make one entry impersonate another.
- */
-const INVISIBLE_DISPLAY_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
-
-/** Emoji sequences join with ZWJ; dropping it would split families apart. */
-const ZERO_WIDTH_JOINER = "\u200d";
-
-/**
- * Collapse whitespace and drop invisible characters, so a label cannot smuggle
- * newlines or direction changes into a UI that lists it beside other sessions.
- */
-function normalizeDisplayText(raw: string): string {
-  // Code points, not graphemes. The limit these feed is a storage bound, and
-  // per-code-point filtering is what strips the invisible characters.
-  return Array.from(raw)
-    .filter(
-      (character) =>
-        character === ZERO_WIDTH_JOINER ||
-        !INVISIBLE_DISPLAY_CHARACTERS.test(character),
-    )
-    .join("")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/**
- * Would this label be rejected for its length? Exported so the browser half can
- * pre-empt the round-trip against *exactly* the rule the component applies:
- * normalization first, then a code-point count. Measuring the raw string
- * instead would reject a label the component would have accepted, because
- * normalization collapses whitespace and drops invisible characters.
- */
-export function sessionLabelTooLong(raw: string): boolean {
-  return (
-    Array.from(normalizeDisplayText(raw)).length > SESSION_LABEL_MAX_LENGTH
-  );
-}
 
 /**
  * Normalize a user-chosen session label. Rejects rather than truncates. A
@@ -263,49 +228,13 @@ export type DevicePublicKey = {
   y: string;
 };
 
-/**
- * A JWT segment is base64url over **UTF-8 bytes**. `atob` alone yields one
- * latin-1 character per byte, which mojibakes every multi-byte claim. A `name`
- * of `王小明` decodes as `ç\u008e\u008bå°\u008fæ\u0098\u008e`. So the bytes have
- * to go through a UTF-8 decode. Returns `undefined` rather than a partial
- * result, because nothing downstream can act on half-decoded claims.
- */
-export function decodeJwtSegment(segment: string): unknown {
-  const bytes = fromBase64Url(segment);
-  if (bytes === null) return undefined;
-  try {
-    return JSON.parse(jwtSegmentDecoder.decode(bytes));
-  } catch {
-    return undefined;
-  }
-}
-
-const jwtSegmentDecoder = /* @__PURE__ */ new TextDecoder("utf-8", {
-  fatal: true,
-});
-
-function fromBase64Url(value: string): Uint8Array<ArrayBuffer> | null {
-  if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
-  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
-  try {
-    const binary = atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="));
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index++) {
-      bytes[index] = binary.charCodeAt(index);
-    }
-    return bytes;
-  } catch {
-    return null;
-  }
-}
-
 /** Verify an ECDSA P-256 proof over the presented rotating session token. */
 export async function verifyDeviceProof(options: {
   publicKey: DevicePublicKey;
   sessionToken: string;
   proof: string;
 }): Promise<boolean> {
-  const signature = fromBase64Url(options.proof);
+  const signature = decodeBase64Url(options.proof);
   // WebCrypto ECDSA signatures use fixed-width IEEE P1363 r || s encoding.
   if (signature?.byteLength !== 64) return false;
   try {
@@ -419,10 +348,6 @@ export function buildEndSessionUrl(options: {
   return buildLogtoEndpointUrl(options.endpoint, "session/end", params);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /**
  * Decode a JWT payload without verifying the signature. Verification is not
  * this component's job. The token arrives directly from Logto over TLS, and
@@ -449,7 +374,7 @@ export function decodeIdToken(
   }
   const { iss, aud, sub, sid, exp } = payload;
   if (
-    iss !== buildLogtoEndpointUrl(expected.endpoint, "") ||
+    iss !== logtoIssuer(expected.endpoint) ||
     !audienceMatches(aud, expected.appId)
   ) {
     throw terminal(
@@ -830,22 +755,6 @@ export function normalizeSignInTargets(targets: {
     redirectUri: targets.redirectUri,
     ...(targets.returnTo === undefined ? {} : { returnTo: targets.returnTo }),
   };
-}
-
-/**
- * OIDC Core §2 allows `aud` to be an array, Convex's own ID-token validation
- * accepts one, and this library's back-channel-logout verifier always has.
- * Rejecting it here would fail a token every other party considers valid, and
- * on the refresh path that costs the session.
- */
-export function audienceMatches(value: unknown, appId: string): boolean {
-  return (
-    value === appId ||
-    (Array.isArray(value) &&
-      value.length > 0 &&
-      value.every((audience) => typeof audience === "string") &&
-      value.includes(appId))
-  );
 }
 
 // --- error taxonomy ---------------------------------------------------------

@@ -10,8 +10,6 @@
 
 import type * as core from "../core.js";
 import type * as crons from "../crons.js";
-import type * as endpoint from "../endpoint.js";
-import type * as http_body from "../http_body.js";
 import type * as lib from "../lib.js";
 
 import type {
@@ -24,8 +22,6 @@ import { anyApi, componentsGeneric } from "convex/server";
 const fullApi: ApiFromModules<{
   core: typeof core;
   crons: typeof crons;
-  endpoint: typeof endpoint;
-  http_body: typeof http_body;
   lib: typeof lib;
 }> = anyApi as any;
 

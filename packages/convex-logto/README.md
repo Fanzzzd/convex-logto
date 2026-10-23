@@ -329,11 +329,33 @@ signing-key setup, and `requireRole` authz, is in the
 
 Convex validates an OIDC **ID token**. Logto's access tokens are typed `at+jwt`, which Convex does not accept ([convex#75](https://github.com/get-convex/convex-backend/issues/75)), so this package returns the ID token. Because it goes through Convex's **OIDC** provider (not Custom JWT), Convex reads the issuer's discovery document and JWKS itself, so you never set an algorithm or a JWKS URL. There is one catch. Convex's OIDC verifier accepts only **RS256**/**EdDSA**, while Logto signs with **ES384** by default, so you rotate the Logto OIDC signing key to **RSA** once (step 1). Convex rejects a mismatch without an error (`getUserIdentity()` returns `null`). Sessions refresh via Logto's refresh token, which is why both modes request the `offline_access` scope by default.
 
+## Static JWKS: skip discovery on every connection
+
+Convex caches neither Logto's discovery document nor its JWKS, so with the default provider every WebSocket that authenticates fetches both from Logto first. On a self-hosted Logto in another region, auth confirmation took 870 ms with discovery and 300 ms with the keys inlined. A static JWKS keeps a copy of Logto's public keys on the deployment:
+
+```bash
+npx convex-logto sync-jwks          # writes LOGTO_JWKS on the selected deployment
+npx convex-logto sync-jwks --prod   # and on production
+```
+
+```ts
+// convex/auth.config.ts
+import { logtoAuthConfig } from "convex-logto";
+export default {
+  providers: [logtoAuthConfig({ jwks: process.env.LOGTO_JWKS })],
+};
+```
+
+The issuer stays `${endpoint}/oidc`, so `tokenIdentifier` does not change. Sync before switching `auth.config.ts`, because Convex refuses to push a config that reads an unset variable; the package never reads `LOGTO_JWKS` unless you pass it.
+
+**After rotating keys in Logto, run `sync-jwks` on every deployment, or every new sign-in is rejected.** Convex re-reads `auth.config.ts` when the variable changes, so no redeploy follows. `npx convex-logto check-jwks` exits 1 when Logto serves a key `LOGTO_JWKS` lacks; run it in CI before deploying. Every other flag goes to `convex env` unchanged (`--prod`, `--deployment-name`, `--preview-name`, `--url`, `--admin-key`, `--env-file`, or `CONVEX_DEPLOY_KEY`). Details: [Static JWKS](https://convex-logto-docs.vercel.app/docs/static-jwks).
+
 ## API
 
 | Export | From | Purpose |
 | --- | --- | --- |
-| `logtoAuthConfig(opts?)` | `convex-logto` | Provider entry for `auth.config.ts`. Reads `LOGTO_ENDPOINT` / `LOGTO_APP_ID`. |
+| `logtoAuthConfig(opts?)` | `convex-logto` | Provider entry for `auth.config.ts`. Reads `LOGTO_ENDPOINT` / `LOGTO_APP_ID`; `{ jwks: process.env.LOGTO_JWKS }` switches to a [static JWKS](#static-jwks-skip-discovery-on-every-connection). |
+| `convex-logto sync-jwks` / `check-jwks` | `npx convex-logto` | CLI: copy Logto's RS256 keys into `LOGTO_JWKS`, or exit 1 when the copy lacks a key Logto serves. |
 | `logtoSessionApi(component, opts?)` | `convex-logto` | [Session mode](#quick-start): builds the eleven public auth functions backed by the session component. Reads `LOGTO_CLIENT_SECRET` too. |
 | `assertSubjectHasActiveSession(ctx, component)` | `convex-logto` | Session mode: throw unless the authenticated subject has at least one active component Session; this does not bind the current bearer to one Session. Its bounded scan can throw the transient `session_liveness_scan_incomplete` while bulk cleanup is in progress. |
 | `assertUserHasActiveSession(ctx, component)` | `convex-logto` | Deprecated compatibility alias for `assertSubjectHasActiveSession`. |

@@ -54,8 +54,9 @@ import {
   type DevicePublicKey,
   type ResourceTokenClaims,
 } from "./core.js";
-import { buildLogtoEndpointUrl } from "./endpoint.js";
-import { readBoundedBody } from "./http_body.js";
+import { isRecord } from "../shared/decode.js";
+import { buildLogtoEndpointUrl } from "../shared/endpoint.js";
+import { readBoundedBody } from "../shared/http-body.js";
 
 // The confidential-client config every OIDC-touching call needs. The
 // `logtoSessionApi()` wrappers read the values from the APP's env and pass them
@@ -408,10 +409,6 @@ function isTerminalSessionError(error: unknown): boolean {
     "kind" in data &&
     data.kind === "terminal"
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function basicAuth(config: OidcConfig): string {

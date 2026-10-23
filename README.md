@@ -24,7 +24,9 @@ something else)
   and no hand-rolled `useAuth` bridge.
 - **One line on the backend.** `logtoAuthConfig()` reads your environment. No JWT
   template, no signing algorithm, no JWKS URL; it validates Logto's **ID token**
-  over OIDC, so Convex discovers the key itself.
+  over OIDC, so Convex discovers the key itself. A
+  [static JWKS](https://convex-logto-docs.vercel.app/docs/static-jwks) skips that
+  discovery on every connection (870 ms to 300 ms on a distant Logto).
 - **Every Logto value on the Convex deployment.** Endpoint, app id, and app
   secret live in `npx convex env`. The frontend build carries none of them; the
   only per-environment value in the bundle is the Convex URL.

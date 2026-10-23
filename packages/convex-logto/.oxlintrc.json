@@ -82,18 +82,18 @@
     },
     {
       "files": [
-        "src/native.bridge.test.tsx",
-        "src/native-session.provider.test.tsx",
-        "src/react.bridge.test.tsx",
-        "src/react.config-loading.test.tsx",
-        "src/react-session.provider.test.tsx"
+        "src/native/bridge.test.tsx",
+        "src/native/session.test.tsx",
+        "src/react/bridge.test.tsx",
+        "src/react/config-loading.test.tsx",
+        "src/react/session.test.tsx"
       ],
       "rules": {
         "vitest/no-restricted-vi-methods": "off"
       }
     },
     {
-      "files": ["src/session-device.ts"],
+      "files": ["src/client/session-device.ts"],
       "rules": {
         "unicorn/prefer-add-event-listener": "off"
       }

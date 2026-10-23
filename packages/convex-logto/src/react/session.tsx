@@ -1,0 +1,682 @@
+// The `convex-logto/react-session` entry is session mode's React provider. It
+// imports no Logto SDK. The server-side component owns all OIDC traffic, so
+// this entry works without installing `@logto/react`.
+
+import {
+  ConvexProviderWithAuth,
+  type ConvexReactClient,
+  useConvexAuth,
+  useQueries,
+  type RequestForQueries,
+} from "convex/react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useInsertionEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from "react";
+import {
+  SessionAuthEngine,
+  SessionStorageArea,
+  type LogtoTokenExchangeOptions,
+  type TokenStorageKind,
+} from "../client/session-client";
+import { defaultSessionTransport } from "../client/session-transport";
+import type { LogtoUserClaims } from "../shared/claims";
+import type { LogtoAuthEventHandler } from "../shared/auth-events";
+import { createSessionDeviceBinding } from "../client/session-device";
+import {
+  createCookieSessionMarker,
+  createLogtoSessionCookieTransport,
+  type LogtoSessionCookieTransportOptions,
+} from "../client/session-cookie-transport";
+import type {
+  LogtoResourceTokenClaims,
+  LogtoSessionApi,
+  LogtoSessionClientDescriptor,
+  LogtoSessionSummary,
+} from "../server/session";
+
+const DEFAULT_CALLBACK_PATH = "/callback";
+
+const SessionContext = createContext<{
+  engine: SessionAuthEngine;
+  sessionApi: LogtoSessionApi;
+} | null>(null);
+
+function useSessionContext(caller: string) {
+  const context = useContext(SessionContext);
+  if (context === null) {
+    throw new Error(
+      `convex-logto: ${caller} must be used inside <ConvexLogtoSessionProvider>.`,
+    );
+  }
+  return context;
+}
+
+export type ConvexLogtoSessionProviderProps = {
+  /** Your `ConvexReactClient`. */
+  client: ConvexReactClient;
+  /**
+   * The module re-exporting `logtoSessionApi(...)`'s functions, e.g. `api.auth`.
+   * The provider expects the exact names `signIn` / `callback` / `refresh` /
+   * `signOut` / `signOutEverywhere` / `listSessions` / `renameSession` /
+   * `revokeSession` / `sessionValid`. The provider feature-detects everything
+   * after `signOut`. Omitting one disables that call with a message naming the
+   * export to add, so a rolling upgrade never breaks sign-in.
+   */
+  sessionApi: LogtoSessionApi;
+  /**
+   * The route that finishes the OIDC redirect. Default `/callback`. Must match
+   * the path of a **Redirect URI** registered on the Logto Traditional Web app;
+   * only that exact path runs callback handling.
+   */
+  callbackPath?: string;
+  /** Where to go once sign-in completes. Default `/`. `signIn({ returnTo })` overrides it. */
+  afterSignIn?: string;
+  /**
+   * Soft navigation (e.g. your router's navigate). Prefer a replace-style
+   * navigate so the spent callback URL doesn't stay in history. Falls back to a
+   * hard `location.replace`.
+   */
+  navigate?: (to: string) => void;
+  /**
+   * Where the short-lived ID token persists. `"session"` (default) is per-tab
+   * sessionStorage, where an unexpired token can restore without refresh while
+   * its paired component-session marker remains. `"memory"` is strictest;
+   * every reload refreshes. `"local"` is shared across tabs and restarts. By
+   * default the rotating session token lives in localStorage;
+   * `cookieTransport` moves it into an HttpOnly cookie.
+   */
+  tokenStorage?: TokenStorageKind;
+  /**
+   * Bind refresh and revocation operations to a non-extractable ECDSA key
+   * persisted in IndexedDB. Default `false`. Cannot be combined with
+   * `cookieTransport`.
+   */
+  deviceBinding?: boolean;
+  /**
+   * Move the rotating session token into the same-site handler's HttpOnly
+   * cookie. The browser keeps only a non-secret session marker in localStorage;
+   * each rotation renews the persistent cookie's 190-day idle lifetime.
+   */
+  cookieTransport?: LogtoSessionCookieTransportOptions;
+  /**
+   * Self-reported description of this client ("Chrome", "macOS", ...), stamped
+   * on the session at sign-in so `listSessions()` can show the user something
+   * recognisable. The app supplies it; the library never sniffs a User-Agent or
+   * IP. It is advisory display data, never authenticated. Safe to pass as an
+   * inline object, because only the three field values affect the engine.
+   */
+  clientDescriptor?: LogtoSessionClientDescriptor;
+  /** Fresh ID token returned by `handler.getInitialToken(request)` during SSR. */
+  initialToken?: string | null;
+  /** Stable session id returned alongside `initialToken`. */
+  initialSessionId?: string | null;
+  /**
+   * Subscribe to server-side session liveness and drop auth the moment the
+   * session is revoked (sign-out elsewhere, reuse detection, webhook
+   * revocation). Default `true`.
+   */
+  reactiveRevocation?: boolean;
+  /**
+   * Called when starting or finishing sign-in fails recoverably (a failed
+   * action, stale/replayed/forged callback, or Logto unreachable), or opted-in
+   * device-key storage fails. This makes `void signIn()` safe for event
+   * handlers; the provider also logs errors to the console.
+   */
+  onAuthError?: (error: Error) => void;
+  /**
+   * Opt-in phase timings: `bootstrap_start` through `convex_authenticated` for
+   * the auth bootstrap, plus refresh, revocation and sign-out. Absent means
+   * nothing is measured or emitted. See [`LogtoAuthEvent`](./auth-events).
+   */
+  onAuthEvent?: LogtoAuthEventHandler;
+  children: ReactNode;
+};
+
+/**
+ * Session mode. Convex holds the Logto refresh token server-side (Traditional
+ * Web app); the browser holds only a short-lived ID token and a rotating
+ * application session token. Requires the session component
+ * (`app.use(logto)` in `convex/convex.config.ts`) and `logtoSessionApi(...)`
+ * re-exported from your Convex functions.
+ *
+ * @example
+ * <ConvexLogtoSessionProvider client={convex} sessionApi={api.auth}>
+ *   <App />
+ * </ConvexLogtoSessionProvider>
+ */
+export function ConvexLogtoSessionProvider({
+  client,
+  sessionApi,
+  callbackPath = DEFAULT_CALLBACK_PATH,
+  afterSignIn = "/",
+  navigate,
+  tokenStorage = "session",
+  deviceBinding = false,
+  cookieTransport,
+  clientDescriptor,
+  initialToken,
+  initialSessionId,
+  reactiveRevocation = true,
+  onAuthError,
+  onAuthEvent,
+  children,
+}: ConvexLogtoSessionProviderProps) {
+  const usesCookieTransport = cookieTransport !== undefined;
+  const hasInitialToken = initialToken != null;
+  const hasInitialSessionId = initialSessionId != null;
+  if (hasInitialToken !== hasInitialSessionId) {
+    throw new Error(
+      "convex-logto: initialToken and initialSessionId must be provided together.",
+    );
+  }
+  if (hasInitialToken && !usesCookieTransport) {
+    throw new Error(
+      "convex-logto: SSR initialToken seeding requires cookieTransport.",
+    );
+  }
+
+  const cookieEndpoint = cookieTransport?.endpoint;
+  const cookieFetch = cookieTransport?.fetch;
+  const cookieDeviceBinding = cookieTransport?.deviceBinding;
+
+  // The engine must survive re-renders, but `navigate`/`onAuthError` are often
+  // inline arrows with a fresh identity each render. They go through refs so
+  // the engine stays stable and still calls the latest one. The client
+  // descriptor rides along for a stronger reason. Apps usually learn it
+  // asynchronously, and rebuilding the engine to deliver it would restart the
+  // mount state machine, abandoning an in-flight callback exchange and leaving
+  // the tree signed out with a live session on the server. The same applies to
+  // `cookieTransport={{ fetch: (u, i) => fetch(u, i) }}`, a documented option
+  // whose inline arrow changes identity on every render.
+  const navigateRef = useRef(navigate);
+  const onAuthErrorRef = useRef(onAuthError);
+  const clientDescriptorRef = useRef(clientDescriptor);
+  const onAuthEventRef = useRef(onAuthEvent);
+  const cookieFetchRef = useRef(cookieFetch);
+  // An insertion effect, because React runs every insertion effect of a
+  // commit before any passive effect. The `convex_authenticated` watcher below
+  // is a child, and a child's passive effect runs before this component's, so
+  // a passive effect here would hand it the previous render's handler.
+  useInsertionEffect(() => {
+    navigateRef.current = navigate;
+    onAuthErrorRef.current = onAuthError;
+    clientDescriptorRef.current = clientDescriptor;
+    onAuthEventRef.current = onAuthEvent;
+    cookieFetchRef.current = cookieFetch;
+  });
+
+  const cookieFetchProxy = useCallback<typeof fetch>(
+    (input, init) =>
+      cookieFetchRef.current
+        ? cookieFetchRef.current(input, init)
+        : globalThis.fetch(input, init),
+    [],
+  );
+
+  // `initialToken` and `initialSessionId` are seed values, not dependencies.
+  // `handler.getInitialToken()` rotates the cookie and mints a fresh ID token
+  // on every call, so re-running the SSR loader (`router.invalidate()`, a
+  // reload) hands back a different string every time. Rebuilding the engine
+  // for that abandons an in-flight exchange, spends the callback's single-use
+  // transaction under its replacement, and renders `isAuthenticated: false`
+  // with `isLoading: false` for a full re-auth round trip, a real signed-out
+  // flash. The engine reads them in its constructor, during this render,
+  // because its first snapshot has to match what the server rendered.
+  /* oxlint-disable react-hooks/exhaustive-deps -- see above */
+  const engine = useMemo(() => {
+    // Namespace storage by deployment so two dev apps on the same origin
+    // (localhost) don't cross-read each other's sessions.
+    const namespace = clientNamespace(client);
+    const storage = new SessionStorageArea(namespace, tokenStorage);
+    const transport = usesCookieTransport
+      ? createLogtoSessionCookieTransport(sessionApi, {
+          endpoint: cookieEndpoint,
+          fetch: cookieFetchProxy,
+          deviceBinding: deviceBinding || cookieDeviceBinding,
+        })
+      : defaultSessionTransport(client);
+    return new SessionAuthEngine({
+      transport,
+      api: sessionApi,
+      storage,
+      callbackPath,
+      afterSignIn,
+      initialToken: initialToken ?? undefined,
+      // Cookie mode always writes a non-secret marker. That both overwrites a
+      // legacy localStorage credential and makes reload attempt the /token
+      // route even though JavaScript cannot inspect the HttpOnly cookie.
+      initialSession: usesCookieTransport
+        ? createCookieSessionMarker(storage.readSession(), initialSessionId)
+        : undefined,
+      // The credential is an HttpOnly cookie only the server can expire, so a
+      // failed revoke is a failed sign-out, not something to swallow.
+      serverHeldCredential: usesCookieTransport,
+      deviceBinding: deviceBinding
+        ? createSessionDeviceBinding(namespace)
+        : undefined,
+      clientDescriptor: () => clientDescriptorRef.current,
+      navigate: (to) => {
+        const soft = navigateRef.current;
+        if (soft) soft(to);
+        else window.location.replace(to);
+      },
+      onAuthError: (error) => onAuthErrorRef.current?.(error),
+      // Always wired, always through the ref. Making this conditional would put
+      // the handler's presence in the memo's dependencies, and an app that
+      // enables telemetry from an effect would rebuild the engine mid-mount.
+      // The cost when no handler is set is one ref read per phase.
+      onAuthEvent: onAuthEventRef,
+    });
+  }, [
+    client,
+    sessionApi,
+    callbackPath,
+    tokenStorage,
+    afterSignIn,
+    usesCookieTransport,
+    cookieEndpoint,
+    cookieFetchProxy,
+    cookieDeviceBinding,
+    deviceBinding,
+  ]);
+  /* oxlint-enable react-hooks/exhaustive-deps */
+
+  useEffect(() => {
+    engine.start();
+    const onStorage = (event: StorageEvent) => {
+      // Another tab signed out, and its localStorage removal lands here.
+      if (event.key === engine.sessionEventKey && event.newValue === null) {
+        engine.handleExternalSignOut();
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [engine]);
+
+  const contextValue = useMemo(
+    () => ({ engine, sessionApi }),
+    [engine, sessionApi],
+  );
+
+  return (
+    <SessionContext.Provider value={contextValue}>
+      <ConvexProviderWithAuth client={client} useAuth={useAuthFromSession}>
+        {reactiveRevocation ? <RevocationWatcher /> : null}
+        <ConvexAuthPhaseWatcher engine={engine} />
+        {children}
+      </ConvexProviderWithAuth>
+    </SessionContext.Provider>
+  );
+}
+
+function clientNamespace(client: ConvexReactClient): string {
+  // `ConvexReactClient.url` exists on every version this package supports, but
+  // stay defensive. An empty namespace only costs cross-app isolation on the
+  // same origin.
+  const url = (client as { url?: unknown }).url;
+  return typeof url === "string" ? url : "";
+}
+
+/** Bridges the session engine into the `useAuth` shape `ConvexProviderWithAuth` expects. */
+function useAuthFromSession() {
+  const { engine } = useSessionContext(
+    "ConvexLogtoSessionProvider's auth bridge",
+  );
+  const snapshot = useSyncExternalStore(
+    engine.subscribe,
+    engine.getSnapshot,
+    engine.getServerSnapshot,
+  );
+  const fetchAccessToken = useCallback(
+    ({ forceRefreshToken }: { forceRefreshToken: boolean }) =>
+      engine.fetchAccessToken(forceRefreshToken),
+    [engine],
+  );
+  return useMemo(
+    () => ({
+      isLoading: snapshot.status === "restoring",
+      isAuthenticated: snapshot.status === "authenticated",
+      fetchAccessToken,
+    }),
+    [snapshot, fetchAccessToken],
+  );
+}
+
+/**
+ * `convex_authenticated` is the phase an app cares about, the first moment an
+ * authenticated query can run, and only Convex knows when it happens. Always
+ * mounted. The handler slot decides per event whether anything is measured,
+ * so an `onAuthEvent` passed on a later render still works.
+ */
+function ConvexAuthPhaseWatcher({ engine }: { engine: SessionAuthEngine }) {
+  const { isAuthenticated } = useConvexAuth();
+  // Keyed by engine, not a bare boolean. A replaced engine emits its own
+  // `bootstrap_start`, and a `reported` that survived it would leave that span
+  // open forever.
+  const reportedFor = useRef<SessionAuthEngine | null>(null);
+  useEffect(() => {
+    if (!isAuthenticated || reportedFor.current === engine) return;
+    reportedFor.current = engine;
+    engine.reportConvexAuthenticated();
+  }, [engine, isAuthenticated]);
+  return null;
+}
+
+/**
+ * Reactive revocation. Subscribes to the session's liveness; the moment the
+ * server deletes the session row (sign-out elsewhere, reuse detection, a
+ * webhook revocation), Convex pushes `false` and auth drops in real time.
+ */
+function RevocationWatcher() {
+  const { engine, sessionApi } = useSessionContext("RevocationWatcher");
+  const snapshot = useSyncExternalStore(
+    engine.subscribe,
+    engine.getSnapshot,
+    engine.getServerSnapshot,
+  );
+  const sessionId = snapshot.sessionId;
+  const hasSessionId = sessionId !== null && sessionId.length > 0;
+  // `useQueries`, not `useQuery`, because `useQuery` rethrows a query error
+  // during render and this component is a sibling of `{children}`, above every
+  // error boundary the app can install. A frontend deployed ahead of its Convex
+  // functions would otherwise blank the page for every signed-in user instead
+  // of losing reactive revocation. Here the error arrives as a value.
+  const queries = useMemo(() => {
+    const request: RequestForQueries = {};
+    if (hasSessionId) {
+      request.valid = { query: sessionApi.sessionValid, args: { sessionId } };
+    }
+    return request;
+  }, [hasSessionId, sessionApi, sessionId]);
+  const valid: unknown = useQueries(queries).valid;
+  // The engine dedupes by Error identity, but the wrapper below is rebuilt on
+  // every effect run, so that dedupe cannot cover it. Track the query error
+  // itself, the object `useQueries` keeps stable, so a remount or a re-run
+  // triggered by a neighbouring dependency cannot report the same fault twice.
+  const reportedFailure = useRef<unknown>(null);
+  useEffect(() => {
+    if (valid instanceof Error) {
+      if (reportedFailure.current === valid) return;
+      reportedFailure.current = valid;
+      engine.reportWatchFailure(
+        new Error(
+          "convex-logto: reactive revocation is off. The sessionValid query failed. " +
+            "Sessions still expire on their own schedule.",
+          { cause: valid },
+        ),
+      );
+      return;
+    }
+    reportedFailure.current = null;
+    if (hasSessionId && valid === false) engine.handleRevoked();
+  }, [engine, hasSessionId, valid]);
+  return null;
+}
+
+export type LogtoSessionAuth = {
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  /** Decoded ID token claims (sub, email, name, ...), once authenticated. Display only. */
+  user: LogtoUserClaims | undefined;
+  /**
+   * Start sign-in. One round-trip to mint the sign-in URL, then a full-page
+   * redirect to Logto and back to the provider's `callbackPath`. `returnTo`
+   * (a same-origin path starting with `/`) is where the user lands after
+   * sign-in completes; it overrides the provider's `afterSignIn`. Initiation
+   * failures reach `onAuthError` before this promise rejects. Called while a
+   * `signOut` is in flight, it waits for that sign-out and resolves without
+   * starting anything once the page is leaving for Logto.
+   */
+  signIn: (options?: { returnTo?: string }) => Promise<void>;
+  /**
+   * Sign out. Deletes the component Session and its server-held refresh token,
+   * clears this browser's storage (other tabs follow via the storage event),
+   * then, unless `federated: false`, ends Logto's SSO session and returns to
+   * `postLogoutRedirectUri` (default `window.location.origin`, which you must
+   * register as a **Post sign-out redirect URI**).
+   *
+   * Rejects with {@link SessionSignOutError} when durable cleanup fails twice;
+   * its `serverSessionStatus` distinguishes a successful revocation from a dual
+   * failure.
+   */
+  signOut: (options?: {
+    postLogoutRedirectUri?: string;
+    federated?: boolean;
+  }) => Promise<void>;
+  /**
+   * Delete every component session for the current subject, then end this
+   * browser's Logto SSO session. Other live devices drop through the existing
+   * reactive revocation subscription.
+   */
+  signOutEverywhere: (options?: {
+    postLogoutRedirectUri?: string;
+  }) => Promise<void>;
+  /**
+   * The caller's own sessions, for a "where am I signed in" screen. A snapshot,
+   * not a subscription, because the session token it authenticates with
+   * rotates; call it again after `renameSession` / `revokeSession`.
+   * `truncated` means the subject has more sessions than the page returned.
+   */
+  listSessions: () => Promise<{
+    sessions: LogtoSessionSummary[];
+    truncated: boolean;
+  }>;
+  /**
+   * Name one of the caller's own sessions (pass `undefined` to clear it).
+   * Rejects with a terminal `session_not_found` when the id is not the caller's
+   * or is already revoked. The component refuses to confirm that another
+   * subject's session exists.
+   */
+  renameSession: (
+    targetSessionId: string,
+    label: string | undefined,
+  ) => Promise<void>;
+  /**
+   * Revoke one of the caller's own sessions; that device drops on its next
+   * reactive revocation tick, and an unknown id rejects like `renameSession`.
+   * Revoking the current session does not clear this browser's credentials;
+   * call `signOut` for that. A device which still holds a live Logto SSO
+   * cookie can start a new sign-in.
+   */
+  revokeSession: (targetSessionId: string) => Promise<void>;
+  /**
+   * The current ID token, the short bearer Convex validates. `null` when
+   * signed out, when the stored one has aged out, or while the engine is still
+   * restoring, so read it under `isAuthenticated`, which is false until the
+   * restore finishes.
+   */
+  getIdToken: () => string | null;
+  /**
+   * What an Organization token authorizes, without the token itself.
+   *
+   * Membership and organization *roles* need none of this. Logto puts them in
+   * the ID token, so `user.organizations` and `user.organization_roles` are
+   * already here for free. This is for fine-grained organization
+   * **permissions**, which Logto issues nowhere but an Organization token.
+   */
+  getOrganizationTokenClaims: (
+    organizationId: string,
+    scopes?: string[],
+    options?: LogtoTokenExchangeOptions,
+  ) => Promise<LogtoResourceTokenClaims>;
+  /**
+   * What a Resource token authorizes. The resource must be listed in
+   * `resources` on `logtoSessionApi()`; Logto will not issue a token for a
+   * resource the grant never named.
+   */
+  getAccessTokenClaims: (
+    resource: string,
+    scopes?: string[],
+    options?: LogtoTokenExchangeOptions,
+  ) => Promise<LogtoResourceTokenClaims>;
+  /**
+   * The Organization token *string*, for a caller that must reach a non-Convex
+   * API from the browser. Rejects unless the deployment passed
+   * `exposeAccessTokens: true`.
+   */
+  getOrganizationToken: (
+    organizationId: string,
+    scopes?: string[],
+    options?: LogtoTokenExchangeOptions,
+  ) => Promise<string>;
+  /** The Resource token *string*, under the same `exposeAccessTokens` gate. */
+  getAccessToken: (
+    resource: string,
+    scopes?: string[],
+    options?: LogtoTokenExchangeOptions,
+  ) => Promise<string>;
+  /**
+   * Logto's live profile (`/oidc/me`), fetched by the component. A round trip,
+   * unlike `user`, which is the copy the last ID token froze.
+   */
+  fetchUserInfo: (options?: LogtoTokenExchangeOptions) => Promise<unknown>;
+};
+
+/**
+ * Auth state and actions from one import. `isAuthenticated` / `isLoading` come
+ * from Convex, so they're true only once Convex has accepted the token.
+ *
+ * @example
+ * const { isAuthenticated, user, signIn, signOut, signOutEverywhere } =
+ *   useLogtoAuth();
+ */
+export function useLogtoAuth(): LogtoSessionAuth {
+  const { engine } = useSessionContext("useLogtoAuth");
+  const { isAuthenticated, isLoading } = useConvexAuth();
+  const snapshot = useSyncExternalStore(
+    engine.subscribe,
+    engine.getSnapshot,
+    engine.getServerSnapshot,
+  );
+  const signIn = useCallback(
+    (options?: { returnTo?: string }) => engine.signIn(options),
+    [engine],
+  );
+  const signOut = useCallback(
+    (options?: { postLogoutRedirectUri?: string; federated?: boolean }) =>
+      engine.signOut(options),
+    [engine],
+  );
+  const signOutEverywhere = useCallback(
+    (options?: { postLogoutRedirectUri?: string }) =>
+      engine.signOutEverywhere(options),
+    [engine],
+  );
+  const listSessions = useCallback(() => engine.listSessions(), [engine]);
+  const renameSession = useCallback(
+    (targetSessionId: string, label: string | undefined) =>
+      engine.renameSession(targetSessionId, label),
+    [engine],
+  );
+  const revokeSession = useCallback(
+    (targetSessionId: string) => engine.revokeSession(targetSessionId),
+    [engine],
+  );
+  const getIdToken = useCallback(() => engine.getIdToken(), [engine]);
+  const getOrganizationTokenClaims = useCallback(
+    (
+      organizationId: string,
+      scopes?: string[],
+      options?: LogtoTokenExchangeOptions,
+    ) => engine.getOrganizationTokenClaims(organizationId, scopes, options),
+    [engine],
+  );
+  const getAccessTokenClaims = useCallback(
+    (
+      resource: string,
+      scopes?: string[],
+      options?: LogtoTokenExchangeOptions,
+    ) => engine.getAccessTokenClaims(resource, scopes, options),
+    [engine],
+  );
+  const getOrganizationToken = useCallback(
+    (
+      organizationId: string,
+      scopes?: string[],
+      options?: LogtoTokenExchangeOptions,
+    ) => engine.getOrganizationToken(organizationId, scopes, options),
+    [engine],
+  );
+  const getAccessToken = useCallback(
+    (
+      resource: string,
+      scopes?: string[],
+      options?: LogtoTokenExchangeOptions,
+    ) => engine.getAccessToken(resource, scopes, options),
+    [engine],
+  );
+  const fetchUserInfo = useCallback(
+    (options?: LogtoTokenExchangeOptions) => engine.fetchUserInfo(options),
+    [engine],
+  );
+  return useMemo(
+    () => ({
+      isAuthenticated,
+      isLoading,
+      user: isAuthenticated ? snapshot.user : undefined,
+      signIn,
+      signOut,
+      signOutEverywhere,
+      listSessions,
+      renameSession,
+      revokeSession,
+      getIdToken,
+      getOrganizationTokenClaims,
+      getAccessTokenClaims,
+      getOrganizationToken,
+      getAccessToken,
+      fetchUserInfo,
+    }),
+    [
+      isAuthenticated,
+      isLoading,
+      snapshot.user,
+      signIn,
+      signOut,
+      signOutEverywhere,
+      listSessions,
+      renameSession,
+      revokeSession,
+      getIdToken,
+      getOrganizationTokenClaims,
+      getAccessTokenClaims,
+      getOrganizationToken,
+      getAccessToken,
+      fetchUserInfo,
+    ],
+  );
+}
+
+export type {
+  LogtoAuthEvent,
+  LogtoAuthEventHandler,
+  LogtoAuthEventSource,
+  LogtoAuthPhase,
+} from "../shared/auth-events";
+export type {
+  LogtoResourceTokenClaims,
+  LogtoSessionApi,
+  LogtoSessionClientDescriptor,
+  LogtoSessionSummary,
+} from "../server/session";
+export type {
+  LogtoTokenExchangeOptions,
+  SessionSignOutServerStatus,
+  TokenStorageKind,
+} from "../client/session-client";
+// A value, not a type. `instanceof` is how an app tells a sign-out that could
+// not durably wipe its credentials apart from one that failed outright. The
+// browser engine throws the same class the native one does, and
+// `convex-logto/native-session` has always exported it. A web app reduced to
+// matching on `error.name` for the identical failure is the entry-point drift
+// this package keeps having to undo.
+export { SessionSignOutError } from "../client/session-client";
+export type { LogtoSessionCookieTransportOptions } from "../client/session-cookie-transport";

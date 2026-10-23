@@ -19,6 +19,7 @@
     "backchannel-logout",
     "security-baseline",
     "multiple-environments",
+    "static-jwks",
     "---Reference---",
     "api-reference",
     "how-it-works"
