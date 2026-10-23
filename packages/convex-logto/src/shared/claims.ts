@@ -109,3 +109,19 @@ export function parseOrganizationRole(
     role: entry.slice(separator + 1),
   };
 }
+
+/**
+ * OIDC Core §2 allows `aud` to be an array, Convex's own ID-token validation
+ * accepts one, and this library's back-channel-logout verifier always has.
+ * Rejecting it here would fail a token every other party considers valid, and
+ * on the refresh path that costs the session.
+ */
+export function audienceMatches(value: unknown, appId: string): boolean {
+  return (
+    value === appId ||
+    (Array.isArray(value) &&
+      value.length > 0 &&
+      value.every((audience) => typeof audience === "string") &&
+      value.includes(appId))
+  );
+}

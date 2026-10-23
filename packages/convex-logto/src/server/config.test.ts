@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { logtoAuthConfig, logtoConfigQuery } from "./config";
 
 function restoreEnv(key: string, value: string | undefined) {
@@ -178,6 +178,103 @@ describe("logtoAuthConfig", () => {
     expect(() =>
       logtoAuthConfig({ endpoint: "http://127.example.com", appId: "a" }),
     ).toThrow(/allowInsecureHttp/);
+  });
+});
+
+describe("logtoAuthConfig with a static JWKS", () => {
+  const connection = { endpoint: "https://auth.example.com", appId: "app123" };
+  let rsaKey: JsonWebKey & { kid: string };
+  let ecKey: JsonWebKey & { kid: string };
+
+  beforeAll(async () => {
+    const rsa = await crypto.subtle.generateKey(
+      {
+        name: "RSASSA-PKCS1-v1_5",
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: "SHA-256",
+      },
+      true,
+      ["sign", "verify"],
+    );
+    const ec = await crypto.subtle.generateKey(
+      { name: "ECDSA", namedCurve: "P-384" },
+      true,
+      ["sign", "verify"],
+    );
+    const { kty, n, e } = await crypto.subtle.exportKey("jwk", rsa.publicKey);
+    rsaKey = { kty, n, e, kid: "rsa-1", alg: "RS256", use: "sig" };
+    const { crv, x, y } = await crypto.subtle.exportKey("jwk", ec.publicKey);
+    ecKey = { kty: "EC", crv, x, y, kid: "ec-1", alg: "ES384", use: "sig" };
+  });
+
+  function decodeDataUri(uri: string): unknown {
+    const prefix = "data:text/plain;charset=utf-8;base64,";
+    expect(uri.startsWith(prefix)).toBe(true);
+    return JSON.parse(
+      Buffer.from(uri.slice(prefix.length), "base64").toString(),
+    );
+  }
+
+  it("returns a customJwt provider with the discovery mode's issuer", () => {
+    const provider = logtoAuthConfig({
+      ...connection,
+      jwks: JSON.stringify({ keys: [rsaKey] }),
+    });
+    expect(provider).toMatchObject({
+      type: "customJwt",
+      issuer: logtoAuthConfig(connection).domain,
+      applicationID: "app123",
+      algorithm: "RS256",
+    });
+    expect(decodeDataUri(provider.jwks)).toEqual({ keys: [rsaKey] });
+  });
+
+  it("inlines only the keys that can verify RS256", () => {
+    const provider = logtoAuthConfig({
+      ...connection,
+      jwks: JSON.stringify({
+        keys: [
+          ecKey,
+          rsaKey,
+          { ...rsaKey, kid: "ps", alg: "PS256" },
+          { ...rsaKey, kid: "enc", use: "enc" },
+        ],
+      }),
+    });
+    expect(decodeDataUri(provider.jwks)).toEqual({ keys: [rsaKey] });
+  });
+
+  it("falls back to discovery when jwks is undefined", () => {
+    expect(logtoAuthConfig({ ...connection, jwks: undefined })).toEqual({
+      domain: "https://auth.example.com/oidc",
+      applicationID: "app123",
+    });
+  });
+
+  it("still requires LOGTO_ENDPOINT and LOGTO_APP_ID", () => {
+    expect(() =>
+      logtoAuthConfig({ jwks: JSON.stringify({ keys: [rsaKey] }) }),
+    ).toThrow(/LOGTO_ENDPOINT and LOGTO_APP_ID/);
+  });
+
+  it.each([
+    ["an empty string", "  ", /LOGTO_JWKS is empty/],
+    ["text that is not JSON", "not json", /LOGTO_JWKS is not valid JSON/],
+    ["JSON that is not a JWKS", "[]", /LOGTO_JWKS is not a JWKS/],
+  ])("throws naming LOGTO_JWKS for %s", (_, jwks, message) => {
+    expect(() => logtoAuthConfig({ ...connection, jwks })).toThrow(message);
+  });
+
+  it("throws naming LOGTO_JWKS when no key can verify RS256", () => {
+    expect(() =>
+      logtoAuthConfig({
+        ...connection,
+        jwks: JSON.stringify({ keys: [ecKey] }),
+      }),
+    ).toThrow(
+      /LOGTO_JWKS holds no RSA key.*rotate its OIDC signing key to RSA/s,
+    );
   });
 });
 

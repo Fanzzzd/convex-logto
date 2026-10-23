@@ -2,6 +2,7 @@
 // Everything here runs in Convex's V8 runtime: Web APIs only.
 
 import { ConvexError } from "convex/values";
+import { audienceMatches } from "../shared/claims.js";
 import {
   decodeBase64Url,
   decodeJwtSegment,
@@ -12,7 +13,7 @@ import {
   normalizeDisplayText,
   sessionLabelTooLong,
 } from "../shared/display-text.js";
-import { buildLogtoEndpointUrl } from "../shared/endpoint.js";
+import { buildLogtoEndpointUrl, logtoIssuer } from "../shared/endpoint.js";
 
 /** Default lifetime of a sign-in transaction (state + PKCE verifier). */
 export const TRANSACTION_TTL_MS = 10 * 60 * 1000;
@@ -373,7 +374,7 @@ export function decodeIdToken(
   }
   const { iss, aud, sub, sid, exp } = payload;
   if (
-    iss !== buildLogtoEndpointUrl(expected.endpoint, "") ||
+    iss !== logtoIssuer(expected.endpoint) ||
     !audienceMatches(aud, expected.appId)
   ) {
     throw terminal(
@@ -754,22 +755,6 @@ export function normalizeSignInTargets(targets: {
     redirectUri: targets.redirectUri,
     ...(targets.returnTo === undefined ? {} : { returnTo: targets.returnTo }),
   };
-}
-
-/**
- * OIDC Core §2 allows `aud` to be an array, Convex's own ID-token validation
- * accepts one, and this library's back-channel-logout verifier always has.
- * Rejecting it here would fail a token every other party considers valid, and
- * on the refresh path that costs the session.
- */
-export function audienceMatches(value: unknown, appId: string): boolean {
-  return (
-    value === appId ||
-    (Array.isArray(value) &&
-      value.length > 0 &&
-      value.every((audience) => typeof audience === "string") &&
-      value.includes(appId))
-  );
 }
 
 // --- error taxonomy ---------------------------------------------------------

@@ -3,9 +3,18 @@ import {
   type PublicHttpAction,
   httpActionGeneric,
 } from "convex/server";
-import { readBoundedBody } from "../shared/http-body.js";
-import { readEndpointAndAppId, type LogtoAuthConfigOptions } from "./config";
-import { buildLogtoEndpointUrl } from "../shared/endpoint";
+import { audienceMatches } from "../shared/claims";
+import { decodeBase64Url, isRecord } from "../shared/decode";
+import { buildLogtoEndpointUrl, logtoIssuer } from "../shared/endpoint";
+import { readBoundedBody } from "../shared/http-body";
+import {
+  LogtoJwksError,
+  fetchLogtoJwks,
+  verificationKeys,
+  type LogtoJwk,
+  type LogtoRsaAlgorithm,
+} from "../shared/jwks";
+import { readEndpointAndAppId, type LogtoConnectionOptions } from "./config";
 import type { LogtoSessionComponent } from "./session";
 
 const encoder = /* @__PURE__ */ new TextEncoder();
@@ -18,20 +27,6 @@ const MAX_TOKEN_AGE_MS = 5 * 60 * 1000;
 const MAX_FUTURE_SKEW_MS = 60 * 1000;
 const JWKS_CACHE_MS = 5 * 60 * 1000;
 const JWKS_MISS_REFRESH_INTERVAL_MS = 60 * 1000;
-const JWKS_FETCH_TIMEOUT_MS = 10 * 1000;
-const MAX_JWKS_BODY_BYTES = 256 * 1024;
-const MAX_JWKS_KEYS = 32;
-
-type SupportedAlgorithm = "RS256" | "PS256";
-type LogtoJwk = {
-  kty: "RSA";
-  n: string;
-  e: string;
-  kid?: string;
-  alg?: string;
-  use?: string;
-  key_ops?: string[];
-};
 
 export type LogtoLogoutTokenClaims = {
   issuer: string;
@@ -40,9 +35,9 @@ export type LogtoLogoutTokenClaims = {
   jti: string;
 };
 
-export type VerifyLogtoLogoutTokenOptions = LogtoAuthConfigOptions;
+export type VerifyLogtoLogoutTokenOptions = LogtoConnectionOptions;
 
-export type LogtoBackchannelLogoutHandlerOptions = LogtoAuthConfigOptions & {
+export type LogtoBackchannelLogoutHandlerOptions = LogtoConnectionOptions & {
   /** The installed session component (`components.logto`). */
   sessions: LogtoSessionComponent;
 };
@@ -73,32 +68,13 @@ function invalid(message: string): never {
   throw new LogoutTokenValidationError(message);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function decodeBase64Url(value: string): Uint8Array<ArrayBuffer> {
-  if (!value || !/^[A-Za-z0-9_-]+$/.test(value) || value.length % 4 === 1) {
-    return invalid("Malformed JWT encoding.");
-  }
-  try {
-    const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
-    const binary = atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="));
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index++) {
-      bytes[index] = binary.charCodeAt(index);
-    }
-    return bytes;
-  } catch {
-    return invalid("Malformed JWT encoding.");
-  }
+function decodeSegment(value: string): Uint8Array<ArrayBuffer> {
+  return decodeBase64Url(value) ?? invalid("Malformed JWT encoding.");
 }
 
 function decodeJsonSegment(value: string): Record<string, unknown> {
   try {
-    const parsed = JSON.parse(
-      decoder.decode(decodeBase64Url(value)),
-    ) as unknown;
+    const parsed = JSON.parse(decoder.decode(decodeSegment(value))) as unknown;
     if (!isRecord(parsed)) return invalid("Malformed JWT JSON.");
     return parsed;
   } catch (error) {
@@ -107,77 +83,11 @@ function decodeJsonSegment(value: string): Record<string, unknown> {
   }
 }
 
-function supportedAlgorithm(value: unknown): SupportedAlgorithm {
+function supportedAlgorithm(value: unknown): LogtoRsaAlgorithm {
   if (value !== "RS256" && value !== "PS256") {
     return invalid("Unsupported logout token signing algorithm.");
   }
   return value;
-}
-
-function readLogtoJwk(value: unknown): LogtoJwk | undefined {
-  if (!isRecord(value)) return undefined;
-  const { kty, n, e, kid, alg, use, key_ops: keyOps } = value;
-  if (
-    kty !== "RSA" ||
-    typeof n !== "string" ||
-    typeof e !== "string" ||
-    (kid !== undefined && typeof kid !== "string") ||
-    (alg !== undefined && typeof alg !== "string") ||
-    (use !== undefined && typeof use !== "string") ||
-    (keyOps !== undefined &&
-      (!Array.isArray(keyOps) ||
-        !keyOps.every((operation) => typeof operation === "string")))
-  ) {
-    return undefined;
-  }
-  return {
-    kty,
-    n,
-    e,
-    ...(kid === undefined ? {} : { kid }),
-    ...(alg === undefined ? {} : { alg }),
-    ...(use === undefined ? {} : { use }),
-    ...(keyOps === undefined ? {} : { key_ops: keyOps }),
-  };
-}
-
-async function fetchJwks(url: string): Promise<LogtoJwk[]> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => {
-    controller.abort();
-  }, JWKS_FETCH_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, {
-      headers: { Accept: "application/json" },
-      signal: controller.signal,
-    });
-    if (!response.ok) return invalid("Could not fetch the Logto JWKS.");
-    const bodyResult = await readBoundedBody(response, MAX_JWKS_BODY_BYTES);
-    if (!bodyResult.ok) return invalid("Could not read the Logto JWKS.");
-    let body: unknown;
-    try {
-      body = JSON.parse(decoder.decode(bodyResult.bytes));
-    } catch {
-      return invalid("Logto returned a malformed JWKS.");
-    }
-    if (!isRecord(body) || !Array.isArray(body.keys)) {
-      return invalid("Logto returned a malformed JWKS.");
-    }
-    if (body.keys.length > MAX_JWKS_KEYS) {
-      return invalid("Logto returned too many JWKS keys.");
-    }
-    const keys: LogtoJwk[] = [];
-    for (const candidate of body.keys) {
-      const key = readLogtoJwk(candidate);
-      if (key !== undefined) keys.push(key);
-    }
-    return keys;
-  } catch (error) {
-    if (error instanceof LogoutTokenValidationError) throw error;
-    return invalid("Could not fetch the Logto JWKS.");
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 async function loadJwks(
@@ -198,7 +108,10 @@ async function loadJwks(
       entry: cached,
     };
   }
-  const promise = fetchJwks(url);
+  const promise = fetchLogtoJwks(url).catch((error: unknown) => {
+    if (error instanceof LogtoJwksError) invalid(error.message);
+    throw error;
+  });
   const entry = {
     expiresAt: now + JWKS_CACHE_MS,
     fetchedAt: now,
@@ -213,31 +126,21 @@ async function loadJwks(
   }
 }
 
-function matchingKeys(
-  keys: LogtoJwk[],
-  algorithm: SupportedAlgorithm,
-  kid: string | undefined,
-): LogtoJwk[] {
-  return keys.filter(
-    (key) =>
-      (kid === undefined || key.kid === kid) &&
-      (key.alg === undefined || key.alg === algorithm) &&
-      (key.use === undefined || key.use === "sig") &&
-      (key.key_ops === undefined || key.key_ops.includes("verify")),
-  );
-}
-
 async function verifySignature(options: {
   compactHeader: string;
   compactPayload: string;
   signature: Uint8Array<ArrayBuffer>;
-  algorithm: SupportedAlgorithm;
+  algorithm: LogtoRsaAlgorithm;
   kid?: string;
   jwksUrl: string;
   now: number;
 }): Promise<boolean> {
   let loaded = await loadJwks(options.jwksUrl, options.now);
-  let candidates = matchingKeys(loaded.keys, options.algorithm, options.kid);
+  let candidates = verificationKeys(
+    loaded.keys,
+    options.algorithm,
+    options.kid,
+  );
   // A new `kid` is the safe key-rotation signal. Bound forced refreshes so an
   // attacker cannot turn arbitrary kid values into an unbounded JWKS fetcher.
   if (
@@ -246,7 +149,7 @@ async function verifySignature(options: {
     options.now - loaded.entry.fetchedAt >= JWKS_MISS_REFRESH_INTERVAL_MS
   ) {
     loaded = await loadJwks(options.jwksUrl, options.now, loaded.entry);
-    candidates = matchingKeys(loaded.keys, options.algorithm, options.kid);
+    candidates = verificationKeys(loaded.keys, options.algorithm, options.kid);
   }
   const signed = encoder.encode(
     `${options.compactHeader}.${options.compactPayload}`,
@@ -280,16 +183,6 @@ async function verifySignature(options: {
   return false;
 }
 
-function audienceMatches(value: unknown, appId: string): boolean {
-  return (
-    value === appId ||
-    (Array.isArray(value) &&
-      value.length > 0 &&
-      value.every((audience) => typeof audience === "string") &&
-      value.includes(appId))
-  );
-}
-
 /**
  * Verify a compact, signed OIDC Logout Token against Logto's RSA JWKS and the
  * Back-Channel Logout validation rules. Encrypted logout tokens are not
@@ -319,7 +212,7 @@ export async function verifyLogtoLogoutToken(
   if (kid !== undefined && (typeof kid !== "string" || kid.length === 0)) {
     return invalid("Invalid logout token kid.");
   }
-  const signature = decodeBase64Url(compactSignature);
+  const signature = decodeSegment(compactSignature);
   if (
     !(await verifySignature({
       compactHeader,
@@ -334,7 +227,7 @@ export async function verifyLogtoLogoutToken(
     return invalid("Invalid logout token signature.");
   }
 
-  const issuer = buildLogtoEndpointUrl(endpoint, "");
+  const issuer = logtoIssuer(endpoint);
   if (payload.iss !== issuer || !audienceMatches(payload.aud, appId)) {
     return invalid("Logout token issuer or audience mismatch.");
   }

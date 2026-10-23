@@ -61,4 +61,15 @@ export default defineConfig([
     entry: { "react-session": "src/react/session.tsx" },
     format: ["esm"],
   },
+  // The `convex-logto` bin. Node-only, so it gets its own platform and target
+  // and ships no declarations; nothing imports it.
+  {
+    entry: { cli: "src/cli/bin.ts" },
+    format: ["esm"],
+    platform: "node",
+    target: "node18",
+    sourcemap: true,
+    external,
+    banner: { js: "#!/usr/bin/env node" },
+  },
 ]);

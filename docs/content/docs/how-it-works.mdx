@@ -23,6 +23,24 @@ rotation. In the Logto Console, open **Tenant settings → OIDC configs**, click
 the old key during a transition, so existing sessions stay signed in. After
 rotating, the discovery document advertises `RS256` and Convex accepts the token.
 
+Each verifier in the stack accepts a different set of algorithms. An RSA key
+satisfies all of them:
+
+| Verifier | Accepts | Where |
+| --- | --- | --- |
+| Convex, OIDC provider (`logtoAuthConfig()`) | RS256, EdDSA | Every Convex request |
+| Convex, Custom JWT provider (`logtoAuthConfig({ jwks })`) | RS256 (this package's choice; Convex also offers ES256) | Every Convex request |
+| `verifyLogtoLogoutToken` | RS256, PS256 | [Back-channel logout](/docs/backchannel-logout) |
+
+## Discovery costs a round trip per connection
+
+Convex caches neither the discovery document nor the JWKS, so with the OIDC
+provider every WebSocket that authenticates fetches both from Logto first. A
+[static JWKS](/docs/static-jwks) inlines a copy of the keys in
+`auth.config.ts` instead: 870 ms to auth confirmation became 300 ms on a
+self-hosted Logto in another region. The price is re-syncing the copy after
+every key rotation.
+
 ## Refresh via offline_access
 
 Sessions refresh via Logto's refresh token, which is why both modes request the

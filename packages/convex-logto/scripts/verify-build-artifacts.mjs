@@ -73,6 +73,17 @@ for (const target of collectTargets(manifest.exports ?? {})) {
   if (!satisfied) missing.push(target);
 }
 
+// A `bin` target is invisible to publint and attw too, and a missing one only
+// fails on a user's `npx convex-logto`. It also has to be directly executable.
+for (const target of Object.values(manifest.bin ?? {})) {
+  const path = resolve(packageDir, target);
+  if (!isFile(path)) missing.push(target);
+  else if (!readFileSync(path, "utf8").startsWith("#!/usr/bin/env node\n")) {
+    console.error(`convex-logto: bin ${target} has no "#!/usr/bin/env node" line.`);
+    process.exit(1);
+  }
+}
+
 if (missing.length > 0) {
   console.error(
     `convex-logto: the build did not produce ${missing.length} file(s) the ` +
@@ -89,6 +100,9 @@ if (missing.length > 0) {
  * exports map, and nothing else ever loads these files. So a missing emit, or a
  * specifier `tsc` rewrote in a way Node cannot resolve, would ship and show up
  * on the *user's* next `convex dev` push instead of here.
+ *
+ * The component imports V8-safe helpers from `dist/shared/`, outside its own
+ * directory, so the walk follows every resolved specifier transitively.
  */
 const componentDir = resolve(packageDir, "dist/component");
 
@@ -120,18 +134,25 @@ if (modules.length === 0) {
 }
 
 const unresolved = [];
-for (const modulePath of modules) {
+const visited = new Set(modules);
+for (let index = 0; index < modules.length; index++) {
+  const modulePath = modules[index];
   const source = readFileSync(modulePath, "utf8");
   for (const [, specifier] of source.matchAll(RELATIVE_SPECIFIER)) {
     const target = resolve(dirname(modulePath), specifier);
     // tsc emits extensionless specifiers under `moduleResolution: Bundler`;
     // accept either form, since the CLI's bundler resolves both.
-    if (isFile(target) || isFile(`${target}.js`) || isFile(join(target, "index.js"))) {
-      continue;
-    }
-    unresolved.push(
-      `${modulePath.slice(packageDir.length + 1)} -> ${specifier}`,
+    const found = [target, `${target}.js`, join(target, "index.js")].find(
+      (candidate) => candidate.endsWith(".js") && isFile(candidate),
     );
+    if (found === undefined) {
+      unresolved.push(
+        `${modulePath.slice(packageDir.length + 1)} -> ${specifier}`,
+      );
+    } else if (!visited.has(found)) {
+      visited.add(found);
+      modules.push(found);
+    }
   }
 }
 

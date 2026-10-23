@@ -136,6 +136,16 @@ export function buildLogtoEndpointUrl(
 }
 
 /**
+ * The OIDC issuer for an endpoint: `${endpoint}/oidc`. Every ID token and
+ * logout token Logto signs carries exactly this as `iss`, and Convex builds
+ * `tokenIdentifier` as `${iss}|${sub}`, so apps key users on it. Both auth
+ * provider shapes, and every verifier here, must produce the same string.
+ */
+export function logtoIssuer(endpoint: string): string {
+  return buildLogtoEndpointUrl(endpoint, "");
+}
+
+/**
  * Validate an absolute URL on its own, right before browser/native navigation.
  * Authorization and end-session URLs carry queries by design.
  */

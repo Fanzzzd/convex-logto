@@ -1,26 +1,58 @@
 import { type FunctionReference, queryGeneric } from "convex/server";
 import { v } from "convex/values";
 import {
-  buildLogtoEndpointUrl,
+  logtoIssuer,
   normalizeLogtoEndpoint,
   type LogtoEndpointPolicy,
   type LogtoPublicEndpointConfig,
 } from "../shared/endpoint";
+import {
+  STATIC_JWKS_ALGORITHM,
+  readStaticJwks,
+  serializeJwks,
+} from "../shared/jwks";
 
-export type LogtoAuthConfigOptions = LogtoEndpointPolicy & {
+/** Where the Logto tenant is and which app's ID tokens to accept. */
+export type LogtoConnectionOptions = LogtoEndpointPolicy & {
   /** Logto endpoint, e.g. `https://auth.example.com`. Defaults to `LOGTO_ENDPOINT`. */
   endpoint?: string;
-  /** Logto SPA application App ID (the ID token's `aud`). Defaults to `LOGTO_APP_ID`. */
+  /** Logto application App ID (the ID token's `aud`). Defaults to `LOGTO_APP_ID`. */
   appId?: string;
 };
 
+export type LogtoAuthConfigOptions = LogtoConnectionOptions & {
+  /**
+   * Logto's signing keys as JWKS JSON, usually `process.env.LOGTO_JWKS` as
+   * written by `npx convex-logto sync-jwks`. With it, Convex verifies ID tokens
+   * against this copy instead of fetching Logto's discovery document and JWKS
+   * on every authenticating WebSocket. After rotating keys in Logto, sync every
+   * deployment again, or every new sign-in is rejected.
+   *
+   * Never read by default: Convex refuses to push an `auth.config.ts` that
+   * reads an unset variable, so the opt-in is writing this line.
+   */
+  jwks?: string;
+};
+
+/** Discovery mode: Convex fetches Logto's discovery document and JWKS itself. */
 export type LogtoOidcProvider = {
   domain: string;
   applicationID: string;
 };
 
-/** @internal Shared with session.ts. Not part of the public API. */
-export function readEndpointAndAppId(options: LogtoAuthConfigOptions = {}): {
+/** Static-JWKS mode: the keys travel inside the provider as a data URI. */
+export type LogtoStaticJwksProvider = {
+  type: "customJwt";
+  issuer: string;
+  applicationID: string;
+  algorithm: typeof STATIC_JWKS_ALGORITHM;
+  jwks: string;
+};
+
+export type LogtoAuthProvider = LogtoOidcProvider | LogtoStaticJwksProvider;
+
+/** @internal Shared with session.ts and backchannel-logout.ts. Not part of the public API. */
+export function readEndpointAndAppId(options: LogtoConnectionOptions = {}): {
   endpoint: string;
   appId: string;
 } {
@@ -40,27 +72,55 @@ export function readEndpointAndAppId(options: LogtoAuthConfigOptions = {}): {
   return { endpoint, appId };
 }
 
+function base64Utf8(text: string): string {
+  let binary = "";
+  for (const byte of new TextEncoder().encode(text)) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
 /**
  * Build the Convex auth provider entry for a Logto app. Reads `LOGTO_ENDPOINT`
- * and `LOGTO_APP_ID` unless you pass them. The OIDC `domain` is `${endpoint}/oidc`;
- * Convex discovers the JWKS and signing algorithm from there, so there is no
- * algorithm or JWKS URL to configure. See the README for why this validates the
- * ID token.
+ * and `LOGTO_APP_ID` unless you pass them. See the README for why this
+ * validates the ID token.
+ *
+ * Without `jwks` it returns an OIDC provider for `${endpoint}/oidc`, and
+ * Convex discovers the JWKS and signing algorithm itself. With `jwks` it
+ * returns a `customJwt` provider carrying those keys, with the same issuer, so
+ * `tokenIdentifier` does not change between the two.
  *
  * @example
  * // convex/auth.config.ts
  * import { logtoAuthConfig } from "convex-logto";
- * export default { providers: [logtoAuthConfig()] };
+ * export default {
+ *   providers: [logtoAuthConfig({ jwks: process.env.LOGTO_JWKS })],
+ * };
  */
 export function logtoAuthConfig(
+  options: LogtoAuthConfigOptions & { jwks: string },
+): LogtoStaticJwksProvider;
+export function logtoAuthConfig(
+  options?: LogtoAuthConfigOptions & { jwks?: undefined },
+): LogtoOidcProvider;
+export function logtoAuthConfig(
+  options?: LogtoAuthConfigOptions,
+): LogtoAuthProvider;
+export function logtoAuthConfig(
   options: LogtoAuthConfigOptions = {},
-): LogtoOidcProvider {
+): LogtoAuthProvider {
   const { endpoint, appId } = readEndpointAndAppId(options);
-  // readEndpointAndAppId already trimmed `endpoint` and stripped its trailing
-  // slash.
+  const issuer = logtoIssuer(endpoint);
+  if (options.jwks === undefined) {
+    return { domain: issuer, applicationID: appId };
+  }
+  const keys = readStaticJwks(options.jwks);
   return {
-    domain: buildLogtoEndpointUrl(endpoint, ""),
+    type: "customJwt",
+    issuer,
     applicationID: appId,
+    algorithm: STATIC_JWKS_ALGORITHM,
+    jwks: `data:text/plain;charset=utf-8;base64,${base64Utf8(serializeJwks(keys))}`,
   };
 }
 
@@ -90,7 +150,7 @@ export type LogtoConfigQueryRef = FunctionReference<
  * import { logtoConfigQuery } from "convex-logto";
  * export const config = logtoConfigQuery();
  */
-export function logtoConfigQuery(options: LogtoAuthConfigOptions = {}) {
+export function logtoConfigQuery(options: LogtoConnectionOptions = {}) {
   return queryGeneric({
     args: {},
     returns: v.object({

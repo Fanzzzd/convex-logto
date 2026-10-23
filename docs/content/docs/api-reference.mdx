@@ -7,7 +7,7 @@ description: Every export from convex-logto and its web, native, and session-mod
 
 | Export | From | Purpose |
 | --- | --- | --- |
-| `logtoAuthConfig(opts?)` | `convex-logto` | Provider entry for `auth.config.ts`. Reads `LOGTO_ENDPOINT` / `LOGTO_APP_ID`. |
+| `logtoAuthConfig(opts?)` | `convex-logto` | Provider entry for `auth.config.ts`. Reads `LOGTO_ENDPOINT` / `LOGTO_APP_ID`; `{ jwks }` switches to a [static JWKS](/docs/static-jwks). |
 | `logtoConfigQuery(opts?)` | `convex-logto` | Public query serving `{ endpoint, appId, allowInsecureHttp? }` to a bridge-mode frontend that resolves its config at runtime. |
 | `logtoSync<DataModel>(handlers)` | `convex-logto` | Returns `{ sync }`, an internal mutation mapping user events to your tables. |
 | `registerLogtoWebhook(http, sync, opts?)` | `convex-logto` | Registers the verified webhook route. Reads `LOGTO_WEBHOOK_SIGNING_KEY`. |
@@ -34,6 +34,7 @@ description: Every export from convex-logto and its web, native, and session-mod
 | `LogtoUserClaims` | `convex-logto` | The type of `user` in all four entries. Standard claims are named; everything else comes through an index signature. Import it to type a helper that takes one. |
 | `ConvexLogtoProvider` | `convex-logto/native` | React Native / Expo provider (on `@logto/rn`). Same `config` / `configQuery` model; no callback route. |
 | `useLogtoAuth()` | `convex-logto/native` | Native `{ isAuthenticated, isLoading, user, signIn, signOut }`; `signIn({ redirectUri? })` / `signOut({ postLogoutRedirectUri? })`. |
+| `convex-logto sync-jwks` / `check-jwks` | `npx convex-logto` | CLI: copy Logto's keys into `LOGTO_JWKS`, or exit 1 when the copy is stale. See [Static JWKS](/docs/static-jwks#cli-reference). |
 | `ConvexLogtoSessionProvider` | `convex-logto/native-session` | React Native / Expo session provider using SecureStore + the system browser. |
 | `useLogtoAuth()` | `convex-logto/native-session` | Native session `{ isAuthenticated, isLoading, user, signIn, completeSignIn, signOut, signOutEverywhere, listSessions, renameSession, revokeSession }` plus the same token-exchange methods; no device-binding option. |
 
@@ -51,6 +52,26 @@ development; a non-loopback self-hosted HTTP deployment must pass
 import { logtoAuthConfig } from "convex-logto";
 export default { providers: [logtoAuthConfig()] };
 ```
+
+Without `jwks` it returns `{ domain: "${endpoint}/oidc", applicationID }`, and
+Convex discovers Logto's keys itself on every connection. With
+`jwks: process.env.LOGTO_JWKS` it returns a Custom JWT provider
+(`type: "customJwt"`, `algorithm: "RS256"`) carrying the keys as a data URI,
+with the same issuer, so `tokenIdentifier` does not change. It throws naming
+`LOGTO_JWKS` when the value is not JSON, not a JWKS, or holds no RS256 key. The
+package never reads `LOGTO_JWKS` on its own. See [Static JWKS](/docs/static-jwks).
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `endpoint` | `LOGTO_ENDPOINT` | Logto base URL. |
+| `appId` | `LOGTO_APP_ID` | The ID token's audience. |
+| `allowInsecureHttp` | `false` | Accept a non-loopback `http:` endpoint. |
+| `jwks` | none | JWKS JSON (`process.env.LOGTO_JWKS`) for static-JWKS mode. |
+
+The return type follows the argument. `{ jwks: string }` gives
+`LogtoStaticJwksProvider`, no `jwks` gives `LogtoOidcProvider`, and
+`string | undefined` gives the union `LogtoAuthProvider`. Every shape satisfies
+Convex's `AuthConfig`.
 
 ### `logtoConfigQuery(opts?)`
 
