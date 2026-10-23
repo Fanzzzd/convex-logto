@@ -149,6 +149,7 @@ function harness(options?: {
   /** What `recordWebhookDelivery` reports. A fresh claim by default. */
   delivery?: { claimed: boolean; completed: boolean };
   killSidError?: Error;
+  completeError?: Error;
   customPath?: string;
 }) {
   harnessNumber += 1;
@@ -168,7 +169,9 @@ function harness(options?: {
       .mockResolvedValue(
         options?.delivery ?? { claimed: true, completed: false },
       ),
-    complete: vi.fn().mockResolvedValue(null),
+    complete: options?.completeError
+      ? vi.fn().mockRejectedValue(options.completeError)
+      : vi.fn().mockResolvedValue(null),
     forget: vi.fn().mockResolvedValue(null),
     killSid: options?.killSidError
       ? vi.fn().mockRejectedValue(options.killSidError)
@@ -712,6 +715,27 @@ describe("Logto back-channel logout", () => {
     expect(failed.status).toBe(400);
     expect(recovered.status).toBe(200);
     expect(handlers.killSid).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the claim and answers 200 when only recording completion fails", async () => {
+    // The logout happened. A 400 would misreport it, and forgetting the claim
+    // would re-arm a replay against sessions created after it.
+    const { endpoint, handler, handlers, calls, runMutation, runAction } =
+      harness({ completeError: new Error("write failed") });
+    const token = await logoutToken({ endpoint });
+
+    const response = await handler(
+      { runMutation, runAction },
+      logoutRequest(token),
+    );
+
+    expect(response.status).toBe(200);
+    expect(handlers.forget).not.toHaveBeenCalled();
+    expect(calls.map((call) => call.fn)).toEqual([
+      "record",
+      "killSid",
+      "complete",
+    ]);
   });
 
   it("releases the jti claim when session revocation fails", async () => {

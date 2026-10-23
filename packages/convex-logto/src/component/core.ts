@@ -7,6 +7,7 @@ import {
   decodeBase64Url,
   decodeJwtSegment,
   isRecord,
+  toHex,
 } from "../shared/decode.js";
 import {
   SESSION_LABEL_MAX_LENGTH,
@@ -198,13 +199,6 @@ export function toBase64Url(bytes: Uint8Array): string {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
-}
-
-function toHex(buffer: ArrayBuffer): string {
-  let hex = "";
-  for (const b of new Uint8Array(buffer))
-    hex += b.toString(16).padStart(2, "0");
-  return hex;
 }
 
 /**
@@ -866,10 +860,6 @@ export function sessionReuseDetectedError(): ConvexError<SessionErrorData> {
 }
 
 /**
- * Classify a Logto token-endpoint failure. 4xx auth failures are terminal, the
- * rest transient.
- */
-/**
  * OAuth 2.0 error codes (RFC 6749 §5.2) that describe a broken *deployment*,
  * not a dead user grant. Logto answers `invalid_client` in particular with
  * 401, and it means this app's own credentials are wrong. Treating it as
@@ -969,9 +959,21 @@ export function classifyTokenEndpointFailure(
         `Logto token endpoint responded ${status} without an error code. Retry later.`,
       );
     }
-    return terminal(
+    if (body.error === "invalid_grant") {
+      // The only code that says *this grant* is dead: expired, revoked, or
+      // already used. RFC 6749 §5.2.
+      return terminal(
+        body.error,
+        `Logto rejected the grant (${body.error}), so the session can't continue.`,
+      );
+    }
+    // Any other code (`invalid_target`, `invalid_dpop_proof`, one Logto adds
+    // later) is not about this session. Logto answers it the same way for
+    // every session, so reading it as terminal would delete them all.
+    return transient(
       body.error,
-      `Logto rejected the grant (${body.error}), so the session can't continue.`,
+      `Logto refused the token request (${body.error}). Sessions are kept; ` +
+        "check the deployment's Logto configuration.",
     );
   }
   if (status === 429) {

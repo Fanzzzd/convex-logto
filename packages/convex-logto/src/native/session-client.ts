@@ -60,12 +60,15 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
   private pendingWrites: Promise<void> = Promise.resolve();
   private pendingWriteError: unknown;
   /**
-   * Credential deletes SecureStore refused, kept until one lands.
+   * Credential deletes SecureStore refused, kept until the key is deleted or
+   * overwritten.
    *
-   * The flush that reports a write fault consumes it; the engine reacts once
-   * and moves on. A *removal* fault is a different thing. The credential is
-   * still on the device, so sign-out has not happened, and forgetting it after
-   * one report would let every later flush claim success.
+   * A write fault is reported once by the next flush. A *removal* fault is a
+   * different thing: the credential is still on the device, so the sign-out
+   * that asked for the delete has not happened. It is reported by
+   * `assertCredentialsRemoved()`, which only sign-out awaits, and never by
+   * `flush()`. Signing in again and refreshing both await the flush, and they
+   * are how a user recovers from this fault.
    */
   private pendingRemovals = new Map<StoredName, unknown>();
   private prefix: string;
@@ -93,22 +96,17 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
 
   async flush(): Promise<void> {
     await this.pendingWrites;
-    if (this.pendingRemovals.size > 0) {
-      // Fold any write fault into the same report and consume it. Reporting the
-      // removals first is right, because a credential still on the device is
-      // the worse failure, but leaving the write error queued behind them would
-      // report it much later, long after the flush it belonged to.
-      const causes: unknown[] = [...this.pendingRemovals.values()];
-      if (this.pendingWriteError !== undefined) {
-        causes.push(this.pendingWriteError);
-        this.pendingWriteError = undefined;
-      }
-      throw storageError(causes);
-    }
     if (this.pendingWriteError !== undefined) {
       const cause = this.pendingWriteError;
       this.pendingWriteError = undefined;
       throw storageError(cause);
+    }
+  }
+
+  async assertCredentialsRemoved(): Promise<void> {
+    await this.pendingWrites;
+    if (this.pendingRemovals.size > 0) {
+      throw storageError([...this.pendingRemovals.values()]);
     }
   }
 
@@ -217,7 +215,11 @@ export class NativeSessionStorageArea implements SessionStorageAdapter {
     // cold start sees the older durable value, and it re-authenticates from
     // that.
     this.values.set(name, raw);
-    this.enqueue(() => this.secureStore.setItemAsync(this.key(name), raw));
+    this.enqueue(async () => {
+      await this.secureStore.setItemAsync(this.key(name), raw);
+      // The credential a refused delete left behind is gone once overwritten.
+      this.pendingRemovals.delete(name);
+    });
   }
 
   private remove(name: StoredName): void {

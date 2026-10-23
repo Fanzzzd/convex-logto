@@ -540,6 +540,11 @@ it.each([
   // 403 is not in RFC 6749 §5.2, but Logto answers it, and it is a decision,
   // not an unknown outcome. The dedicated test below is the one that proves it.
   [403, "invalid_grant", "terminal"],
+  // Codes this package does not list are about the deployment, not the grant.
+  // Logto answers them for every session alike, so terminal would delete all.
+  [400, "invalid_target", "transient"],
+  [400, "invalid_dpop_proof", "transient"],
+  [401, "some_future_code", "transient"],
   [429, undefined, "transient"],
   [500, undefined, "transient"],
   [502, undefined, "transient"],

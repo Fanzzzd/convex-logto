@@ -3,8 +3,8 @@
 // for back-channel logout, the static-JWKS auth provider, and the sync CLI, so
 // the copy a deployment stores is filtered exactly the way a verifier reads it.
 
-import { isRecord } from "./decode";
-import { readBoundedBody } from "./http-body";
+import { isRecord } from "./decode.js";
+import { readBoundedBody } from "./http-body.js";
 
 /** An RSA public signing key as Logto publishes it. */
 export type LogtoJwk = {
@@ -20,7 +20,7 @@ export type LogtoJwk = {
 /** The RSA signature algorithms this package verifies. */
 export type LogtoRsaAlgorithm = "RS256" | "PS256";
 
-/** Logto keeps at most three keys (next, current, previous); this is headroom. */
+/** Logto keeps at most three keys (current, next, previous); this is headroom. */
 export const MAX_JWKS_KEYS = 32;
 const MAX_JWKS_BODY_BYTES = 256 * 1024;
 const JWKS_FETCH_TIMEOUT_MS = 10 * 1000;

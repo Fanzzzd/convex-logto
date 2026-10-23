@@ -687,8 +687,9 @@ export const consumeTransaction = internalMutation({
       .query("transactions")
       .withIndex("by_state", (q) => q.eq("state", args.state))
       .unique();
-    // Deleting inside the same mutation makes consumption one-time. A replayed
-    // callback with the same state finds nothing and fails terminally.
+    // A successful consume deletes the row, so a replayed callback with the
+    // same state finds nothing and fails terminally. A failed one throws, and
+    // the throw rolls the delete back; that row expires and GC removes it.
     if (transaction) await ctx.db.delete(transaction._id);
     if (!transaction || transaction.expiresAt < args.now) {
       throw terminal(
@@ -1197,21 +1198,6 @@ function claimsFromRow(
   };
 }
 
-/**
- * Mint (or serve from cache) an Organization token, a Resource token, or the
- * opaque token `fetchUserInfo` needs.
- *
- * This spends the Session's Logto refresh token, so it runs inside the *same*
- * claim as {@link refresh} and inherits its whole failure vocabulary. That is
- * not defensive. Logto rotates on a rule blind to what the grant was for, and
- * only past 70% of the refresh token's lifetime, so an exchange running
- * outside the claim would look correct until real tokens aged, then start
- * tripping reuse detection on a grant sibling sessions share. See
- * `docs/adr/0003-organization-token-exchange.md`.
- *
- * Returns claims; the token string only when the caller asks and the deployment
- * allowed it (`docs/adr/0002-token-custody.md`).
- */
 type ExchangeArgs = {
   endpoint: string;
   appId: string;
@@ -1233,6 +1219,21 @@ type ExchangeResult = {
   minted: boolean;
 };
 
+/**
+ * Mint (or serve from cache) an Organization token, a Resource token, or the
+ * opaque token `fetchUserInfo` needs.
+ *
+ * This spends the Session's Logto refresh token, so it runs inside the *same*
+ * claim as {@link refresh} and inherits its whole failure vocabulary. That is
+ * not defensive. Logto rotates on a rule blind to what the grant was for, and
+ * only past 70% of the refresh token's lifetime, so an exchange running
+ * outside the claim would look correct until real tokens aged, then start
+ * tripping reuse detection on a grant sibling sessions share. See
+ * `docs/adr/0003-organization-token-exchange.md`.
+ *
+ * Returns claims; the token string only when the caller asks and the deployment
+ * allowed it (`docs/adr/0002-token-custody.md`).
+ */
 export const exchangeToken = action({
   args: {
     ...oidcArgs,

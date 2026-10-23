@@ -8,7 +8,7 @@ import {
   internalMutationGeneric,
 } from "convex/server";
 import { v } from "convex/values";
-import { isRecord } from "../shared/decode.js";
+import { isRecord, toHex } from "../shared/decode.js";
 import { readBoundedBody } from "../shared/http-body.js";
 import type { LogtoSessionComponent } from "./session";
 
@@ -147,13 +147,6 @@ function withoutDriftedFields<Shape extends Record<string, unknown>>(
 
 function isLogtoUserEvent(value: unknown): value is LogtoUserEvent {
   return LOGTO_USER_EVENTS.some((event) => event === value);
-}
-
-function toHex(buffer: ArrayBuffer): string {
-  let hex = "";
-  for (const b of new Uint8Array(buffer))
-    hex += b.toString(16).padStart(2, "0");
-  return hex;
 }
 
 /** Constant-time comparison of two equal-length hex strings. */
@@ -498,24 +491,32 @@ export function registerLogtoWebhook(
       // retries a delivery (same signed bytes) when it doesn't see the 200.
       // Without this, a lost 200 would re-run the sync handlers.
       let bodyHash: string | undefined;
+      const subject = sessions && subjectToRevoke(parsed);
       if (sessions) {
         bodyHash = toHex(await crypto.subtle.digest("SHA-256", rawBody));
         const delivery = await ctx.runMutation(
           sessions.lib.recordWebhookDelivery,
           { bodyHash, now: Date.now() },
         );
-        // Unlike back-channel logout, this route deliberately answers a claimed
-        // delivery without redoing anything, finished or not. An app's sync
-        // handlers write to its own tables and are not idempotent, so running
-        // them twice is worse than answering slightly early for one still in
-        // flight. A delivery whose work failed releases its claim below.
-        if (!delivery.claimed) return new Response(null, { status: 200 });
+        if (!delivery.claimed) {
+          if (delivery.completed) return new Response(null, { status: 200 });
+          // Claimed but not completed: the first attempt is still running, or
+          // it died and the release of its claim failed too. Either way the
+          // revocation may never have committed. It is idempotent, so redo it
+          // now, which is what keeps a deleted or suspended user from staying
+          // signed in for the whole dedupe window. The app's sync handlers are
+          // not idempotent and stay with the attempt that owns the claim. A
+          // 503 makes Logto retry until that attempt completes or releases.
+          if (subject !== undefined) {
+            await ctx.runAction(sessions.lib.killSubjectSessions, { subject });
+          }
+          return new Response("Delivery still in progress", { status: 503 });
+        }
       }
 
       try {
         // Revocation before sync, so a deleted/suspended user's sessions die
         // even if the app's own sync handler goes on to fail.
-        const subject = sessions && subjectToRevoke(parsed);
         if (sessions && subject !== undefined) {
           await ctx.runAction(sessions.lib.killSubjectSessions, { subject });
         }
@@ -529,6 +530,16 @@ export function registerLogtoWebhook(
             .catch(() => {});
         }
         throw error;
+      }
+      if (sessions && bodyHash !== undefined) {
+        // Only now may a retry be answered without doing anything. If this
+        // write fails the work is done but unrecorded, and a retry redoes the
+        // revocation and waits for a claim nobody will complete; that costs
+        // Logto a few retries, never a lost revocation.
+        await ctx.runMutation(sessions.lib.completeWebhookDelivery, {
+          bodyHash,
+          now: Date.now(),
+        });
       }
       return new Response(null, { status: 200 });
     }),

@@ -586,6 +586,7 @@ export function logtoSessionApi(
       resource?: string;
       scopes?: string[];
       includeToken?: boolean;
+      forceRefresh?: boolean;
     },
     Promise<{
       claims: LogtoResourceTokenClaims;
@@ -595,7 +596,7 @@ export function logtoSessionApi(
   >;
   fetchUserInfo: RegisteredAction<
     "public",
-    { sessionToken: string; deviceProof?: string },
+    { sessionToken: string; deviceProof?: string; forceRefresh?: boolean },
     Promise<unknown>
   >;
   sessionValid: RegisteredQuery<

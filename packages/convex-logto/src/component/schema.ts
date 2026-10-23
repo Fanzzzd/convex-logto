@@ -51,7 +51,11 @@ export default defineSchema({
     sid: v.optional(v.string()),
     /** SHA-256 (hex) of the current session token, never the token itself. */
     tokenHash: v.string(),
-    /** Legacy single-generation grace field retained for pre-history-table rows. */
+    /**
+     * Hash of the token the last rotation superseded. Written on every
+     * rotation, and the only record of that generation once its
+     * `sessionTokenGenerations` row is pruned.
+     */
     prevTokenHash: v.optional(v.string()),
     /** When the last rotation happened. The reuse window counts from here. */
     rotatedAt: v.optional(v.number()),
@@ -154,8 +158,8 @@ export default defineSchema({
     .index("by_expiresAt", ["expiresAt"]),
 
   // Bounded, indexed grace history for responses that arrive out of order.
-  // `prevTokenHash` remains on sessions as a legacy adapter for rows created
-  // before this table existed.
+  // `sessions.prevTokenHash` still records the latest superseded generation
+  // after its row here is pruned.
   sessionTokenGenerations: defineTable({
     sessionId: v.id("sessions"),
     tokenHash: v.string(),
