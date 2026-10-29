@@ -133,7 +133,7 @@
     "convex": "^1.45.0",
     "expo-secure-store": "^56.0.4",
     "expo-web-browser": "^56.0.5",
-    "happy-dom": "^20.14.0",
+    "happy-dom": "^21.0.4",
     "oxfmt": "^0.66.0",
     "oxlint": "^1.81.0",
     "oxlint-tsgolint": "^7.0.2001",
